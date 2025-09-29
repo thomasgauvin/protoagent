@@ -1,0 +1,30 @@
+{
+  "name": "protoagenta",
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {
+    "protoagenta": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.tsx",
+    "build": "tsc",
+    "build:watch": "tsc --watch"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "commander": "^14.0.1",
+    "ink": "^6.3.1",
+    "react": "^19.1.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.15",
+    "eslint": "^9.36.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.44.1"
+  }
+}
