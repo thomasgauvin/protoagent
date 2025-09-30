@@ -1,3 +1,30 @@
+# ProtoAgent Tutorial Part 2: AI Integration
+
+Now, let's add LLM completions. We're going to be using the OpenAI SDK to get our responses, because most other providers provide OpenAI compatible endpoints which will allow us to swap models. We will also implement streaming to provide a more interactive user experience.
+
+## 1. Setup Environment Variables
+
+To securely use API keys, we'll use environment variables (just for development). Create a `.env` file in your project's root directory:
+
+```
+OPENAI_API_KEY="your_openai_api_key_here"
+```
+
+## 2. Install OpenAI and Dotenv
+
+We need to install the `openai` package to interact with the OpenAI API and `dotenv` to load our environment variables.
+
+```bash
+npm install openai dotenv
+```
+
+## 3. Configure `src/App.tsx` for Streaming Responses
+
+We will modify `src/App.tsx` to call the OpenAI API with streaming enabled. The chat `messages` state will be updated iteratively as chunks of the AI's response are received.
+
+Here's the updated `src/App.tsx`:
+
+```typescript
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
@@ -41,7 +68,6 @@ export const App = (options: OptionValues) => {
         setMessages((prev) => [...prev, { role: 'assistant', content: '' }]); // Add empty message for streaming
 
         for await (const chunk of stream) {
-          setLoading(false);
           const content = chunk.choices[0]?.delta?.content || '';
           assistantResponse += content;
           setMessages((prev) => {
@@ -60,7 +86,9 @@ export const App = (options: OptionValues) => {
           ...prev,
           { role: 'assistant', content: `Error: ${error.message}` },
         ]);
-      } 
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
@@ -81,15 +109,14 @@ export const App = (options: OptionValues) => {
           <React.Fragment key={index}>
             <Text> </Text>
             <Text dimColor={msg.role === 'user'} color={msg.role === 'user' ? 'lightgrey' : 'white'}>
-              {msg.role === 'user' ? '> ' : ''}{msg.content}
+              {msg.role === 'user' ? '> ' : 'Agent: '}{msg.content}
             </Text>
+            <Text> </Text>
           </React.Fragment>
         ))}
-        
-        {loading && <><Text> </Text><Text>Agent is thinking...</Text></>}
+        {loading && <Text>Agent is thinking...</Text>}
       </Box>
 
-      <Text> </Text>
       <Box marginTop={1} borderStyle="single" borderColor="green" paddingX={1}>
         <Text color="green"> {`>`} </Text>
         <TextInput
@@ -97,8 +124,10 @@ export const App = (options: OptionValues) => {
           onChange={setInputText}
           placeholder="Type your message here..."
           onSubmit={handleSubmit}
+          isDisabled={loading}
         />
       </Box>
     </Box>
   );
 };
+```
