@@ -1,11 +1,20 @@
 #!/usr/bin/env node
+/**
+ * CLI entry point for ProtoAgent.
+ *
+ * Parses command-line flags and launches either the main chat UI
+ * or the configuration wizard.
+ */
+
 import process from 'node:process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import React from 'react';
 import { render } from 'ink';
 import { Command } from 'commander';
 import { App } from './App.js';
+import { ConfigureComponent } from './config.js';
 
 // Get package.json version
 const __filename = fileURLToPath(import.meta.url);
@@ -17,10 +26,30 @@ const packageJson: { version: string } = JSON.parse(
 const program = new Command();
 
 program
-  .description('A simple CLI tool')
-  .version(packageJson.version)
-  .parse(process.argv);
+  .description('ProtoAgent — a simple, hackable coding agent CLI')
+  .version(packageJson.version);
 
-const options = program.opts();
+// Configure subcommand
+program
+  .command('configure')
+  .description('Configure AI model and API key settings')
+  .action(() => {
+    render(<ConfigureComponent />);
+  });
 
-render(<App options={options} />);
+// Main command (default action)
+program
+  .option('--dangerously-accept-all', 'Auto-approve all file writes and shell commands')
+  .option('--log-level <level>', 'Log level: TRACE, DEBUG, INFO, WARN, ERROR', 'INFO')
+  .option('--session <id>', 'Resume a previous session by ID')
+  .action((options) => {
+    render(
+      <App
+        dangerouslyAcceptAll={options.dangerouslyAcceptAll || false}
+        logLevel={options.logLevel}
+        sessionId={options.session}
+      />
+    );
+  });
+
+program.parse(process.argv);

@@ -8,7 +8,10 @@
   "scripts": {
     "dev": "tsx src/cli.tsx",
     "build": "tsc",
-    "build:watch": "tsc --watch"
+    "build:watch": "tsc --watch",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "author": "",
   "license": "ISC",
@@ -17,6 +20,7 @@
     "dotenv": "^17.2.3",
     "ink": "^6.3.1",
     "ink-big-text": "^2.0.0",
+    "ink-select-input": "^6.2.0",
     "ink-text-input": "^6.0.0",
     "openai": "^5.23.1",
     "react": "^19.1.1"
@@ -29,6 +33,7 @@
     "ink-testing-library": "^4.0.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2",
-    "typescript-eslint": "^8.44.1"
+    "typescript-eslint": "^8.44.1",
+    "vitepress": "^1.6.4"
   }
 }
