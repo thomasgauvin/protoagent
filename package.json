@@ -17,7 +17,6 @@
   "license": "ISC",
   "dependencies": {
     "commander": "^14.0.1",
-    "dotenv": "^17.2.3",
     "ink": "^6.3.1",
     "ink-big-text": "^2.0.0",
     "ink-select-input": "^6.2.0",

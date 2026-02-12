@@ -23,7 +23,7 @@ import {
 } from './agentic-loop.js';
 import { setDangerouslyAcceptAll, setApprovalHandler } from './tools/index.js';
 import type { ApprovalRequest, ApprovalResponse } from './utils/approval.js';
-import { setLogLevel } from './utils/logger.js';
+import { setLogLevel, LogLevel } from './utils/logger.js';
 import {
   createSession,
   saveSession,
@@ -172,7 +172,10 @@ export const App: React.FC<AppProps> = ({
     const init = async () => {
       // Set log level
       if (logLevel) {
-        setLogLevel(logLevel as any);
+        const level = LogLevel[logLevel.toUpperCase() as keyof typeof LogLevel];
+        if (level !== undefined) {
+          setLogLevel(level);
+        }
       }
 
       // Set global approval mode
