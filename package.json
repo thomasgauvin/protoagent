@@ -1,9 +1,9 @@
 {
-  "name": "protoagenta",
+  "name": "protoagent",
   "version": "0.0.1",
   "type": "module",
   "bin": {
-    "protoagenta": "./dist/cli.js"
+    "protoagent": "./dist/cli.js"
   },
   "scripts": {
     "dev": "tsx src/cli.tsx",
