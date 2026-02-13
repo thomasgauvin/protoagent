@@ -3,7 +3,9 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'ProtoAgent',
   description: 'A minimal, tutorial-friendly AI coding agent CLI',
-  
+
+  appearance: 'dark',
+
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/guide/getting-started' },

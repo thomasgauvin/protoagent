@@ -1,0 +1,419 @@
+/*
+ * ProtoAgent — Green terminal / hacker aesthetic
+ *
+ * Design principles:
+ *   1. Dark background, green accent — matches the CLI
+ *   2. Monospace only where it belongs — code blocks and the terminal component
+ *   3. Clean, modern layout — no retro gimmicks
+ */
+
+/* ─── Color palette ─── */
+
+:root {
+  /* ProtoAgent greens — pulled from the CLI (#09A469) */
+  --proto-green: #09A469;
+  --proto-green-light: #0FD68C;
+  --proto-green-dim: #067A4E;
+  --proto-green-glow: rgba(9, 164, 105, 0.35);
+
+  /* Accent colors matching CLI */
+  --proto-yellow: #E5C07B;
+  --proto-red: #E06C75;
+  --proto-blue: #61AFEF;
+  --proto-gray: #5C6370;
+
+  /* Surfaces */
+  --proto-bg: #0A0E14;
+  --proto-bg-soft: #0F1419;
+  --proto-bg-mute: #151B23;
+  --proto-bg-card: #121820;
+  --proto-border: #1E2A35;
+  --proto-border-glow: rgba(9, 164, 105, 0.2);
+
+  /* Text */
+  --proto-text: #B0C4B8;
+  --proto-text-bright: #D4E8DC;
+  --proto-text-dim: #5C7568;
+}
+
+/* ─── VitePress CSS variable overrides (dark mode) ─── */
+
+:root {
+  --vp-c-brand-1: var(--proto-green);
+  --vp-c-brand-2: var(--proto-green-light);
+  --vp-c-brand-3: var(--proto-green-dim);
+  --vp-c-brand-soft: var(--proto-green-glow);
+
+  /* Force dark mode */
+  color-scheme: dark;
+}
+
+.dark {
+  --vp-c-bg: var(--proto-bg);
+  --vp-c-bg-soft: var(--proto-bg-soft);
+  --vp-c-bg-mute: var(--proto-bg-mute);
+  --vp-c-bg-alt: var(--proto-bg-soft);
+
+  --vp-c-text-1: var(--proto-text-bright);
+  --vp-c-text-2: var(--proto-text);
+  --vp-c-text-3: var(--proto-text-dim);
+
+  --vp-c-divider: var(--proto-border);
+  --vp-c-border: var(--proto-border);
+  --vp-c-gutter: var(--proto-bg);
+
+  --vp-c-brand-1: var(--proto-green);
+  --vp-c-brand-2: var(--proto-green-light);
+  --vp-c-brand-3: var(--proto-green-dim);
+  --vp-c-brand-soft: var(--proto-green-glow);
+
+  --vp-c-tip-1: var(--proto-green);
+  --vp-c-tip-2: var(--proto-green-dim);
+  --vp-c-tip-3: var(--proto-green-glow);
+  --vp-c-tip-soft: rgba(9, 164, 105, 0.1);
+
+  --vp-c-warning-1: var(--proto-yellow);
+  --vp-c-warning-soft: rgba(229, 192, 123, 0.1);
+
+  --vp-c-danger-1: var(--proto-red);
+  --vp-c-danger-soft: rgba(224, 108, 117, 0.1);
+
+  --vp-code-bg: var(--proto-bg-mute);
+  --vp-code-color: var(--proto-green-light);
+
+  --vp-button-brand-bg: var(--proto-green);
+  --vp-button-brand-hover-bg: var(--proto-green-light);
+  --vp-button-brand-active-bg: var(--proto-green-dim);
+  --vp-button-brand-text: #000;
+
+  --vp-button-alt-bg: var(--proto-bg-mute);
+  --vp-button-alt-hover-bg: var(--proto-bg-card);
+  --vp-button-alt-text: var(--proto-green);
+  --vp-button-alt-border: var(--proto-border);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(135deg, var(--proto-green-light), var(--proto-green), var(--proto-green-dim));
+
+  --vp-home-hero-image-background-image: radial-gradient(ellipse, var(--proto-green-glow), transparent 70%);
+  --vp-home-hero-image-filter: blur(40px);
+
+  --vp-nav-bg: rgba(10, 14, 20, 0.85);
+  --vp-sidebar-bg: var(--proto-bg);
+
+  /* Custom properties */
+  --vp-custom-block-tip-bg: rgba(9, 164, 105, 0.08);
+  --vp-custom-block-tip-border: var(--proto-green-dim);
+}
+
+/* Also apply to :root for when dark class is present */
+html.dark {
+  background: var(--proto-bg);
+}
+
+/* ─── Typography ─── */
+
+.vp-doc h1 {
+  color: var(--proto-green-light);
+  font-weight: 700;
+}
+
+.vp-doc h2 {
+  color: var(--proto-green);
+  border-top: 1px solid var(--proto-border);
+  padding-top: 1.5rem;
+}
+
+/* Inline code */
+.vp-doc :not(pre) > code {
+  color: var(--proto-green-light) !important;
+  background: var(--proto-bg-mute) !important;
+  border: 1px solid var(--proto-border) !important;
+}
+
+/* ─── Code blocks ─── */
+
+.vp-doc div[class*='language-'] {
+  background: var(--proto-bg) !important;
+  border: 1px solid var(--proto-border);
+  border-radius: 8px;
+  box-shadow: 0 0 20px rgba(9, 164, 105, 0.05);
+}
+
+.vp-doc div[class*='language-']::before {
+  color: var(--proto-green-dim) !important;
+}
+
+/* ─── Navbar ─── */
+
+.VPNav {
+  backdrop-filter: blur(12px) saturate(1.2);
+  border-bottom: 1px solid var(--proto-border) !important;
+}
+
+.VPNavBar .title {
+  color: var(--proto-green) !important;
+  font-weight: 700;
+}
+
+/* ─── Sidebar ─── */
+
+.VPSidebar {
+  border-right: 1px solid var(--proto-border) !important;
+}
+
+.VPSidebar .VPSidebarItem .text {
+  font-size: 0.875rem;
+}
+
+.VPSidebar .VPSidebarItem.is-active > .item > .link > .text {
+  color: var(--proto-green-light) !important;
+}
+
+/* ─── Home page ─── */
+
+/* Hero section */
+.VPHero .text {
+  color: var(--proto-text-bright);
+}
+
+.VPHero .tagline {
+  color: var(--proto-text) !important;
+  max-width: 560px;
+}
+
+/* Feature cards */
+.VPFeature {
+  background: var(--proto-bg-card) !important;
+  border: 1px solid var(--proto-border) !important;
+  border-radius: 12px !important;
+  transition: all 0.3s ease;
+}
+
+.VPFeature:hover {
+  border-color: var(--proto-green-dim) !important;
+  box-shadow: 0 0 30px rgba(9, 164, 105, 0.1);
+  transform: translateY(-2px);
+}
+
+.VPFeature .title {
+  color: var(--proto-green-light) !important;
+}
+
+.VPFeature .details {
+  color: var(--proto-text) !important;
+}
+
+/* ─── Custom scrollbar ─── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--proto-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--proto-green-dim);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--proto-green);
+}
+
+/* ─── Selection color ─── */
+
+::selection {
+  background: var(--proto-green-glow);
+  color: #fff;
+}
+
+/* ─── Footer ─── */
+
+.VPFooter {
+  border-top: 1px solid var(--proto-border) !important;
+}
+
+.VPFooter .message {
+  font-size: 0.8rem;
+  color: var(--proto-text-dim);
+}
+
+/* ─── Links ─── */
+
+.vp-doc a {
+  color: var(--proto-green) !important;
+  text-decoration-color: var(--proto-green-dim) !important;
+  transition: all 0.2s ease;
+}
+
+.vp-doc a:hover {
+  color: var(--proto-green-light) !important;
+}
+
+/* ─── Tables ─── */
+
+.vp-doc table {
+  border-collapse: collapse;
+}
+
+.vp-doc table th {
+  background: var(--proto-bg-mute) !important;
+  color: var(--proto-green) !important;
+}
+
+.vp-doc table td {
+  border-color: var(--proto-border) !important;
+}
+
+.vp-doc table tr:hover td {
+  background: var(--proto-bg-card);
+}
+
+/* ─── Custom containers (tip, warning, danger) ─── */
+
+.vp-doc .custom-block.tip {
+  border-color: var(--proto-green-dim);
+  background: rgba(9, 164, 105, 0.06);
+}
+
+.vp-doc .custom-block.warning {
+  border-color: rgba(229, 192, 123, 0.4);
+  background: rgba(229, 192, 123, 0.06);
+}
+
+.vp-doc .custom-block.danger {
+  border-color: rgba(224, 108, 117, 0.4);
+  background: rgba(224, 108, 117, 0.06);
+}
+
+/* ─── Blinking cursor animation (used by components) ─── */
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 15px rgba(9, 164, 105, 0.15); }
+  50% { box-shadow: 0 0 30px rgba(9, 164, 105, 0.3); }
+}
+
+/* ─── Terminal component styles ─── */
+
+.terminal-window {
+  background: var(--proto-bg);
+  border: 1px solid var(--proto-border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5), 0 0 30px rgba(9, 164, 105, 0.08);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  animation: glowPulse 4s ease-in-out infinite;
+}
+
+.terminal-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--proto-bg-soft);
+  border-bottom: 1px solid var(--proto-border);
+}
+
+.terminal-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.terminal-dot.red { background: #FF5F56; }
+.terminal-dot.yellow { background: #FFBD2E; }
+.terminal-dot.green { background: #27C93F; }
+
+.terminal-title {
+  flex: 1;
+  text-align: center;
+  color: var(--proto-text-dim);
+  font-size: 12px;
+}
+
+.terminal-body {
+  padding: 20px;
+  min-height: 280px;
+  max-height: 420px;
+  overflow: hidden;
+}
+
+.terminal-line {
+  margin: 2px 0;
+  white-space: pre;
+  animation: fadeIn 0.3s ease forwards;
+  opacity: 0;
+}
+
+.terminal-prompt {
+  color: var(--proto-green);
+  font-weight: bold;
+}
+
+.terminal-text {
+  color: var(--proto-text);
+}
+
+.terminal-text-bright {
+  color: var(--proto-text-bright);
+}
+
+.terminal-green {
+  color: var(--proto-green-light);
+}
+
+.terminal-yellow {
+  color: var(--proto-yellow);
+}
+
+.terminal-red {
+  color: var(--proto-red);
+}
+
+.terminal-dim {
+  color: var(--proto-text-dim);
+}
+
+.terminal-bold {
+  font-weight: 700;
+}
+
+.terminal-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: var(--proto-green);
+  animation: blink 1s step-end infinite;
+  vertical-align: text-bottom;
+  margin-left: 2px;
+}
+
+/* ─── Responsive ─── */
+
+@media (max-width: 768px) {
+  .terminal-window {
+    font-size: 11px;
+    margin: 0 -12px;
+    border-radius: 8px;
+  }
+
+  .terminal-body {
+    padding: 12px;
+    min-height: 200px;
+  }
+}
