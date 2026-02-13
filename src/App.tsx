@@ -12,8 +12,8 @@ import TextInput from 'ink-text-input';
 import SelectInput from 'ink-select-input';
 import BigText from 'ink-big-text';
 import { OpenAI } from 'openai';
-import { readConfig, type Config } from './config.js';
-import { getProvider, getModelPricing } from './providers.js';
+import { readConfig, writeConfig, type Config } from './config.js';
+import { getProvider, getModelPricing, SUPPORTED_MODELS } from './providers.js';
 import {
   runAgenticLoop,
   initializeMessages,
@@ -126,6 +126,76 @@ const UsageDisplay: React.FC<{
   );
 };
 
+/** Inline setup wizard — shown when no config exists. */
+const InlineSetup: React.FC<{
+  onComplete: (config: Config) => void;
+}> = ({ onComplete }) => {
+  const [setupStep, setSetupStep] = useState<'provider' | 'api_key'>('provider');
+  const [selectedProviderId, setSelectedProviderId] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [apiKeyError, setApiKeyError] = useState('');
+
+  const providerItems = SUPPORTED_MODELS.flatMap((provider) =>
+    provider.models.map((model) => ({
+      label: `${provider.name} - ${model.name}`,
+      value: `${provider.id}:::${model.id}`,
+    })),
+  );
+
+  if (setupStep === 'provider') {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="yellow" bold>First-time setup</Text>
+        <Text dimColor>Select a provider and model:</Text>
+        <Box marginTop={1}>
+          <SelectInput
+            items={providerItems}
+            onSelect={(item) => {
+              const [providerId, modelId] = item.value.split(':::');
+              setSelectedProviderId(providerId);
+              setSelectedModelId(modelId);
+              setSetupStep('api_key');
+            }}
+          />
+        </Box>
+      </Box>
+    );
+  }
+
+  const provider = getProvider(selectedProviderId);
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color="yellow" bold>First-time setup</Text>
+      <Text dimColor>
+        Selected: {provider?.name} / {selectedModelId}
+      </Text>
+      <Text>Enter your API key:</Text>
+      {apiKeyError && <Text color="red">{apiKeyError}</Text>}
+      <TextInput
+        value={apiKey}
+        onChange={setApiKey}
+        placeholder={`Paste your ${provider?.apiKeyEnvVar || 'API'} key`}
+        mask="*"
+        onSubmit={() => {
+          if (apiKey.trim().length === 0) {
+            setApiKeyError('API key cannot be empty.');
+            return;
+          }
+          const newConfig: Config = {
+            provider: selectedProviderId,
+            model: selectedModelId,
+            apiKey: apiKey.trim(),
+          };
+          writeConfig(newConfig);
+          onComplete(newConfig);
+        }}
+      />
+    </Box>
+  );
+};
+
 // ─── Main App ───
 
 export const App: React.FC<AppProps> = ({
@@ -142,6 +212,7 @@ export const App: React.FC<AppProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   // Tool call display state
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallEvent[]>([]);
@@ -165,6 +236,58 @@ export const App: React.FC<AppProps> = ({
 
   // Chat history for display (role + content pairs)
   const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([]);
+
+  // ─── Post-config initialization (reused after inline setup) ───
+
+  const initializeWithConfig = useCallback(async (loadedConfig: Config) => {
+    setConfig(loadedConfig);
+
+    // Create OpenAI client with provider's baseURL
+    const provider = getProvider(loadedConfig.provider);
+    const clientOptions: any = {
+      apiKey: loadedConfig.apiKey,
+    };
+    if (provider?.baseURL) {
+      clientOptions.baseURL = provider.baseURL;
+    }
+    clientRef.current = new OpenAI(clientOptions);
+
+    // Initialize MCP servers
+    await initializeMcp();
+
+    // Load or create session
+    let loadedSession: Session | null = null;
+    if (sessionId) {
+      loadedSession = await loadSession(sessionId);
+      if (loadedSession) {
+        setSession(loadedSession);
+        setMessages(loadedSession.messages);
+        // Rebuild chat history from loaded messages
+        const history: { role: string; content: string }[] = [];
+        for (const msg of loadedSession.messages) {
+          if ((msg.role === 'user' || msg.role === 'assistant') && 'content' in msg && typeof msg.content === 'string') {
+            history.push({ role: msg.role, content: msg.content });
+          }
+        }
+        setChatHistory(history);
+      } else {
+        setError(`Session "${sessionId}" not found. Starting a new session.`);
+      }
+    }
+
+    if (!loadedSession) {
+      // Initialize fresh conversation
+      const initialMessages = await initializeMessages();
+      setMessages(initialMessages);
+
+      const newSession = createSession(loadedConfig.model, loadedConfig.provider);
+      newSession.messages = initialMessages;
+      setSession(newSession);
+    }
+
+    setNeedsSetup(false);
+    setInitialized(true);
+  }, [sessionId]);
 
   // ─── Initialization ───
 
@@ -190,58 +313,14 @@ export const App: React.FC<AppProps> = ({
         });
       });
 
-      // Load config
+      // Load config — if none exists, show inline setup
       const loadedConfig = readConfig();
       if (!loadedConfig) {
-        setError('Configuration not found. Run `protoagent configure` first.');
+        setNeedsSetup(true);
         return;
       }
-      setConfig(loadedConfig);
 
-      // Create OpenAI client with provider's baseURL
-      const provider = getProvider(loadedConfig.provider);
-      const clientOptions: any = {
-        apiKey: loadedConfig.apiKey,
-      };
-      if (provider?.baseURL) {
-        clientOptions.baseURL = provider.baseURL;
-      }
-      clientRef.current = new OpenAI(clientOptions);
-
-      // Initialize MCP servers
-      await initializeMcp();
-
-      // Load or create session
-      let loadedSession: Session | null = null;
-      if (sessionId) {
-        loadedSession = await loadSession(sessionId);
-        if (loadedSession) {
-          setSession(loadedSession);
-          setMessages(loadedSession.messages);
-          // Rebuild chat history from loaded messages
-          const history: { role: string; content: string }[] = [];
-          for (const msg of loadedSession.messages) {
-            if ((msg.role === 'user' || msg.role === 'assistant') && 'content' in msg && typeof msg.content === 'string') {
-              history.push({ role: msg.role, content: msg.content });
-            }
-          }
-          setChatHistory(history);
-        } else {
-          setError(`Session "${sessionId}" not found. Starting a new session.`);
-        }
-      }
-
-      if (!loadedSession) {
-        // Initialize fresh conversation
-        const initialMessages = await initializeMessages();
-        setMessages(initialMessages);
-
-        const newSession = createSession(loadedConfig.model, loadedConfig.provider);
-        newSession.messages = initialMessages;
-        setSession(newSession);
-      }
-
-      setInitialized(true);
+      await initializeWithConfig(loadedConfig);
     };
 
     init().catch((err) => {
@@ -277,6 +356,10 @@ export const App: React.FC<AppProps> = ({
           }
         });
         return true;
+      case '/config':
+        setNeedsSetup(true);
+        setInitialized(false);
+        return true;
       case '/cost':
         setChatHistory((prev) => [
           ...prev,
@@ -290,10 +373,11 @@ export const App: React.FC<AppProps> = ({
             role: 'system',
             content: [
               'Commands:',
-              '  /clear  — Clear conversation and start fresh',
-              '  /cost   — Show total session cost',
-              '  /help   — Show this help',
-              '  /quit   — Exit ProtoAgent',
+              '  /clear   — Clear conversation and start fresh',
+              '  /config  — Change provider, model, or API key',
+              '  /cost    — Show total session cost',
+              '  /help    — Show this help',
+              '  /quit    — Exit ProtoAgent',
             ].join('\n'),
           },
         ]);
@@ -431,7 +515,18 @@ export const App: React.FC<AppProps> = ({
         </Text>
       )}
       {error && <Text color="red">{error}</Text>}
-      {!initialized && !error && <Text>Initializing...</Text>}
+      {!initialized && !error && !needsSetup && <Text>Initializing...</Text>}
+
+      {/* Inline setup wizard */}
+      {needsSetup && (
+        <InlineSetup
+          onComplete={(newConfig) => {
+            initializeWithConfig(newConfig).catch((err) => {
+              setError(`Initialization failed: ${err.message}`);
+            });
+          }}
+        />
+      )}
 
       {/* Chat history */}
       <Box flexDirection="column" flexGrow={1} marginTop={1}>

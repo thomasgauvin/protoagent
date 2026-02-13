@@ -37,7 +37,26 @@ export const readConfig = (): Config | null => {
   if (existsSync(configPath)) {
     try {
       const content = readFileSync(configPath, 'utf8');
-      return JSON.parse(content) as Config;
+      const raw = JSON.parse(content);
+
+      // Handle legacy format: { provider, model, credentials: { KEY: "..." } }
+      let apiKey = raw.apiKey;
+      if (!apiKey && raw.credentials && typeof raw.credentials === 'object') {
+        const provider = SUPPORTED_MODELS.find((p) => p.id === raw.provider);
+        if (provider) {
+          apiKey = raw.credentials[provider.apiKeyEnvVar];
+        }
+        // Fallback: grab the first non-empty value
+        if (!apiKey) {
+          apiKey = Object.values(raw.credentials).find((v) => typeof v === 'string' && v.length > 0);
+        }
+      }
+
+      if (!raw.provider || !raw.model || !apiKey) {
+        return null;
+      }
+
+      return { provider: raw.provider, model: raw.model, apiKey } as Config;
     } catch (error) {
       console.error('Error reading config file:', error);
       return null;
