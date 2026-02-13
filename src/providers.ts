@@ -87,6 +87,20 @@ export const SUPPORTED_MODELS: ModelProvider[] = [
     apiKeyEnvVar: 'GEMINI_API_KEY',
     models: [
       {
+        id: 'gemini-3-flash-preview',
+        name: 'Gemini 3 Flash (Preview)',
+        contextWindow: 1_000_000,
+        pricingPerMillionInput: 0.075,
+        pricingPerMillionOutput: 0.30,
+      },
+      {
+        id: 'gemini-3-pro-preview',
+        name: 'Gemini 3 Pro (Preview)',
+        contextWindow: 1_000_000,
+        pricingPerMillionInput: 1.25,
+        pricingPerMillionOutput: 10.00,
+      },
+      {
         id: 'gemini-2.5-flash',
         name: 'Gemini 2.5 Flash',
         contextWindow: 1_000_000,
