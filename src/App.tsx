@@ -41,7 +41,38 @@ export interface AppProps {
   sessionId?: string;
 }
 
+// ─── Available slash commands ───
+
+const SLASH_COMMANDS = [
+  { name: '/clear', description: 'Clear conversation and start fresh' },
+  { name: '/config', description: 'Change provider, model, or API key' },
+  { name: '/cost', description: 'Show total session cost' },
+  { name: '/help', description: 'Show all available commands' },
+  { name: '/quit', description: 'Exit ProtoAgent' },
+];
+
 // ─── Sub-components ───
+
+/** Shows filtered slash commands when user types /. */
+const CommandFilter: React.FC<{ inputText: string }> = ({ inputText }) => {
+  if (!inputText.startsWith('/')) return null;
+
+  const filtered = SLASH_COMMANDS.filter((cmd) =>
+    cmd.name.toLowerCase().startsWith(inputText.toLowerCase())
+  );
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      {filtered.map((cmd) => (
+        <Text key={cmd.name} dimColor>
+          <Text color="green">{cmd.name}</Text> — {cmd.description}
+        </Text>
+      ))}
+    </Box>
+  );
+};
 
 /** Renders a single tool call with status indicator. */
 const ToolCallDisplay: React.FC<{ tc: ToolCallEvent }> = ({ tc }) => {
@@ -578,10 +609,15 @@ export const App: React.FC<AppProps> = ({
         )}
       </Box>
 
-      {/* Usage bar */}
-      <UsageDisplay usage={lastUsage ?? null} totalCost={totalCost} />
+       {/* Usage bar */}
+       <UsageDisplay usage={lastUsage ?? null} totalCost={totalCost} />
 
-      {/* Input */}
+       {/* Command filter (show available commands when typing /) */}
+       {initialized && !pendingApproval && inputText.startsWith('/') && (
+         <CommandFilter inputText={inputText} />
+       )}
+
+       {/* Input */}
       {initialized && !pendingApproval && (
         <Box borderStyle="single" borderColor="green" paddingX={1}>
           <Text color="green">{'> '}</Text>
