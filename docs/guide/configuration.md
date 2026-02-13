@@ -18,7 +18,7 @@ ProtoAgent uses the OpenAI SDK as a universal client. Most providers expose Open
 Run the wizard:
 
 ```bash
-protoagenta configure
+protoagent configure
 ```
 
 It asks you three things: which provider, which model, and your API key. That's it.

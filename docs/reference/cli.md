@@ -5,18 +5,18 @@ Everything you can do from the command line.
 ## Basic usage
 
 ```bash
-protoagenta [options] [command]
+protoagent [options] [command]
 ```
 
 Run it with no arguments to start an interactive session.
 
 ## Commands
 
-### `protoagenta`
+### `protoagent`
 
 Starts an interactive agent session. The agent reads your project, accepts natural language input, and uses tools to get things done.
 
-### `protoagenta configure`
+### `protoagent configure`
 
 Launches the configuration wizard. Walks you through picking a provider, choosing a model, and entering your API key. Run this on first use, or anytime you want to switch models.
 
@@ -29,7 +29,7 @@ Skips all approval prompts for file writes, edits, and shell commands. The agent
 Use with caution — or in CI where there's no one to click "approve."
 
 ```bash
-protoagenta --dangerously-accept-all
+protoagent --dangerously-accept-all
 ```
 
 ### `--log-level <level>`
@@ -45,7 +45,7 @@ Controls how much logging output you see. Logs go to stderr so they don't interf
 | `trace` | Everything — including raw API calls |
 
 ```bash
-protoagenta --log-level debug
+protoagent --log-level debug
 ```
 
 ### `--session <id>`
@@ -53,7 +53,7 @@ protoagenta --log-level debug
 Resume a previously saved session. The full conversation history gets restored and you continue where you left off.
 
 ```bash
-protoagenta --session abc123def
+protoagent --session abc123def
 ```
 
 ## Slash commands

@@ -15,7 +15,7 @@ There's nothing to configure. It just happens.
 Use the `--session` flag:
 
 ```bash
-protoagenta --session abc123
+protoagent --session abc123
 ```
 
 ProtoAgent restores the full message history — your messages, the agent's responses, tool calls and results — and continues the conversation as if you never left.

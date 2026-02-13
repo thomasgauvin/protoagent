@@ -2,14 +2,14 @@
 
 Every project starts with scaffolding, and this one's no different. In this part, we set up a TypeScript CLI project with [Commander](https://github.com/tj/commander.js) for argument parsing and [Ink](https://github.com/vadimdemedes/ink) for the terminal UI.
 
-By the end, you'll have a runnable `protoagenta` command that displays a welcome banner and accepts text input. Not an agent yet — but a solid foundation to build on.
+By the end, you'll have a runnable `protoagent` command that displays a welcome banner and accepts text input. Not an agent yet — but a solid foundation to build on.
 
 ## What you'll build
 
 - A Node.js project with TypeScript and ESM modules
 - CLI argument parsing with Commander
 - An Ink-based terminal UI with a welcome banner and text input
-- A `protoagenta` command you can run
+- A `protoagent` command you can run
 
 ## Key concepts
 

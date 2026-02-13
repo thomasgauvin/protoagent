@@ -33,7 +33,7 @@ function log(level: LogLevel, label: string, color: string, message: string, con
 }
 ```
 
-`process.stderr.write` instead of `console.log`. That's the entire trick. It means you can run `protoagenta "refactor this file" > output.txt` and get clean model output in the file while debug logs still show up in the terminal. Unix convention — stderr is for diagnostics, stdout is for data.
+`process.stderr.write` instead of `console.log`. That's the entire trick. It means you can run `protoagent "refactor this file" > output.txt` and get clean model output in the file while debug logs still show up in the terminal. Unix convention — stderr is for diagnostics, stdout is for data.
 
 The level system is standard: ERROR (0), WARN (1), INFO (2), DEBUG (3), TRACE (4). Each level includes everything below it — if you set the level to DEBUG, you also get INFO, WARN, and ERROR. The default is INFO, which keeps things quiet unless something interesting happens.
 

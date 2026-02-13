@@ -9,7 +9,7 @@ That's what ProtoAgent is. It's a fully functional coding agent CLI that you can
 Install globally via npm:
 
 ```bash
-npm install -g protoagenta
+npm install -g protoagent
 ```
 
 Or clone and run from source:
@@ -26,13 +26,13 @@ npm run dev
 The first time you launch ProtoAgent, it walks you through picking a provider and entering your API key. Nothing fancy — just a terminal wizard.
 
 ```bash
-protoagenta
+protoagent
 ```
 
 You can come back and change this anytime with:
 
 ```bash
-protoagenta configure
+protoagent configure
 ```
 
 ## Using it

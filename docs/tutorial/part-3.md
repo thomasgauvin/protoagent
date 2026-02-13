@@ -7,7 +7,7 @@ Hard-coding an API key in an environment variable works for development, but it'
 - An interactive Ink configuration wizard
 - Persistent config storage at a standard location (`~/.local/share/protoagent/`)
 - Provider definitions with model metadata and pricing
-- A `protoagenta configure` subcommand
+- A `protoagent configure` subcommand
 
 ## Key concepts
 
