@@ -298,6 +298,32 @@ useEffect(() => {
 }, [options.dangerouslyAcceptAll]);
 ```
 
+### Approval detail truncation
+
+Long commands or file content can make the approval modal very noisy. We truncate the detail field to at most 3 lines:
+
+```typescript
+function truncateToThreeLines(text: string): string {
+  const lines = text.split('\n');
+  if (lines.length > 3) {
+    return lines.slice(0, 3).join('\n') + '\n...';
+  }
+  return text;
+}
+```
+
+Both `bash.ts` and `write-file.ts` use this function:
+
+```typescript
+// In bash.ts
+detail: truncateToThreeLines(command),
+
+// In write-file.ts
+detail: truncateToThreeLines(preview),
+```
+
+This keeps the approval modal readable while showing enough context to understand what's being approved.
+
 The CLI in `src/cli.tsx` offers the flag:
 
 ```typescript
@@ -350,6 +376,23 @@ const renderApprovalModal = () => {
   );
 };
 ```
+
+## Welcome message
+
+The UI also displays a welcome message when it starts up. This gives the user a friendly introduction to ProtoAgent:
+
+```typescript
+const introductoryMessage = [
+  <BigText key="welcome-1" text="ProtoAgent" font="tiny" colors={["#09A469"]} />,
+  <Text key="welcome-2" italic dimColor>"The prefix "proto-" comes from the Greek word prōtos and is used to denote the beginning stage or the primitive form of something that will later evolve or develop into a more complex version."</Text>,
+  <Text key="padding-above-welcome"> </Text>,
+  <Text key="welcome-3" color="green">Welcome to ProtoAgent, a simple coding agent CLI with tool support.</Text>,
+  <Text key="padding-above-welcome-2"> </Text>,
+  <Text key="welcome-4" color="green">ProtoAgent has the core capabilities of the popular coding agents but stripped down to the core functionality to help you understand how coding agents work.</Text>
+];
+```
+
+The welcome text is rendered in green to make it visually distinct. The message explains what ProtoAgent is and sets expectations for what it can do.
 
 ## Test it out
 

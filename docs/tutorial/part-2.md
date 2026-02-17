@@ -134,9 +134,9 @@ export const App = (options: OptionValues) => {
     <BigText key="welcome-1" text="ProtoAgent" font="tiny" colors={["#09A469"]} />,
     <Text key="welcome-2" italic dimColor>"The prefix "proto-" comes from the Greek word prōtos and is used to denote the beginning stage or the primitive form of something that will later evolve or develop into a more complex version."</Text>,
     <Text key="padding-above-welcome"> </Text>,
-    <Text key="welcome-3">Welcome to ProtoAgent, a simple coding agent CLI. </Text>,
+    <Text key="welcome-3" color="green">Welcome to ProtoAgent, a simple coding agent CLI with tool support.</Text>,
     <Text key="padding-above-welcome-2"> </Text>,
-    <Text key="welcome-4">ProtoAgent has the core capabilities of the popular coding agents but stripped down to the core functionality to help you understand how coding agents work. Run with `--log-level TRACE` to see what's happening under the hood. </Text>
+    <Text key="welcome-4" color="green">ProtoAgent has the core capabilities of the popular coding agents but stripped down to the core functionality to help you understand how coding agents work.</Text>
   ];
 
   return (
@@ -185,11 +185,10 @@ You should see:
 "The prefix "proto-" comes from the Greek word prōtos and is used to denote the beginning stage or the
 primitive form of something that will later evolve or develop into a more complex version."
 
-Welcome to ProtoAgent, a simple coding agent CLI.
+Welcome to ProtoAgent, a simple coding agent CLI with tool support.
 
 ProtoAgent has the core capabilities of the popular coding agents but stripped down to the core
-functionality to help you understand how coding agents work. Run with `--log-level TRACE` to see what's
-happening under the hood.
+functionality to help you understand how coding agents work.
 
 > hi
 
