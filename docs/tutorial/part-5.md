@@ -1,6 +1,6 @@
 # Part 5: File Tools
 
-An agent that can't read or write files isn't very useful as a coding assistant. In this part, we give it the full set — read, write, edit, search, and list — with proper path security so it can't escape the project directory.
+An agent that can't read or write files isn't very useful as a coding assistant. In this part, we'll give it the full set — read, write, edit, search, and list — with proper path security so it can't escape the project directory.
 
 ## What you'll build
 
@@ -38,7 +38,7 @@ export async function validatePath(requestedPath: string): Promise<string> {
 That catches the obvious `../../` traversal attacks. But it doesn't catch symlinks. Someone could create a symlink inside the project that points to `/etc/passwd`, and the normalized path would look perfectly fine. So there's a second check — resolve the symlink and verify the *real* path is still inside the working directory:
 
 ```ts
-  // Second check: resolve symlinks and re-check
+  // Second check: resolve symlinks and re-check (prevents a symlink trick: ../../../etc/passwd hidden inside the project)
   try {
     const realPath = await fs.realpath(normalized);
     if (!realPath.startsWith(workingDirectory)) {
@@ -53,7 +53,7 @@ There's one wrinkle. When the agent creates a new file, `fs.realpath` fails with
 ```ts
   catch (err: any) {
     if (err.code === 'ENOENT') {
-      // File doesn't exist yet — validate the parent directory instead
+      // File doesn't exist yet — verify the parent directory is safe (if the parent is safe, so is any file created in it)
       const parentDir = path.dirname(normalized);
       try {
         const realParent = await fs.realpath(parentDir);
@@ -104,7 +104,14 @@ export const readFileTool = {
 export async function readFile(filePath: string, offset = 0, limit = 2000): Promise<string> {
   const validated = await validatePath(filePath);
   const content = await fs.readFile(validated, 'utf8');
-  // ... format with line numbers and return
+
+  const lines = content.split('\n');
+  const end = Math.min(offset + limit, lines.length);
+  const selectedLines = lines.slice(offset, end);
+
+  return selectedLines
+    .map((line, idx) => `${(offset + idx + 1).toString().padStart(4, ' ')}→${line}`)
+    .join('\n');
 }
 ```
 
@@ -185,7 +192,7 @@ export async function editFile(
   const validated = await validatePath(filePath);
   const content = await fs.readFile(validated, 'utf8');
 
-  // Count occurrences
+  // Count occurrences using indexOf, not regex — old_string might contain special characters like [, (, etc.
   let count = 0;
   let idx = 0;
   while ((idx = content.indexOf(oldString, idx)) !== -1) {
@@ -224,6 +231,7 @@ After validation, approval works the same way as `write_file` — show a diff-li
 The actual replacement uses `split().join()` — a simple way to replace all occurrences of a literal string without regex:
 
 ```ts
+  // split().join() replaces ALL occurrences of a literal string — no regex interpretation
   const newContent = content.split(oldString).join(newString);
   await fs.writeFile(validated, newContent, 'utf8');
 ```
@@ -295,6 +303,9 @@ import { writeFileTool, writeFile } from './write-file.js';
 import { editFileTool, editFile } from './edit-file.js';
 import { listDirectoryTool, listDirectory } from './list-directory.js';
 import { searchFilesTool, searchFiles } from './search-files.js';
+import { bashTool, bash } from './bash.js';
+import { todoReadTool, todoRead } from './todo-read.js';
+import { todoWriteTool, todoWrite } from './todo-write.js';
 
 export const tools = [
   readFileTool,
@@ -302,7 +313,9 @@ export const tools = [
   editFileTool,
   listDirectoryTool,
   searchFilesTool,
-  // ... plus bash, todo tools
+  bashTool,
+  todoReadTool,
+  todoWriteTool,
 ];
 ```
 
@@ -322,7 +335,12 @@ export async function handleToolCall(toolName: string, args: any): Promise<strin
         return await listDirectory(args.directory_path);
       case 'search_files':
         return await searchFiles(args.search_term, args.directory_path, args.case_sensitive, args.file_extensions);
-      // ...
+      case 'bash':
+        return await bash(args.command);
+      case 'todo_read':
+        return await todoRead();
+      case 'todo_write':
+        return await todoWrite(args.todos);
       default: {
         const handler = dynamicHandlers.get(toolName);
         if (handler) {
@@ -343,6 +361,87 @@ The whole thing is wrapped in a try-catch. If a tool throws — path validation 
 Notice the `default` branch checks `dynamicHandlers` — a `Map` that MCP tools and sub-agent tools register into at runtime. This is how the tool system stays extensible without the registry needing to know about every possible tool ahead of time. We'll get into that in later parts.
 
 The registry also exports `getAllTools()`, which merges the static tool list with any dynamically registered tools. The agentic loop calls this when building its request to the LLM, so new tools appear automatically once registered.
+
+## Message History and Streaming UI
+
+A common gotcha in agent UIs is that the streaming display doesn't match the committed message history. You see one thing while streaming, then when it finishes, the history shows something different. This creates confusion and makes debugging hard.
+
+ProtoAgent solves this with a **single source of truth** architecture:
+
+**The Problem:** Without careful design, you end up with two competing message sources:
+- The streaming events (tool_call, tool_result, text_delta) might format messages one way
+- The agentic loop returns messages in a different format
+- Trying to merge them destroys ordering or loses information
+
+**The Solution:** Event handlers never touch the committed message history. Instead:
+
+1. **Event handlers** only update temporary streaming state (`currentText` for text being streamed, `activeToolCalls` for in-flight tool calls). These show real-time feedback to the user.
+
+2. **The agentic loop** returns `updatedMessages` — the authoritative final message array. When it completes, we replace the entire history with this value.
+
+3. **Rendering** shows: committed history + streaming overlay. The overlay disappears once the loop finishes, revealing the committed messages that match exactly what was shown while streaming.
+
+This means:
+- No message duplication or reordering
+- What you see while streaming is identical to what remains in history
+- Tool names resolve correctly (we build a lookup from the assistant message's tool_calls array)
+- Tool results are truncated consistently (2 lines max, no collapsing)
+
+Look at `src/App.tsx` — `messages` and `messagesRef` are updated in exactly two places: when the user submits (add their message), and when the agentic loop returns (replace everything). That's it.
+
+## Test it out
+
+Run the development server:
+
+```bash
+npm run dev
+```
+
+Try asking the agent to explore the project:
+
+```
+> understand this project and dump it in UNDERSTANDING.md
+```
+
+You should see:
+
+1. **Your message appears immediately** in white
+2. **Tool calls stream in real-time** with the tool name and current status (running → done):
+   ```
+   Tool: list_directory (running)
+   Tool: read_file (done)
+   ```
+3. **Tool results are truncated to 2 lines max** for readability (no collapsing)
+4. **The agent's final response appears gradually** in green as it streams
+5. **The "Thinking..." indicator** shows while waiting for the API to respond
+
+Key behaviors to notice:
+
+- **Streaming overlay**: During response streaming, you see tool calls and partial text in real-time. Once the agent finishes, this overlay disappears and is replaced with the committed message history.
+- **Consistent history**: What you see while streaming is identical to what remains in the history afterward. There's no "double rendering" or message history changing as you scroll back.
+- **Tool call display**: Tool names resolve to their human-readable labels (e.g., `read_file` not `call_abc123`). The lookup happens automatically from the preceding assistant message's tool_calls array.
+
+Try other commands:
+```
+> list the files in src/utils
+> read src/App.tsx
+> search for "function" in src
+```
+
+## Summary
+
+You now have a complete file tool suite that:
+
+- **Reads files** with line numbers and pagination
+- **Writes files** with atomic operations (temp + rename)
+- **Edits files** with safe find-and-replace
+- **Lists directories** with file/folder indicators
+- **Searches recursively** with extension filtering
+- **Validates paths** to prevent directory traversal
+- **Shows tool calls in real-time** with formatted boxes
+- **Displays thinking indicators** while tools run
+
+The agent can now explore, read, write, and search your codebase. In the next part, we'll add shell command execution (bash) with security controls.
 
 ---
 
