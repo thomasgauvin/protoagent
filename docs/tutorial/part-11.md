@@ -188,7 +188,22 @@ There's also a second layer of error handling inside `handleToolCall` itself:
 export async function handleToolCall(toolName: string, args: any): Promise<string> {
   try {
     switch (toolName) {
-      // ... tool dispatch
+      case 'read_file':
+        return await readFile(args.file_path, args.offset, args.limit);
+      case 'write_file':
+        return await writeFile(args.file_path, args.content);
+      case 'edit_file':
+        return await editFile(args.file_path, args.old_string, args.new_string, args.expected_replacements);
+      case 'list_directory':
+        return await listDirectory(args.directory_path);
+      case 'search_files':
+        return await searchFiles(args.search_term, args.directory_path, args.case_sensitive, args.file_extensions);
+      case 'bash':
+        return await bash(args.command);
+      case 'todo_read':
+        return await todoRead();
+      case 'todo_write':
+        return await todoWrite(args.todos);
       default: {
         const handler = dynamicHandlers.get(toolName);
         if (handler) {

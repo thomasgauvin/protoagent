@@ -44,6 +44,7 @@ async function buildDirectoryTree(
     const fullPath = path.resolve(dirPath);
     const entries = await fs.readdir(fullPath, { withFileTypes: true });
 
+    // Filter out hidden files, build artifacts, and noise directories so the tree stays readable
     const filtered = entries.filter((e) => {
       const n = e.name;
       return (
@@ -53,6 +54,7 @@ async function buildDirectoryTree(
       );
     });
 
+    // Cap at 20 entries per directory — prevents flat directories from dominating the context window
     for (const entry of filtered.slice(0, 20)) {
       if (entry.isDirectory()) {
         tree += `${indent}${entry.name}/\n`;

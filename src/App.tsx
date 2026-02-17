@@ -8,8 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import TextInput from 'ink-text-input';
-import SelectInput from 'ink-select-input';
+import { TextInput, Select } from '@inkjs/ui';
 import BigText from 'ink-big-text';
 import { OpenAI } from 'openai';
 import { readConfig, writeConfig, type Config } from './config.js';
@@ -127,9 +126,9 @@ const ApprovalPrompt: React.FC<{
         <Text dimColor>{request.detail.length > 200 ? request.detail.slice(0, 200) + '...' : request.detail}</Text>
       )}
       <Box marginTop={1}>
-        <SelectInput
-          items={items}
-          onSelect={(item) => onRespond(item.value)}
+        <Select
+          options={items.map((item) => ({ value: item.value, label: item.label }))}
+          onChange={(value) => onRespond(value as ApprovalResponse)}
         />
       </Box>
     </Box>
@@ -180,10 +179,10 @@ const InlineSetup: React.FC<{
         <Text color="yellow" bold>First-time setup</Text>
         <Text dimColor>Select a provider and model:</Text>
         <Box marginTop={1}>
-          <SelectInput
-            items={providerItems}
-            onSelect={(item) => {
-              const [providerId, modelId] = item.value.split(':::');
+          <Select
+            options={providerItems.map((item) => ({ value: item.value, label: item.label }))}
+            onChange={(value: string) => {
+              const [providerId, modelId] = value.split(':::');
               setSelectedProviderId(providerId);
               setSelectedModelId(modelId);
               setSetupStep('api_key');

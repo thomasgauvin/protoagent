@@ -1,6 +1,6 @@
 # Part 4: The Agentic Loop
 
-This is the big one. Up to this point, we've had a chatbot — you type, the AI responds, that's it. In this part, we turn it into an agent by adding tool-calling support.
+This is the big one. Up to this point, we have a chatbot — you type, the AI responds, that's it. In this part, we'll turn it into an agent by adding tool-calling support.
 
 The agentic loop is the core pattern that powers every coding agent. It's surprisingly simple once you see it: call the LLM, check if it wants to use a tool, execute the tool, feed the result back, repeat. That's it. Everything else is just adding more tools.
 
@@ -105,7 +105,69 @@ export async function runAgenticLoop(
 
   while (iterationCount < maxIterations) {
     iterationCount++;
-    // ... the interesting stuff
+
+    // Build tools list and make the streaming API call
+    const allTools = [...getAllTools(), subAgentTool];
+    const stream = await client.chat.completions.create({
+      model,
+      messages: updatedMessages,
+      tools: allTools,
+      tool_choice: 'auto',
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+
+    // Accumulate the response from the stream (text and tool calls arrive in fragments)
+    let assistantMessage: any = { role: 'assistant', content: '', tool_calls: [] };
+    let streamedContent = '';
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta;
+
+      // Accumulate text content chunks
+      if (delta?.content) {
+        streamedContent += delta.content;
+        assistantMessage.content = streamedContent;
+        onEvent({ type: 'text_delta', content: delta.content });
+      }
+
+      // Accumulate tool call chunks (tool_calls arrive in pieces and need to be reassembled by index)
+      if (delta?.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index || 0;
+          if (!assistantMessage.tool_calls[idx]) {
+            assistantMessage.tool_calls[idx] = { id: '', type: 'function', function: { name: '', arguments: '' } };
+          }
+          if (tc.id) assistantMessage.tool_calls[idx].id = tc.id;
+          if (tc.function?.name) assistantMessage.tool_calls[idx].function.name += tc.function.name;
+          if (tc.function?.arguments) assistantMessage.tool_calls[idx].function.arguments += tc.function.arguments;
+        }
+      }
+    }
+
+    // Check if the model wants to call tools or respond with text
+    if (assistantMessage.tool_calls.length > 0) {
+      // Execute each tool call and push results back into the conversation
+      updatedMessages.push(assistantMessage);
+      for (const toolCall of assistantMessage.tool_calls) {
+        const { name, arguments: argsStr } = toolCall.function;
+        const args = JSON.parse(argsStr);
+        const result = await handleToolCall(name, args);
+        updatedMessages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: result,
+        } as any);
+      }
+      continue; // Back to the top of the while loop to call the LLM again
+    } else if (assistantMessage.content) {
+      // Model responded with text — we're done
+      updatedMessages.push({
+        role: 'assistant',
+        content: assistantMessage.content,
+      } as Message);
+      onEvent({ type: 'done' });
+      return updatedMessages;
+    }
   }
 
   onEvent({ type: 'error', error: 'Maximum iteration limit reached.' });
@@ -137,6 +199,7 @@ After the stream finishes, we check what we got. If there are tool calls, we exe
 
 ```typescript
 if (assistantMessage.tool_calls.length > 0) {
+  // Clean up sparse array gaps from streaming accumulation (undefined entries from failed iterations)
   assistantMessage.tool_calls = assistantMessage.tool_calls.filter(Boolean);
   updatedMessages.push(assistantMessage);
 
@@ -156,14 +219,20 @@ if (assistantMessage.tool_calls.length > 0) {
 
       onEvent({ type: 'tool_result', toolCall: { name, args: argsStr, status: 'done', result } });
     } catch (err) {
-      // push error result so the LLM knows what happened
+      // Feed errors back to the LLM as a tool result — it can see what went wrong and adjust
+      onEvent({ type: 'tool_result', toolCall: { name, args: argsStr, status: 'error', result: String(err) } });
+      updatedMessages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+      } as any);
     }
   }
-  continue; // back to the top of the while loop
+  continue;
 }
 ```
 
-Notice the `filter(Boolean)` — that cleans up any sparse array gaps from the streaming accumulation (we'll get to that in a moment). Each tool result gets pushed as a `tool` role message with the `tool_call_id` linking it back to the request. This is how the OpenAI API knows which result goes with which tool call. Then we `continue` to let the model see the results.
+Each tool result gets pushed as a `tool` role message with the `tool_call_id` linking it back to the request. This is how the OpenAI API knows which result goes with which tool call. Then we `continue` to let the model see the results.
 
 If there are no tool calls, it's a plain text response — we're done:
 
@@ -218,6 +287,7 @@ for await (const chunk of stream) {
   if (delta?.tool_calls) {
     hasToolCalls = true;
     for (const tc of delta.tool_calls) {
+      // tc.index tells us which tool call this delta belongs to (when multiple tools are called in one response)
       const idx = tc.index || 0;
       if (!assistantMessage.tool_calls[idx]) {
         assistantMessage.tool_calls[idx] = {
@@ -226,6 +296,7 @@ for await (const chunk of stream) {
           function: { name: '', arguments: '' },
         };
       }
+      // Accumulate each piece of the tool call as it arrives — id, name, and arguments all come in fragments
       if (tc.id) assistantMessage.tool_calls[idx].id = tc.id;
       if (tc.function?.name) assistantMessage.tool_calls[idx].function.name += tc.function.name;
       if (tc.function?.arguments) assistantMessage.tool_calls[idx].function.arguments += tc.function.arguments;
@@ -252,7 +323,11 @@ The setup is simple. Import each tool's definition and handler, put the definiti
 import { readFileTool, readFile } from './read-file.js';
 import { writeFileTool, writeFile } from './write-file.js';
 import { editFileTool, editFile } from './edit-file.js';
-// ... and so on
+import { listDirectoryTool, listDirectory } from './list-directory.js';
+import { searchFilesTool, searchFiles } from './search-files.js';
+import { bashTool, bash } from './bash.js';
+import { todoReadTool, todoRead } from './todo-read.js';
+import { todoWriteTool, todoWrite } from './todo-write.js';
 
 export const tools = [
   readFileTool,
@@ -280,7 +355,16 @@ export async function handleToolCall(toolName: string, args: any): Promise<strin
         return await writeFile(args.file_path, args.content);
       case 'edit_file':
         return await editFile(args.file_path, args.old_string, args.new_string, args.expected_replacements);
-      // ...
+      case 'list_directory':
+        return await listDirectory(args.directory_path);
+      case 'search_files':
+        return await searchFiles(args.search_term, args.directory_path, args.case_sensitive, args.file_extensions);
+      case 'bash':
+        return await bash(args.command);
+      case 'todo_read':
+        return await todoRead();
+      case 'todo_write':
+        return await todoWrite(args.todos);
       default: {
         const handler = dynamicHandlers.get(toolName);
         if (handler) {
@@ -409,15 +493,67 @@ This separation is what makes the loop testable. In tests, you can pass a mock `
 
 ## What we left out
 
-If you looked at the source closely, you probably noticed some things we glossed over:
+If you looked at the source closely, you probably noticed some things we haven't implemented yet:
 
-- **Compaction** — the loop checks `getContextInfo()` at the top of each iteration and runs `compactIfNeeded()` if the conversation is getting too long for the model's context window. We'll cover that in Part 6.
-- **Sub-agents** — the `sub_agent` tool gets special handling. Instead of going through `handleToolCall`, it calls `runSubAgent()` which spins up a separate agentic loop for a delegated task. Part 7 covers this.
-- **MCP tools** — the dynamic tool registration system (`registerDynamicTool`, `registerDynamicHandler`) exists to support Model Context Protocol servers that provide tools at runtime. That's Part 8.
-- **The `initializeMessages()` helper** — it creates the initial conversation with a system prompt generated by `generateSystemPrompt()`. We touched on system prompts back in Part 2.
+- **Additional tools** — Only `read_file` is implemented. Part 5 adds write_file, edit_file, list_directory, search_files, and bash.
+- **Approval system** — Tools execute immediately without user approval. In production, dangerous tools like `bash` should require confirmation.
+- **Message compaction** — For very long conversations, we'd need to compact messages to fit within the model's context window.
+- **Sub-agents** — Delegating tasks to separate agentic loops for complex multi-step operations.
+- **MCP tools** — Dynamic tool registration for Model Context Protocol servers.
 
 None of these change the fundamental loop. They're features layered on top of the same call-check-execute-repeat pattern.
 
-## Next up
+## Test it out
 
-The loop can call tools, but right now we only walked through `read_file`. In [Part 5](/tutorial/part-5), we'll build out the rest of the tool suite — file writing, editing, directory listing, search, and the bash tool — and look at how the approval system prevents the agent from doing dangerous things without your say-so.
+Run the development server:
+
+```bash
+npm run dev
+```
+
+Try asking the agent to read a file:
+
+```
+> read the contents of package.json
+```
+
+You should see the agent calling the `read_file` tool and then responding with the file contents:
+
+```
+> read the contents of package.json
+
+Tool: read_file (done)
+Result: File: package.json (32 lines total, showing 1-32)
+    1: {
+    2:   "name": "protoagent",
+    3:   "version": "0.0.1",
+    ...
+
+Agent: Here's the contents of `package.json`:
+
+**Project Details:**
+- **Name:** protoagent
+- **Version:** 0.0.1
+- **Description:** A simple coding agent CLI
+...
+```
+
+Try with other files too:
+
+```
+> read src/App.tsx
+> read src/agentic-loop.ts
+```
+
+## Summary
+
+You now have a fully functional agentic loop that:
+
+- Implements the core tool-use pattern (call LLM → check for tools → execute → repeat)
+- Emits events for real-time UI updates without coupling to React
+- Accumulates streaming tool call arguments correctly
+- Supports multiple tool definitions with proper JSON schemas
+- Validates paths to prevent directory traversal attacks
+- Handles errors gracefully and feeds them back to the model
+
+The agent can now read files and use that information to help you. In the next part, we'll add more tools (write_file, edit_file, bash, etc.) and implement an approval system for dangerous operations.

@@ -16,20 +16,21 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@inkjs/ui": "^2.0.0",
     "commander": "^14.0.1",
     "ink": "^6.3.1",
     "ink-big-text": "^2.0.0",
-    "ink-select-input": "^6.2.0",
-    "ink-text-input": "^6.0.0",
     "openai": "^5.23.1",
     "react": "^19.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
+    "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^24.5.2",
     "@types/react": "^19.1.15",
     "eslint": "^9.36.0",
     "ink-testing-library": "^4.0.0",
+    "tailwindcss": "^4.0.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.44.1",

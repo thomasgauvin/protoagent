@@ -6,7 +6,7 @@ Tools are how the agent interacts with the world. When you ask ProtoAgent to "fi
 
 Every tool has two parts: a JSON schema that tells the LLM what the tool does and what parameters it needs, and a handler function that actually does the work. The LLM decides when to call a tool and generates the arguments — ProtoAgent executes it and feeds the result back.
 
-This is the same pattern that OpenCode, Codex, and pi-mono all use. It's the standard way coding agents work.
+This is the same pattern that OpenCode, Codex, and Claude Code all use. It's the standard way coding agents work.
 
 ## File tools
 

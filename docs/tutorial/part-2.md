@@ -1,21 +1,213 @@
 # Part 2: AI Integration
 
-Now we make it talk. In this part, we connect to the OpenAI API and stream chat completions to the terminal. By the end, you'll have a working chatbot — type a message, get an AI response, streamed token by token.
+Now, let's add LLM completions. We're going to be using the OpenAI SDK to get our responses, because most other providers provide OpenAI compatible endpoints which will allow us to swap models. We will also implement streaming to provide a more interactive user experience.
 
-We use the OpenAI SDK because most providers (Gemini, Anthropic, Cerebras) offer OpenAI-compatible endpoints. One SDK, multiple providers — no need for separate integrations.
+## Setup Environment Variables
 
-## What you'll build
+To securely use API keys, we'll use environment variables (just for development). Create a `.env` file in your project's root directory:
 
-- OpenAI SDK integration with streaming responses
-- Real-time token rendering in the Ink UI as they arrive
-- Environment variable configuration for the API key
+```bash
+touch .env
+```
 
-## Key concepts
+```
+OPENAI_API_KEY="your_openai_api_key_here"
+```
 
-- **Streaming** is what makes the interaction feel responsive. Instead of waiting for the full response, tokens appear as the model generates them.
-- **Chunk accumulation** — the OpenAI SDK gives you `delta` objects that you need to piece together. It's straightforward once you see it.
-- **OpenAI-compatible endpoints** — by targeting the OpenAI format, we get Gemini and Anthropic support for free.
+## Update package.json
 
-::: tip
-This part is complete. See the full walkthrough in [`DIY_PROTOAGENT_TUTORIAL/PART_2.md`](https://github.com/user/protoagent/blob/main/DIY_PROTOAGENT_TUTORIAL/PART_2.md).
-:::
+Update your `package.json` to include the new dependencies:
+
+```json
+{
+  "name": "protoagent",
+  "version": "0.0.1",
+  "description": "A simple coding agent CLI.",
+  "bin": "dist/cli.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.tsx",
+    "build:watch": "tsc --watch"
+  },
+  "files": ["dist"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@inkjs/ui": "^2.0.0",
+    "commander": "^14.0.3",
+    "dotenv": "^16.4.7",
+    "ink": "^6.7.0",
+    "ink-big-text": "^2.0.0",
+    "openai": "^4.70.0",
+    "react": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.15",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
+  }
+}
+```
+
+Or, install the packages manually:
+
+```bash
+npm install openai dotenv
+```
+
+## Configure streaming responses
+
+We will modify `src/App.tsx` to call the OpenAI API with streaming enabled. The chat `messages` state will be updated iteratively as chunks of the AI's response are received. Update your `src/App.tsx`:
+
+```typescript
+import React, { useState } from 'react';
+import { Box, Text } from 'ink';
+import { TextInput } from '@inkjs/ui';
+import BigText from 'ink-big-text';
+import { OptionValues } from 'commander';
+import OpenAI from 'openai'; // [!code ++]
+import 'dotenv/config'; // [!code ++]
+
+interface Message { // [!code ++]
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+const openai = new OpenAI({ // [!code ++]
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+export const App = (options: OptionValues) => {
+  const [messages, setMessages] = useState<Message[]>([ // [!code ++]
+    { role: 'system', content: 'You are ProtoAgent, a helpful AI coding assistant.' },
+  ]);
+  const [inputKey, setInputKey] = useState(0);
+  const [loading, setLoading] = useState(false); // [!code ++]
+
+  const handleSubmit = async (value: string) => { // [!code ++]
+    if (value.trim() !== '') {
+      const userMessage: Message = { role: 'user', content: value }; // [!code ++]
+      const updatedMessages = [...messages, userMessage];
+      setMessages(updatedMessages);
+      setInputKey(prev => prev + 1);
+      setLoading(true);
+
+      try {
+        const stream = await openai.chat.completions.create({ // [!code ++]
+          messages: updatedMessages,
+          model: 'gpt-4o-mini',
+          stream: true,
+        });
+
+        let assistantResponse = '';
+        setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content || '';
+          assistantResponse += content;
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            if (lastMessage && lastMessage.role === 'assistant') {
+              return [
+                ...prev.slice(0, prev.length - 1),
+                { ...lastMessage, content: assistantResponse },
+              ];
+            }
+            return prev;
+          });
+        }
+      } catch (error: any) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: `Error: ${error.message}` },
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const introductoryMessage = [
+    <BigText key="welcome-1" text="ProtoAgent" font="tiny" colors={["#09A469"]} />,
+    <Text key="welcome-2" italic dimColor>"The prefix "proto-" comes from the Greek word prōtos and is used to denote the beginning stage or the primitive form of something that will later evolve or develop into a more complex version."</Text>,
+    <Text key="padding-above-welcome"> </Text>,
+    <Text key="welcome-3">Welcome to ProtoAgent, a simple coding agent CLI. </Text>,
+    <Text key="padding-above-welcome-2"> </Text>,
+    <Text key="welcome-4">ProtoAgent has the core capabilities of the popular coding agents but stripped down to the core functionality to help you understand how coding agents work. Run with `--log-level TRACE` to see what's happening under the hood. </Text>
+  ];
+
+  return (
+    <Box flexDirection="column" height="100%">
+      <Box flexDirection="column" flexGrow={1}>
+        {introductoryMessage}
+        {messages.filter(msg => msg.role !== 'system').map((msg, index) => (
+          <React.Fragment key={index}>
+            <Text> </Text>
+            <Text dimColor={msg.role === 'user'} color={msg.role === 'user' ? 'lightgrey' : 'white'}>
+              {msg.role === 'user' ? '> ' : 'Agent: '}{msg.content}
+            </Text>
+            <Text> </Text>
+          </React.Fragment>
+        ))}
+        {loading && <Text>Agent is thinking...</Text>}
+      </Box>
+
+      <Box marginTop={1} borderStyle="single" borderColor="green" paddingX={1}>
+        <Text color="green">❯ </Text>
+        <TextInput
+          key={inputKey}
+          placeholder="Type your message here..."
+          onSubmit={handleSubmit}
+        />
+      </Box>
+    </Box>
+  );
+};
+```
+
+## Test it out
+
+Start the development server:
+
+```bash
+npm run dev
+```
+
+You should see:
+
+```
+█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █
+
+"The prefix "proto-" comes from the Greek word prōtos and is used to denote the beginning stage or the
+primitive form of something that will later evolve or develop into a more complex version."
+
+Welcome to ProtoAgent, a simple coding agent CLI.
+
+ProtoAgent has the core capabilities of the popular coding agents but stripped down to the core
+functionality to help you understand how coding agents work. Run with `--log-level TRACE` to see what's
+happening under the hood.
+
+> hi
+
+Agent: Hello! How can I assist you today?
+
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ❯ Type your message here...                                                                             │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Summary
+
+You now have a fully functional AI-powered CLI agent that:
+
+- Integrates with OpenAI's API using the OpenAI SDK
+- Streams responses in real-time for a more interactive experience
+- Maintains conversation history and context
+- Uses environment variables securely for API key management
+- Has a responsive terminal UI with Ink
+
+In the next part, we'll add configuration management to support multiple AI providers (OpenAI, Google Gemini, and Anthropic Claude) and allow users to configure their preferred model through the CLI.

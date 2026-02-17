@@ -23,4 +23,4 @@ The complete spec lives in [`SPEC.md`](https://github.com/user/protoagent/blob/m
 15. **Skills** — domain-specific instructions from markdown files.
 16. **Documentation Site** — this VitePress site you're reading.
 
-Each section includes a "before building" note pointing to the specific files in [OpenCode](https://github.com/anomalyco/opencode), [Codex](https://github.com/openai/codex), and [pi-mono](https://github.com/badlogic/pi-mono) that you should study first. No point reinventing something when you can learn from how production agents do it.
+Each section includes a "before building" note pointing to the specific files in [OpenCode](https://github.com/anomalyco/opencode), [Codex](https://github.com/openai/codex), and [Claude Code](https://github.com/anthropics/claude-code) that you should study first. No point reinventing something when you can learn from how production agents do it.

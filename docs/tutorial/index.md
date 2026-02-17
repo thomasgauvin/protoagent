@@ -1,6 +1,6 @@
 # Build Your Own Coding Agent
 
-I built ProtoAgent because I wanted to understand how coding agents actually work — not at a conceptual level, but at the "I can read every line of code" level. Production agents like [OpenCode](https://github.com/anomalyco/opencode), [Codex](https://github.com/openai/codex), and [pi-mono](https://github.com/badlogic/pi-mono) are impressive, but they're also tens of thousands of lines of code. Hard to learn from when you're starting from scratch.
+I built ProtoAgent because I wanted to understand how coding agents actually work — not at a conceptual level, but at the "I can read every line of code" level. Production agents like [OpenCode](https://github.com/anomalyco/opencode), [Codex](https://github.com/openai/codex), and [Claude Code](https://github.com/anthropics/claude-code) are impressive, but they're also tens of thousands of lines of code. Hard to learn from when you're starting from scratch.
 
 This tutorial walks you through building the same thing, step by step. Each part produces a runnable program. By the end, you'll have a fully functional coding agent — and more importantly, you'll understand exactly how it works.
 
@@ -8,7 +8,7 @@ This tutorial walks you through building the same thing, step by step. Each part
 
 You'll need:
 
-- Node.js 18+
+- Node.js 20+
 - An API key from OpenAI, Google Gemini, or Anthropic
 - Basic TypeScript knowledge
 - A terminal you're comfortable in
@@ -43,6 +43,6 @@ These parts take the agent from "works in a demo" to "actually useful day-to-day
 
 ## The philosophy
 
-ProtoAgent is intentionally minimal. The entire source is around 2,000 lines — small enough to read in an afternoon. Every design decision trades features for readability, because the goal isn't to build the best coding agent. It's to understand how they all work.
+`protoagent` is intentionally minimal. The entire source is around 2,000 lines — small enough to read in an afternoon. Every design decision trades features for readability, because the goal isn't to build the best coding agent. It's to understand how they all work.
 
-Production agents have sandboxing, LSP integration, session branching, plugin systems, and more. ProtoAgent skips all of that and focuses on the core mechanics that every agent shares. Once you understand those, extending in any direction is straightforward.
+Production agents have sandboxing, LSP integration, session branching, plugin systems, and more. `protoagent` skips all of that and focuses on the core mechanics that every agent shares. Once you understand those, extending in any direction is straightforward.

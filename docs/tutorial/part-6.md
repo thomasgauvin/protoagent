@@ -105,10 +105,10 @@ function isSafe(command: string): boolean {
 
   return SAFE_COMMANDS.some((safe) => {
     if (safe.includes(' ')) {
-      // Multi-word safe command: check prefix
+      // Multi-word safe command: check prefix (git status works, but git push doesn't)
       return trimmed.startsWith(safe);
     }
-    // Single-word: check first word
+    // Single-word: exact match on first word (ls is safe, but lsblk is not)
     return firstWord === safe;
   });
 }
@@ -232,6 +232,7 @@ Long-running commands get a two-stage timeout. First, SIGTERM -- a polite "pleas
 ```typescript
 const timer = setTimeout(() => {
   timedOut = true;
+  // SIGTERM gives the process a chance to clean up, then SIGKILL forces termination
   child.kill('SIGTERM');
   setTimeout(() => child.kill('SIGKILL'), 2000);
 }, timeoutMs);
@@ -274,6 +275,142 @@ Then there's the nuclear option: `--dangerously-accept-all`. It sets a boolean f
 
 Note that even `--dangerously-accept-all` doesn't override the dangerous command blocklist. That's Layer 1 -- the hard block in `runBash` happens *before* the approval check. `sudo` is never going to run, no matter what flags you pass.
 
-## Next up
+## Wiring it up: CLI and UI
 
-[Part 7: System Prompt](./part-7.md) -- where we teach the agent who it is, what project it's working in, and how to behave.
+The approval handler is registered in `src/App.tsx` during component initialization:
+
+```typescript
+useEffect(() => {
+  // Register approval handler for the approval system
+  setApprovalHandler(async (req: ApprovalRequest): Promise<ApprovalResponse> => {
+    return new Promise((resolve) => {
+      setApprovalRequest(req);
+      setApprovalResolve(() => resolve);
+    });
+  });
+
+  // Set dangerously-accept-all flag if passed in options
+  if (options.dangerouslyAcceptAll) {
+    setDangerouslyAcceptAll(true);
+  }
+  
+  // ... rest of config loading
+}, [options.dangerouslyAcceptAll]);
+```
+
+The CLI in `src/cli.tsx` offers the flag:
+
+```typescript
+program
+  .description('A simple coding agent CLI')
+  .version(packageJson.version)
+  .option('--log-level <level>', 'Set log level (DEBUG, INFO, WARN, ERROR)', 'INFO')
+  .option('--dangerously-accept-all', 'Auto-approve all file writes, edits, and shell commands (use with caution)');
+```
+
+The approval UI renders a modal with a text input for the user's choice:
+
+```typescript
+const renderApprovalModal = () => {
+  if (!approvalRequest) return null;
+
+  const handleApprove = (response: ApprovalResponse) => {
+    if (approvalResolve) {
+      approvalResolve(response);
+    }
+    setApprovalRequest(null);
+    setApprovalResolve(null);
+  };
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} marginY={1}>
+      <Text bold color="yellow">⚠️  Approval Required</Text>
+      <Text> </Text>
+      <Text>{approvalRequest.description}</Text>
+      {approvalRequest.detail && (
+        <Box marginY={0} flexDirection="column" paddingLeft={2}>
+          <Text dimColor>{approvalRequest.detail}</Text>
+        </Box>
+      )}
+      <Text> </Text>
+      <Text color="green">
+        [a] Approve once | [s] Approve for session | [r] Reject
+      </Text>
+      <TextInput
+        placeholder="Choose (a/s/r): "
+        onSubmit={(value) => {
+          const choice = value.trim().toLowerCase()[0];
+          if (choice === 'a') handleApprove('approve_once');
+          else if (choice === 's') handleApprove('approve_session');
+          else if (choice === 'r') handleApprove('reject');
+        }}
+        isDisabled={false}
+      />
+    </Box>
+  );
+};
+```
+
+## Test it out
+
+Run the development server:
+
+```bash
+npm run dev
+```
+
+Try asking the agent to run a test:
+
+```
+> run npm test
+```
+
+You should see an approval prompt asking whether to approve the command. You have three choices:
+
+- **[a] Approve once** — runs this one command, but the next unapproved command will prompt again
+- **[s] Approve for session** — runs this command and all future shell commands without asking
+- **[r] Reject** — blocks this command, agent gets an error and can try something else
+
+Try with the `--dangerously-accept-all` flag to skip all prompts:
+
+```bash
+npm run dev -- --dangerously-accept-all
+```
+
+Now shell commands run immediately. Try:
+
+```
+> npm list
+> git status
+> ls -la
+```
+
+But try to run something dangerous:
+
+```
+> sudo rm -rf /
+```
+
+Even with `--dangerously-accept-all`, this gets blocked at Layer 1. You'll see:
+
+```
+Error: Command blocked for security reasons: "sudo rm -rf /"
+```
+
+## Summary
+
+You now have shell command execution with tiered security:
+
+- **Hard-blocked commands** (rm -rf /, sudo, etc.) never run, no matter what
+- **Safe commands** (ls, grep, git status, npm list, etc.) run automatically
+- **Everything else** requires user approval: once, for the session, or rejected
+- **Session memory** means approving once approves the whole category for the session
+- **Timeout handling** prevents hung processes
+- **Output truncation** prevents flooding the context window
+- **Atomic error messages** let the agent recover from failed commands
+
+The agent can now run tests, check git status, list directories, and more -- all under your control.
+
+---
+
+Next up: [Part 7: System Prompt](./part-7.md) -- where we teach the agent who it is, what project it's working in, and how to behave.

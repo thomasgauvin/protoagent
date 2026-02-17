@@ -20,10 +20,10 @@ Let's get started. We're going to be scaffolding our project with the necessary 
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@inkjs/ui": "^0.6.0",
     "commander": "^14.0.1",
     "ink": "^6.3.1",
     "ink-big-text": "^2.0.0",
-    "ink-text-input": "^6.0.0",
     "react": "^19.1.1"
   },
   "devDependencies": {
@@ -39,7 +39,7 @@ Let's get started. We're going to be scaffolding our project with the necessary 
 2. We're going to install the necessary packages. [`Commander`](https://github.com/tj/commander.js) and [`Ink`](https://github.com/vadimdemedes/ink) will allow us to have a good interface and enable core functionality like copy-paste.
 
 ```bash
-npm install commander ink react ink-big-text ink-text-input
+npm install commander ink react ink-big-text @inkjs/ui
 npm install @types/node @types/react ink-testing-library tsx typescript --save-dev
 ```
 
@@ -80,18 +80,18 @@ render(<App options={options} />);
 ```jsx
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
-import TextInput from 'ink-text-input';
+import { TextInput } from '@inkjs/ui';
 import BigText from 'ink-big-text';
 import { OptionValues } from 'commander';
 
 export const App = (options: OptionValues) => {
   const [messages, setMessages] = useState<string[]>([]);
-  const [inputText, setInputText] = useState('');
+  const [inputKey, setInputKey] = useState(0);
 
   const handleSubmit = (value: string) => {
     if (value.trim() !== '') {
       setMessages((prevMessages) => [...prevMessages, value]);
-      setInputText('');
+      setInputKey(prev => prev + 1);
     }
   };
 
@@ -118,10 +118,9 @@ export const App = (options: OptionValues) => {
       </Box>
 
       <Box marginTop={1} borderStyle="single" borderColor="green" paddingX={1}>
-        <Text color="green"> {`>`} </Text>
+        <Text color="green"> ❯ </Text>
         <TextInput
-          value={inputText}
-          onChange={setInputText}
+          key={inputKey}
           placeholder="Type your message here..."
           onSubmit={handleSubmit}
         />
@@ -130,6 +129,29 @@ export const App = (options: OptionValues) => {
   );
 };
 ```
+
+5. Configure TypeScript by creating a `tsconfig.json` file in the root directory.
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "jsx": "react",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+We now have a pretty simple Ink and Commander project that will allow us to have simple command line argument parsing (by Commander) and a rich React-based interface for our CLI.
 
 5. Configure TypeScript by creating a `tsconfig.json` file in the root directory.
 

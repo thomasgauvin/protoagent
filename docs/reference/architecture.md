@@ -22,7 +22,7 @@ The CLI parses arguments and decides whether to show the main app or the config 
 
 The agentic loop is a plain TypeScript module that emits events — text deltas, tool calls, results, errors. The Ink component subscribes to these events and updates React state. This means you can test the loop without rendering anything, and you could swap the UI entirely without touching the core logic.
 
-This is the same pattern the production agents use. OpenCode writes to a store and the TUI subscribes via a bus. Codex sends events through a channel. pi-mono uses pub/sub. The principle is always the same: decouple the brain from the display.
+This is the same pattern the production agents use. OpenCode writes to a store and the TUI subscribes via a bus. Codex sends events through a channel. Claude Code uses pub/sub. The principle is always the same: decouple the brain from the display.
 
 ### Tools are self-describing
 

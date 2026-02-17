@@ -4,7 +4,7 @@ export default defineConfig({
   title: 'ProtoAgent',
   description: 'A minimal, tutorial-friendly AI coding agent CLI',
 
-  appearance: 'dark',
+  appearance: false,
 
   themeConfig: {
     nav: [

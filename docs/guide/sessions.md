@@ -39,6 +39,6 @@ Sessions are stored as plain JSON files. You can list them, inspect them, or del
 
 ## Why not something fancier?
 
-Production agents have more sophisticated session systems. Codex uses JSONL streaming with a session index. pi-mono has tree-structured entries with branching (like git for conversations). OpenCode uses a full storage layer with migrations.
+Production agents have more sophisticated session systems. Codex uses JSONL streaming with a session index. Claude Code has tree-structured entries with branching (like git for conversations). OpenCode uses a full storage layer with migrations.
 
 ProtoAgent goes with the simplest thing that works — serialize the messages array to JSON. It covers the main use case (resume a conversation) without the complexity. If you want branching or streaming persistence, those are great upgrade paths.

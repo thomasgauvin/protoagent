@@ -93,6 +93,7 @@ async send(method: string, params?: any): Promise<any> {
     const id = this.nextId++;
     const request: McpRequest = { jsonrpc: '2.0', id, method, params };
 
+    // Store resolve/reject in pending map — response handler will look up by id and resolve the promise
     this.pending.set(id, { resolve, reject });
 
     const timeout = setTimeout(() => {

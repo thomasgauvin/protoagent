@@ -167,7 +167,7 @@ async function compactConversation(
   model: string,
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
 ): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
-  // Separate system message, history to compress, and recent messages
+  // Preserve system message and recent context, compress everything in the middle
   const systemMessage = messages[0];
   const recentMessages = messages.slice(-RECENT_MESSAGES_TO_KEEP);
   const historyToCompress = messages.slice(1, messages.length - RECENT_MESSAGES_TO_KEEP);

@@ -19,7 +19,7 @@ hero:
 features:
   - title: "The Agentic Loop"
     icon: "🔄"
-    details: The same tool-use loop pattern that powers OpenCode, Codex, and pi-mono — stream an LLM response, execute tool calls, feed results back, repeat.
+    details: The same tool-use loop pattern that powers OpenCode, Codex, and Claude Code — stream an LLM response, execute tool calls, feed results back, repeat.
   - title: "File & Shell Tools"
     icon: "🛠"
     details: Read, write, edit, search files. Run shell commands with a safety whitelist so the agent can't rm -rf your project. Destructive ops ask for approval first.

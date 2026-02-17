@@ -14,7 +14,7 @@ The file will have the following structure:
 ```json
 {
   "provider": "openai",
-  "model": "gpt-4o-mini-2024-07-18",
+  "model": "gpt-5.1-codex-mini",
   "credentials": {
     "OPENAI_API_KEY": "sk-your-api-key-here"
   }
@@ -56,18 +56,39 @@ export const SUPPORTED_MODELS: ModelProvider[] = [
     name: 'OpenAI',
     models: [
       {
-        id: 'gpt-4o-mini',
-        name: 'GPT-4o mini',
-        contextWindow: 128000,
-        pricingPerMillionInput: 0.15,
-        pricingPerMillionOutput: 0.60,
+        id: 'gpt-5.2',
+        name: 'GPT-5.2',
+        contextWindow: 200000,
+        pricingPerMillionInput: 1.75,
+        pricingPerMillionOutput: 14.00,
       },
       {
-        id: 'gpt-4o',
-        name: 'GPT-4o',
-        contextWindow: 128000,
-        pricingPerMillionInput: 5.00,
-        pricingPerMillionOutput: 15.00,
+        id: 'gpt-5.2-codex',
+        name: 'GPT-5.2 Codex',
+        contextWindow: 200000,
+        pricingPerMillionInput: 1.75,
+        pricingPerMillionOutput: 14.00,
+      },
+      {
+        id: 'gpt-5.1-codex',
+        name: 'GPT-5.1 Codex',
+        contextWindow: 200000,
+        pricingPerMillionInput: 1.07,
+        pricingPerMillionOutput: 8.50,
+      },
+      {
+        id: 'gpt-5.1-codex-max',
+        name: 'GPT-5.1 Codex Max',
+        contextWindow: 200000,
+        pricingPerMillionInput: 1.25,
+        pricingPerMillionOutput: 10.00,
+      },
+      {
+        id: 'gpt-5.1-codex-mini',
+        name: 'GPT-5.1 Codex Mini',
+        contextWindow: 200000,
+        pricingPerMillionInput: 0.25,
+        pricingPerMillionOutput: 2.00,
       },
     ],
   },
@@ -76,11 +97,18 @@ export const SUPPORTED_MODELS: ModelProvider[] = [
     name: 'Google Gemini',
     models: [
       {
-        id: 'gemini-pro',
-        name: 'Gemini Pro',
-        contextWindow: 30720,
+        id: 'gemini-3-pro',
+        name: 'Gemini 3 Pro',
+        contextWindow: 1000000,
+        pricingPerMillionInput: 2.00,
+        pricingPerMillionOutput: 12.00,
+      },
+      {
+        id: 'gemini-3-flash',
+        name: 'Gemini 3 Flash',
+        contextWindow: 1000000,
         pricingPerMillionInput: 0.50,
-        pricingPerMillionOutput: 1.50,
+        pricingPerMillionOutput: 3.00,
       },
     ],
   },
@@ -89,25 +117,32 @@ export const SUPPORTED_MODELS: ModelProvider[] = [
     name: 'Anthropic Claude',
     models: [
       {
-        id: 'claude-3-haiku-20240307',
-        name: 'Claude 3 Haiku',
-        contextWindow: 200000,
-        pricingPerMillionInput: 0.25,
-        pricingPerMillionOutput: 1.25,
-      },
-      {
-        id: 'claude-3-sonnet-20240229',
-        name: 'Claude 3 Sonnet',
+        id: 'claude-sonnet-4-5',
+        name: 'Claude Sonnet 4.5',
         contextWindow: 200000,
         pricingPerMillionInput: 3.00,
         pricingPerMillionOutput: 15.00,
       },
       {
-        id: 'claude-3-opus-20240229',
-        name: 'Claude 3 Opus',
+        id: 'claude-haiku-4-5',
+        name: 'Claude Haiku 4.5',
         contextWindow: 200000,
-        pricingPerMillionInput: 15.00,
-        pricingPerMillionOutput: 75.00,
+        pricingPerMillionInput: 1.00,
+        pricingPerMillionOutput: 5.00,
+      },
+      {
+        id: 'claude-opus-4-5',
+        name: 'Claude Opus 4.5',
+        contextWindow: 200000,
+        pricingPerMillionInput: 5.00,
+        pricingPerMillionOutput: 25.00,
+      },
+      {
+        id: 'claude-opus-4-6',
+        name: 'Claude Opus 4.6',
+        contextWindow: 200000,
+        pricingPerMillionInput: 5.00,
+        pricingPerMillionOutput: 25.00,
       },
     ],
   },
@@ -382,6 +417,7 @@ Here's the updated `src/cli.tsx`:
 
 ```typescript
 #!/usr/bin/env node
+import React from 'react';
 import process from 'node:process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -413,12 +449,18 @@ program
   });
 
 const options = program.opts();
+const args = process.argv.slice(2);
 
-if (!program.commands.some(cmd => cmd.name() === program.args[0])) {
+// Check if the first argument is a known command or a help flag
+const isCommand = program.commands.some(cmd => cmd.name() === args[0]);
+const isHelp = args.includes('-h') || args.includes('--help') || args[0] === 'help';
+
+if (isCommand || isHelp) {
+  program.parse(process.argv);
+} else {
+  // If no command or help is requested, render the main App
   render(<App options={options} />);
 }
-
-program.parse(process.argv);
 ```
 
 ## 6. Update `src/App.tsx` to Use Configuration
@@ -449,6 +491,7 @@ export const App = (options: OptionValues) => {
     { role: 'system', content: 'You are ProtoAgent, a helpful AI coding assistant.' },
   ]);
   const [inputText, setInputText] = useState('');
+  const [inputKey, setInputKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -478,7 +521,7 @@ export const App = (options: OptionValues) => {
       const userMessage: Message = { role: 'user', content: value };
       const updatedMessages = [...messages, userMessage];
       setMessages(updatedMessages);
-      setInputText('');
+      setInputKey((prev) => prev + 1);
       setLoading(true);
 
       try {
@@ -547,6 +590,7 @@ export const App = (options: OptionValues) => {
       <Box marginTop={1} borderStyle="single" borderColor="green" paddingX={1}>
         <Text color="green"> {`>`} </Text>
         <TextInput
+          key={inputKey}
           value={inputText}
           onChange={setInputText}
           placeholder="Type your message here..."

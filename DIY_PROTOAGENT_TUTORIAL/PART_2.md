@@ -10,12 +10,12 @@ To securely use API keys, we'll use environment variables (just for development)
 OPENAI_API_KEY="your_openai_api_key_here"
 ```
 
-## 2. Install OpenAI and Dotenv
+## 2. Install OpenAI and UI Library
 
-We need to install the `openai` package to interact with the OpenAI API and `dotenv` to load our environment variables.
+We need to install the `openai` package for API access and `@inkjs/ui` for beautiful terminal UI components.
 
 ```bash
-npm install openai dotenv
+npm install openai dotenv @inkjs/ui
 ```
 
 ## 3. Configure `src/App.tsx` for Streaming Responses
@@ -27,7 +27,7 @@ Here's the updated `src/App.tsx`:
 ```typescript
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
-import TextInput from 'ink-text-input';
+import { TextInput } from '@inkjs/ui';
 import BigText from 'ink-big-text';
 import { OptionValues } from 'commander';
 import OpenAI from 'openai';
@@ -46,7 +46,7 @@ export const App = (options: OptionValues) => {
   const [messages, setMessages] = useState<Message[]>([
     { role: 'system', content: 'You are ProtoAgent, a helpful AI coding assistant.' },
   ]);
-  const [inputText, setInputText] = useState('');
+  const [inputKey, setInputKey] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (value: string) => {
@@ -54,7 +54,7 @@ export const App = (options: OptionValues) => {
       const userMessage: Message = { role: 'user', content: value };
       const updatedMessages = [...messages, userMessage];
       setMessages(updatedMessages);
-      setInputText('');
+      setInputKey(prev => prev + 1);
       setLoading(true);
 
       try {
@@ -118,13 +118,11 @@ export const App = (options: OptionValues) => {
       </Box>
 
       <Box marginTop={1} borderStyle="single" borderColor="green" paddingX={1}>
-        <Text color="green"> {`>`} </Text>
+        <Text color="green">❯ </Text>
         <TextInput
-          value={inputText}
-          onChange={setInputText}
+          key={inputKey}
           placeholder="Type your message here..."
           onSubmit={handleSubmit}
-          isDisabled={loading}
         />
       </Box>
     </Box>
