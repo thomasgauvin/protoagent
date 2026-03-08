@@ -1,57 +1,103 @@
 # Tools
 
-Tools are how the agent interacts with the world. When you ask ProtoAgent to "fix the failing test," it doesn't just generate text — it reads the test file, reads the source, edits the code, and runs the tests again. Each of those actions is a tool call.
+Tools are how ProtoAgent actually does work. The model can read files, edit code, run shell commands, fetch web content, update a TODO list, and call dynamically registered tools from MCP or the skills system.
 
 ## How tools work
 
-Every tool has two parts: a JSON schema that tells the LLM what the tool does and what parameters it needs, and a handler function that actually does the work. The LLM decides when to call a tool and generates the arguments — ProtoAgent executes it and feeds the result back.
+Each tool has:
 
-This is the same pattern that OpenCode, Codex, and Claude Code all use. It's the standard way coding agents work.
+- a JSON schema shown to the model
+- a handler function that performs the work
+
+When the model calls a tool, ProtoAgent executes it, captures the result, and feeds that result back into the conversation.
+
+## Built-in tools
+
+ProtoAgent currently ships with:
+
+- `read_file`
+- `write_file`
+- `edit_file`
+- `list_directory`
+- `search_files`
+- `bash`
+- `todo_read`
+- `todo_write`
+- `webfetch`
+
+Dynamic tools can also be registered by MCP servers, and the skills system can register `activate_skill` when skills are available.
 
 ## File tools
 
-### read_file
+### `read_file`
 
-Reads a file and returns its contents with line numbers. Supports offset and limit for large files — the agent doesn't need to read a 10,000 line file all at once.
+Reads a file and returns line-numbered output. It supports `offset` and `limit` for chunked reads. The tool schema describes `offset` as 0-based, while returned line numbers stay 1-based.
 
-### write_file
+### `write_file`
 
-Creates a new file or overwrites an existing one. This requires your approval before it runs. Under the hood, it uses atomic writes (write to a temp file, then rename) so you don't end up with half-written files if something goes wrong.
+Creates or overwrites a file. It requires approval in normal interactive use, creates parent directories if needed, and writes atomically through a temporary file plus rename.
 
-### edit_file
+### `edit_file`
 
-Find-and-replace in an existing file. The agent provides the exact string to find and what to replace it with. It validates that the search string exists exactly once — if it's ambiguous, the edit fails and the agent has to be more specific. Also requires approval.
+Performs exact-string find-and-replace in an existing file. It fails if the old string is missing or the occurrence count does not match `expected_replacements`. Like `write_file`, it uses approval plus an atomic temp-file swap.
 
-### list_directory
+### `list_directory`
 
-Lists the contents of a directory with `[FILE]` and `[DIR]` prefixes so the agent can tell what's what.
+Lists directory contents with `[DIR]` and `[FILE]` prefixes.
 
-### search_files
+### `search_files`
 
-Recursively searches for text across files. Supports case sensitivity and filtering by file extension. This is how the agent explores a codebase it hasn't seen before.
+Recursively searches files using a regular expression, not literal-text matching. It supports optional extension filtering, defaults to case-sensitive search, skips common build/noise directories, and caps results at 100 matches.
 
 ## Shell tool
 
-### bash
+### `bash`
 
-Runs a shell command. This is where security gets important, so commands are classified into three tiers:
+`bash` uses a three-tier safety model:
 
-1. **Safe** (auto-approved): `ls`, `find`, `grep`, `git status`, `cat`, `pwd` — read-only stuff.
-2. **Dangerous** (blocked): `rm -rf /`, `sudo`, `dd`, `mkfs` — things that could ruin your day.
-3. **Everything else**: requires your approval. You can approve once, or approve for the rest of the session.
+1. hard-blocked dangerous patterns are always denied
+2. a narrow set of safe commands runs without approval
+3. everything else asks for approval
 
-If you're feeling brave (or running in CI), the `--dangerously-accept-all` flag skips all prompts.
+Current auto-approved commands are intentionally limited. They include things like:
 
-## Task tracking
+- `pwd`
+- `whoami`
+- `date`
+- `git status`, `git log`, `git diff`, `git branch`, `git show`, `git remote`
+- `npm list`, `npm ls`, `yarn list`
+- version commands like `node --version`
 
-### todo_read / todo_write
+Important detail: many common read-style commands such as `ls`, `cat`, `grep`, `rg`, `find`, `awk`, and `sed` are *not* auto-approved in the current implementation.
 
-An in-memory task list the agent uses to plan multi-step work. When you ask it to do something complex — like "refactor this module and update the tests" — it breaks the work into steps and tracks its own progress. It's a simple tool, but it makes a real difference in how reliably the agent completes multi-step tasks.
+Hard-blocked patterns include commands such as `rm -rf /`, `sudo`, `dd if=`, `mkfs`, and `fdisk`.
+
+## TODO tools
+
+### `todo_read` and `todo_write`
+
+These tools let the agent plan and track multi-step work. TODOs are stored per session in memory, and the main app also persists them with session state so they survive resume.
+
+`todo_write` replaces the full list each time.
+
+## Web fetching
+
+### `webfetch`
+
+Fetches a single HTTP or HTTPS URL and returns processed content as JSON. Supported formats are:
+
+- `text`
+- `markdown`
+- `html`
+
+See [Web Fetch](/guide/webfetch) for limits and return shape.
 
 ## Path security
 
-Every file tool validates that the target path resolves to within your current working directory. Symlinks are resolved before checking. The agent can't read your `~/.ssh` or write to `/etc` — it's restricted to the project you're working in.
+File tools validate paths against the working directory and resolve symlinks before allowing access.
 
-## MCP tools
+The skills system can also add discovered skill directories as extra readable roots so bundled `scripts/`, `references/`, and `assets/` files can be used safely.
 
-You can also add tools from external servers via [MCP](/guide/mcp). These show up alongside the built-in tools — the agent doesn't know or care whether a tool is built-in or comes from an MCP server.
+## Approvals
+
+Writes, edits, and non-safe shell commands all flow through the approval system. See [Approvals](/guide/approvals) for the exact behavior.

@@ -1,58 +1,100 @@
 # Skills
 
-Here's a common problem with coding agents: you want the agent to follow your project's conventions, but it doesn't know about them. It uses npm when you use pnpm. It writes default exports when your codebase uses named exports. It puts tests in a `__tests__` folder when you co-locate them.
+Skills let you package project-specific instructions outside the core app so ProtoAgent can follow local conventions without hardcoding them.
 
-Skills fix this. You drop a markdown file into your project, and ProtoAgent reads it as instructions.
+## Skill format
 
-## What a skill looks like
+A skill lives in its own directory and must contain `SKILL.md`.
 
-A skill is just a `.md` file. Here's an example — say you create `.protoagent/skills/code-style.md`:
+Example layout:
+
+```text
+.agents/skills/code-style/
+└── SKILL.md
+```
+
+Example `SKILL.md`:
 
 ```markdown
-# Code Style
+---
+name: code-style
+description: Follow the project's TypeScript and export conventions.
+---
 
 - Use TypeScript strict mode
 - Prefer named exports over default exports
 - Use camelCase for variables and functions
 - Use PascalCase for types and interfaces
-- Always add JSDoc comments to public functions
 ```
 
-That's it. ProtoAgent reads this on startup and injects it into the system prompt. The agent sees these instructions alongside its core guidelines and follows them.
+Current validation rules:
 
-## Where to put skills
+- the file must start with YAML frontmatter
+- `name` is required
+- `description` is required
+- the skill name must be lowercase kebab-case
+- the skill directory name must match the skill name exactly
 
-ProtoAgent looks in two places:
+## Discovery locations
 
-1. **Project-level**: `.protoagent/skills/` in your project directory
-2. **Global**: `~/.config/protoagent/skills/`
+ProtoAgent scans these roots for skill directories.
 
-If a project skill and a global skill have the same filename, the project skill wins. This lets you have sensible global defaults that individual projects can override.
+Project roots:
 
-## Some ideas
+- `.agents/skills/`
+- `.protoagent/skills/`
 
-**Package manager** (`.protoagent/skills/package-manager.md`):
-```markdown
-Always use pnpm for package management. Never use npm or yarn.
-Use `pnpm install` to install, `pnpm add` to add dependencies.
-```
+User roots:
 
-**Testing conventions** (`.protoagent/skills/testing.md`):
-```markdown
-This project uses Vitest for testing.
-Test files are co-located with source files using the .test.ts suffix.
-Always run `pnpm test` after making changes.
-```
+- `~/.agents/skills/`
+- `~/.protoagent/skills/`
+- `~/.config/protoagent/skills/`
 
-**API patterns** (`.protoagent/skills/api.md`):
-```markdown
-All API routes are in src/routes/.
-Use Zod for request validation.
-Always return proper HTTP status codes — don't just throw 500 for everything.
-```
+If a project skill and user skill share the same name, the later project-level version wins.
 
-## How it works under the hood
+## How activation works
 
-On startup, ProtoAgent scans both skill directories for `.md` files, reads their content, and appends it to the system prompt under a "Skills" section. The filename (minus `.md`) becomes the skill name.
+ProtoAgent does not inject every skill body into the prompt up front.
 
-It's intentionally simple. Production agents like OpenCode and Codex have fancier skill systems with frontmatter parsing, dependencies, and on-demand loading. ProtoAgent keeps it to the essentials — file discovery and prompt injection — because that covers 90% of what you actually need.
+Instead it:
+
+1. discovers and validates skills
+2. adds a catalog of available skills to the system prompt
+3. registers the `activate_skill` tool if at least one skill exists
+4. lets the model load the full skill only when needed
+
+That keeps the base prompt smaller while still exposing skills to the model.
+
+## Skill resources
+
+ProtoAgent can list bundled files under these directories inside a skill folder:
+
+- `scripts/`
+- `references/`
+- `assets/`
+
+The skills system also adds discovered skill directories to the readable path allowlist, so file tools can access those bundled resources safely.
+
+## Supported frontmatter fields
+
+The current loader understands:
+
+- `name`
+- `description`
+- `compatibility`
+- `license`
+- `metadata`
+- `allowed-tools`
+
+`allowed-tools` is parsed into metadata, but it is not currently enforced as a permission boundary.
+
+## What activation returns
+
+`activate_skill` returns a `<skill_content ...>` block that includes:
+
+- the skill body
+- the skill directory
+- guidance about resolving relative paths
+- an optional `<skill_resources>` listing
+
+The compaction system also preserves activated skill payloads when summarizing long conversations.

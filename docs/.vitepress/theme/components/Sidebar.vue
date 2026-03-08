@@ -1,125 +1,121 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useData, useRouter } from 'vitepress'
 
 const { site } = useData()
 const router = useRouter()
 
-const siteConfig = site.value.themeConfig as any
-
-const getActiveSidebar = () => {
+const activeSidebar = computed(() => {
+  const sidebar = (site.value.themeConfig as { sidebar?: Record<string, any[]> }).sidebar || {}
   const path = router.route.path
-  for (const [key, items] of Object.entries(siteConfig?.sidebar || {})) {
-    if (path.startsWith(key)) {
-      return items
-    }
+
+  for (const [prefix, items] of Object.entries(sidebar)) {
+    if (path.startsWith(prefix)) return items
   }
+
   return []
-}
+})
 
-const activeSidebar = getActiveSidebar()
+const flatItems = computed(() => {
+  const result: Array<{ text: string; link?: string; level: 0 | 1 }> = []
 
-const isActive = (link: string) => {
-  return router.route.path === link || router.route.path.startsWith(link)
-}
-
-const flattenItems = (items: any[]): any[] => {
-  const result: any[] = []
-  items.forEach(item => {
-    if (item.items) {
-      result.push({
-        text: item.text,
-        level: 0,
-      })
+  activeSidebar.value.forEach((item: any) => {
+    if (item.items?.length) {
+      result.push({ text: item.text, level: 0 })
       item.items.forEach((child: any) => {
-        result.push({
-          text: child.text,
-          link: child.link,
-          level: 1,
-        })
+        result.push({ text: child.text, link: child.link, level: 1 })
       })
     }
   })
-  return result
-}
 
-const flatItems = flattenItems(activeSidebar as any[])
+  return result
+})
+
+const isActive = (link?: string) => !!link && router.route.path.startsWith(link)
 </script>
 
 <template>
-  <aside class="vp-sidebar">
-    <div class="vp-sidebar-inner">
-      <div class="vp-sidebar-group" v-for="item in flatItems" :key="item.text">
-        <div v-if="item.level === 0" class="vp-sidebar-group-title">{{ item.text }}</div>
+  <aside class="pa-sidebar">
+    <div class="pa-sidebar-inner">
+      <div class="pa-sidebar-title">// MODULE INDEX</div>
+
+      <template v-for="item in flatItems" :key="`${item.level}-${item.text}`">
+        <div v-if="item.level === 0" class="pa-sidebar-group">{{ item.text }}</div>
         <a
           v-else
           :href="item.link"
-          class="vp-sidebar-link"
+          class="pa-sidebar-link"
           :class="{ active: isActive(item.link) }"
         >
           {{ item.text }}
         </a>
-      </div>
+      </template>
     </div>
   </aside>
 </template>
 
 <style scoped>
-.vp-sidebar {
+.pa-sidebar {
   position: fixed;
+  top: var(--nav-height);
   left: 0;
-  top: 52px;
-  width: 240px;
-  height: calc(100vh - 52px);
-  border-right: 1px solid var(--border);
-  background: var(--black);
+  width: var(--sidebar-width);
+  height: calc(100vh - var(--nav-height));
+  border-right: 1px solid var(--border-strong);
+  background: rgba(4, 10, 6, 0.92);
+  box-shadow: inset -1px 0 0 rgba(114, 255, 140, 0.04);
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
 }
 
-.vp-sidebar-inner {
-  padding: 20px 0;
+.pa-sidebar-inner {
+  padding: 18px 0 32px;
 }
 
-.vp-sidebar-group-title {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
+.pa-sidebar-title,
+.pa-sidebar-group {
+  padding: 10px 20px;
   color: var(--text-dim);
-  padding: 12px 20px 8px;
-  margin-top: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
 }
 
-.vp-sidebar-group-title:first-child {
-  margin-top: 0;
+.pa-sidebar-title {
+  font-family: var(--display);
+  font-size: 1.55rem;
+  color: var(--green);
+  text-shadow: 0 0 10px var(--green-glow);
 }
 
-.vp-sidebar-link {
+.pa-sidebar-group {
+  margin-top: 10px;
+  font-size: 0.76rem;
+}
+
+.pa-sidebar-link {
   display: block;
-  font-family: var(--mono);
-  font-size: 0.8rem;
+  padding: 11px 20px 11px 26px;
+  border-left: 2px solid transparent;
   color: var(--text);
   text-decoration: none;
-  padding: 10px 20px;
-  border-left: 2px solid transparent;
-  transition: all 0.15s;
-  letter-spacing: 0.01em;
+  font-size: 0.86rem;
+  line-height: 1.4;
+  transition: all 0.15s ease;
 }
 
-.vp-sidebar-link:hover {
-  color: var(--text-bright);
-  background: rgba(0, 255, 136, 0.05);
+.pa-sidebar-link:hover {
+  background: rgba(114, 255, 140, 0.06);
+  color: var(--green-bright);
 }
 
-.vp-sidebar-link.active {
-  color: var(--accent);
-  border-left-color: var(--accent);
-  font-weight: 600;
+.pa-sidebar-link.active {
+  border-left-color: var(--green);
+  background: rgba(114, 255, 140, 0.08);
+  color: var(--green);
+  text-shadow: 0 0 8px rgba(114, 255, 140, 0.18);
 }
 
-@media (max-width: 768px) {
-  .vp-sidebar {
+@media (max-width: 960px) {
+  .pa-sidebar {
     display: none;
   }
 }

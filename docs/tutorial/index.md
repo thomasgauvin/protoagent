@@ -1,48 +1,40 @@
 # Build Your Own Coding Agent
 
-I built ProtoAgent because I wanted to understand how coding agents actually work — not at a conceptual level, but at the "I can read every line of code" level. Production agents like [OpenCode](https://github.com/anomalyco/opencode), [Codex](https://github.com/openai/codex), and [Claude Code](https://github.com/anthropics/claude-code) are impressive, but they're also tens of thousands of lines of code. Hard to learn from when you're starting from scratch.
-
-This tutorial walks you through building the same thing, step by step. Each part produces a runnable program. By the end, you'll have a fully functional coding agent — and more importantly, you'll understand exactly how it works.
+This tutorial mirrors the same feature set that exists in the current `src/` tree, but it stays focused on the concepts and module boundaries rather than trying to inline every current source file verbatim.
 
 ## Before you start
 
-You'll need:
+You'll want:
 
 - Node.js 20+
-- An API key from OpenAI, Google Gemini, or Anthropic
-- Basic TypeScript knowledge
-- A terminal you're comfortable in
+- an API key for one of the supported providers
+- basic TypeScript knowledge
+- comfort with the terminal and React-style state management
 
 ## The parts
 
 ### Foundation
 
-These first three parts get you from zero to a working chatbot.
-
-1. **[Scaffolding](/tutorial/part-1)** — Set up a CLI with Commander and an Ink-based terminal UI.
-2. **[AI Integration](/tutorial/part-2)** — Connect to the OpenAI API and stream chat completions.
-3. **[Configuration](/tutorial/part-3)** — Build a setup wizard for provider and model selection.
+1. **[Scaffolding](/tutorial/part-1)** — Commander, Ink, and the basic CLI shell
+2. **[AI Integration](/tutorial/part-2)** — OpenAI SDK streaming and message flow
+3. **[Configuration](/tutorial/part-3)** — provider/model selection and persisted config
 
 ### Core agent
 
-This is where the chatbot becomes an agent. The agentic loop is the key — once you understand it, everything else is just adding tools.
-
-4. **[The Agentic Loop](/tutorial/part-4)** — The tool-use loop pattern that powers every coding agent.
-5. **[File Tools](/tutorial/part-5)** — Read, write, edit, and search files with path security.
-6. **[Shell Commands](/tutorial/part-6)** — Run commands safely with a whitelist and approval system.
-7. **[System Prompt](/tutorial/part-7)** — Make the agent aware of the project it's working in.
+4. **[The Agentic Loop](/tutorial/part-4)** — the tool-use loop, streaming events, retries, and termination
+5. **[File Tools](/tutorial/part-5)** — read, write, edit, list, search, and path validation
+6. **[Shell Commands](/tutorial/part-6)** — `bash`, approvals, and command safety tiers
+7. **[System Prompt](/tutorial/part-7)** — project context, tool descriptions, and skills catalog
 
 ### Making it useful
 
-These parts take the agent from "works in a demo" to "actually useful day-to-day."
+8. **[Compaction & Cost Tracking](/tutorial/part-8)** — token estimates, cost display, and long-context compaction
+9. **[Skills & Sessions](/tutorial/part-9)** — `SKILL.md` discovery, activation, and persisted sessions
+10. **[MCP & Sub-agents](/tutorial/part-10)** — remote tools plus isolated child runs
+11. **[Polish & UI](/tutorial/part-11)** — approvals, collapsible rendering, formatted output, logging, and usability details
 
-8. **[Compaction & Cost Tracking](/tutorial/part-8)** — Handle long conversations and track API spending.
-9. **[Skills & Sessions](/tutorial/part-9)** — Customise behaviour with markdown files. Save and resume conversations.
-10. **[MCP & Sub-agents](/tutorial/part-10)** — Connect external tool servers. Spawn isolated child sessions.
-11. **[Polish & UI](/tutorial/part-11)** — Final touches that make the difference.
+## Philosophy
 
-## The philosophy
+ProtoAgent is intentionally small, but the current codebase is no longer a tiny toy. It now includes sessions, TODO persistence, web fetching, MCP, skills activation, sub-agents, compaction, and a richer terminal UI.
 
-`protoagent` is intentionally minimal. The entire source is around 2,000 lines — small enough to read in an afternoon. Every design decision trades features for readability, because the goal isn't to build the best coding agent. It's to understand how they all work.
-
-Production agents have sandboxing, LSP integration, session branching, plugin systems, and more. `protoagent` skips all of that and focuses on the core mechanics that every agent shares. Once you understand those, extending in any direction is straightforward.
+The point of this tutorial is still the same: understand the core mechanics well enough that the full codebase feels approachable.

@@ -16,8 +16,13 @@ import { listDirectoryTool, listDirectory } from './list-directory.js';
 import { searchFilesTool, searchFiles } from './search-files.js';
 import { bashTool, runBash } from './bash.js';
 import { todoReadTool, todoWriteTool, readTodos, writeTodos } from './todo.js';
+import { webfetchTool, webfetch } from './webfetch.js';
 
-export { setDangerouslyAcceptAll, setApprovalHandler } from '../utils/approval.js';
+export { setDangerouslyAcceptAll, setApprovalHandler, clearApprovalHandler } from '../utils/approval.js';
+
+export interface ToolCallContext {
+  sessionId?: string;
+}
 
 // All tool definitions — passed to the LLM
 export const tools = [
@@ -29,13 +34,29 @@ export const tools = [
   bashTool,
   todoReadTool,
   todoWriteTool,
+  webfetchTool,
 ];
 
-// Mutable tools list — MCP and sub-agent tools get appended at runtime
-let dynamicTools: typeof tools = [];
+export type DynamicTool = {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+};
 
-export function registerDynamicTool(tool: (typeof tools)[number]): void {
+// Mutable tools list — MCP and sub-agent tools get appended at runtime
+let dynamicTools: DynamicTool[] = [];
+
+export function registerDynamicTool(tool: DynamicTool): void {
+  const toolName = tool.function.name;
+  dynamicTools = dynamicTools.filter((existing) => existing.function.name !== toolName);
   dynamicTools.push(tool);
+}
+
+export function unregisterDynamicTool(toolName: string): void {
+  dynamicTools = dynamicTools.filter((tool) => tool.function.name !== toolName);
 }
 
 export function clearDynamicTools(): void {
@@ -53,29 +74,37 @@ export function registerDynamicHandler(name: string, handler: (args: any) => Pro
   dynamicHandlers.set(name, handler);
 }
 
+export function unregisterDynamicHandler(name: string): void {
+  dynamicHandlers.delete(name);
+}
+
 /**
  * Dispatch a tool call to the appropriate handler.
  * Returns the tool result as a string.
  */
-export async function handleToolCall(toolName: string, args: any): Promise<string> {
+export async function handleToolCall(toolName: string, args: any, context: ToolCallContext = {}): Promise<string> {
   try {
     switch (toolName) {
       case 'read_file':
         return await readFile(args.file_path, args.offset, args.limit);
       case 'write_file':
-        return await writeFile(args.file_path, args.content);
+        return await writeFile(args.file_path, args.content, context.sessionId);
       case 'edit_file':
-        return await editFile(args.file_path, args.old_string, args.new_string, args.expected_replacements);
+        return await editFile(args.file_path, args.old_string, args.new_string, args.expected_replacements, context.sessionId);
       case 'list_directory':
         return await listDirectory(args.directory_path);
       case 'search_files':
         return await searchFiles(args.search_term, args.directory_path, args.case_sensitive, args.file_extensions);
       case 'bash':
-        return await runBash(args.command, args.timeout_ms);
+        return await runBash(args.command, args.timeout_ms, context.sessionId);
       case 'todo_read':
-        return readTodos();
+        return readTodos(context.sessionId);
       case 'todo_write':
-        return writeTodos(args.todos);
+        return writeTodos(args.todos, context.sessionId);
+      case 'webfetch': {
+        const result = await webfetch(args.url, args.format, args.timeout);
+        return JSON.stringify(result);
+      }
       default: {
         // Check dynamic handlers (MCP tools, sub-agent tools)
         const handler = dynamicHandlers.get(toolName);

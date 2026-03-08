@@ -1,8 +1,9 @@
 /**
- * todo_read / todo_write tools — In-memory task tracking.
+ * todo_read / todo_write tools - in-memory task tracking.
  *
  * The agent uses these to plan multi-step work and track progress.
- * Todos are session-scoped and not persisted to disk.
+ * Todos are stored per session. The active session can also persist them
+ * through the session store.
  */
 
 export interface TodoItem {
@@ -12,8 +13,34 @@ export interface TodoItem {
   priority: 'high' | 'medium' | 'low';
 }
 
+const DEFAULT_SESSION_ID = '__default__';
+
 // Session-scoped in-memory storage
-let todos: TodoItem[] = [];
+const todosBySession = new Map<string, TodoItem[]>();
+
+function getSessionKey(sessionId?: string): string {
+  return sessionId ?? DEFAULT_SESSION_ID;
+}
+
+function cloneTodos(todos: TodoItem[]): TodoItem[] {
+  return todos.map((todo) => ({ ...todo }));
+}
+
+function formatTodos(todos: TodoItem[], heading: string): string {
+  if (todos.length === 0) {
+    return `${heading}\nNo TODOs.`;
+  }
+
+  const statusIcons: Record<TodoItem['status'], string> = {
+    pending: '[ ]',
+    in_progress: '[~]',
+    completed: '[x]',
+    cancelled: '[-]',
+  };
+
+  const lines = todos.map((t) => `${statusIcons[t.status]} [${t.priority}] ${t.content} (${t.id})`);
+  return `${heading}\n${lines.join('\n')}`;
+}
 
 export const todoReadTool = {
   type: 'function' as const,
@@ -64,27 +91,25 @@ export const todoWriteTool = {
   },
 };
 
-export function readTodos(): string {
-  if (todos.length === 0) {
-    return 'No TODOs. Use todo_write to create a plan.';
-  }
-
-  const statusIcons: Record<string, string> = {
-    pending: '[ ]',
-    in_progress: '[~]',
-    completed: '[x]',
-    cancelled: '[-]',
-  };
-
-  const lines = todos.map((t) => `${statusIcons[t.status]} [${t.priority}] ${t.content} (${t.id})`);
-  return `TODO List (${todos.length} items):\n${lines.join('\n')}`;
+export function readTodos(sessionId?: string): string {
+  const todos = todosBySession.get(getSessionKey(sessionId)) ?? [];
+  return formatTodos(todos, `TODO List (${todos.length} items):`);
 }
 
-export function writeTodos(newTodos: TodoItem[]): string {
-  todos = newTodos;
-  return `TODO list updated (${todos.length} items).`;
+export function writeTodos(newTodos: TodoItem[], sessionId?: string): string {
+  const todos = cloneTodos(newTodos);
+  todosBySession.set(getSessionKey(sessionId), todos);
+  return formatTodos(todos, `TODO List Updated (${todos.length} items):`);
 }
 
-export function clearTodos(): void {
-  todos = [];
+export function getTodosForSession(sessionId?: string): TodoItem[] {
+  return cloneTodos(todosBySession.get(getSessionKey(sessionId)) ?? []);
+}
+
+export function setTodosForSession(sessionId: string, todos: TodoItem[]): void {
+  todosBySession.set(getSessionKey(sessionId), cloneTodos(todos));
+}
+
+export function clearTodos(sessionId?: string): void {
+  todosBySession.delete(getSessionKey(sessionId));
 }

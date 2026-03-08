@@ -19,13 +19,15 @@ export type ApprovalRequest = {
   type: 'file_write' | 'file_edit' | 'shell_command';
   description: string;
   detail?: string;
+  sessionId?: string;
+  sessionScopeKey?: string;
 };
 
 export type ApprovalResponse = 'approve_once' | 'approve_session' | 'reject';
 
 // Global state
 let dangerouslyAcceptAll = false;
-const sessionApprovals = new Set<string>(); // stores approval types like "file_write", "file_edit", "shell:npm", etc.
+const sessionApprovals = new Set<string>(); // stores approval keys scoped by session
 
 // Callback that the Ink UI provides to handle interactive approval
 let approvalHandler: ((req: ApprovalRequest) => Promise<ApprovalResponse>) | null = null;
@@ -42,8 +44,18 @@ export function setApprovalHandler(handler: (req: ApprovalRequest) => Promise<Ap
   approvalHandler = handler;
 }
 
+export function clearApprovalHandler(): void {
+  approvalHandler = null;
+}
+
 export function clearSessionApprovals(): void {
   sessionApprovals.clear();
+}
+
+function getApprovalScopeKey(req: ApprovalRequest): string {
+  const sessionId = req.sessionId ?? '__global__';
+  const scope = req.sessionScopeKey ?? req.type;
+  return `${sessionId}:${scope}`;
 }
 
 /**
@@ -53,17 +65,16 @@ export function clearSessionApprovals(): void {
  *  1. --dangerously-accept-all → auto-approve
  *  2. Session approval for this type → auto-approve
  *  3. Interactive prompt via the UI handler
- *  4. No handler registered → auto-approve (non-interactive mode)
+ *  4. No handler registered → reject (fail closed)
  */
 export async function requestApproval(req: ApprovalRequest): Promise<boolean> {
   if (dangerouslyAcceptAll) return true;
 
-  const sessionKey = req.type;
+  const sessionKey = getApprovalScopeKey(req);
   if (sessionApprovals.has(sessionKey)) return true;
 
   if (!approvalHandler) {
-    // No interactive UI — auto-approve (e.g., running in tests or non-interactive mode)
-    return true;
+    return false;
   }
 
   const response = await approvalHandler(req);

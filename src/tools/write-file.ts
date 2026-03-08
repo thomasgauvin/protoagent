@@ -4,7 +4,6 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { validatePath } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
 
@@ -24,7 +23,7 @@ export const writeFileTool = {
   },
 };
 
-export async function writeFile(filePath: string, content: string): Promise<string> {
+export async function writeFile(filePath: string, content: string, sessionId?: string): Promise<string> {
   const validated = await validatePath(filePath);
 
   // Request approval
@@ -37,6 +36,8 @@ export async function writeFile(filePath: string, content: string): Promise<stri
     type: 'file_write',
     description: `Write file: ${filePath}`,
     detail: preview,
+    sessionId,
+    sessionScopeKey: `file_write:${validated}`,
   });
 
   if (!approved) {
@@ -47,9 +48,13 @@ export async function writeFile(filePath: string, content: string): Promise<stri
   await fs.mkdir(path.dirname(validated), { recursive: true });
 
   // Atomic write: write to temp file then rename
-  const tmpPath = path.join(os.tmpdir(), `protoagent-${Date.now()}-${path.basename(validated)}`);
-  await fs.writeFile(tmpPath, content, 'utf8');
-  await fs.rename(tmpPath, validated);
+  const tmpPath = path.join(path.dirname(validated), `.protoagent-write-${process.pid}-${Date.now()}-${path.basename(validated)}`);
+  try {
+    await fs.writeFile(tmpPath, content, 'utf8');
+    await fs.rename(tmpPath, validated);
+  } finally {
+    await fs.rm(tmpPath, { force: true }).catch(() => undefined);
+  }
 
   const lines = content.split('\n').length;
   return `Successfully wrote ${lines} lines to ${filePath}`;

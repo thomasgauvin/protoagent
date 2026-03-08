@@ -11,8 +11,25 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { chmodSync } from 'node:fs';
 import type OpenAI from 'openai';
+import type { TodoItem } from './tools/todo.js';
 import { logger } from './utils/logger.js';
+
+const SESSION_DIR_MODE = 0o700;
+const SESSION_FILE_MODE = 0o600;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function hardenPermissions(targetPath: string, mode: number): void {
+  if (process.platform === 'win32') return;
+  chmodSync(targetPath, mode);
+}
+
+function assertValidSessionId(id: string): void {
+  if (!SESSION_ID_PATTERN.test(id)) {
+    throw new Error(`Invalid session ID: ${id}`);
+  }
+}
 
 export interface Session {
   id: string;
@@ -21,7 +38,8 @@ export interface Session {
   updatedAt: string;
   model: string;
   provider: string;
-  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+  todos: TodoItem[];
+  completionMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
 }
 
 export interface SessionSummary {
@@ -30,6 +48,30 @@ export interface SessionSummary {
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+}
+
+export function ensureSystemPromptAtTop(
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  systemPrompt: string
+): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  const firstSystemIndex = messages.findIndex((message) => message.role === 'system');
+
+  if (firstSystemIndex === -1) {
+    return [{ role: 'system', content: systemPrompt } as OpenAI.Chat.Completions.ChatCompletionMessageParam, ...messages];
+  }
+
+  const firstSystemMessage = messages[firstSystemIndex] as OpenAI.Chat.Completions.ChatCompletionMessageParam;
+  const normalizedSystemMessage = {
+    ...firstSystemMessage,
+    role: 'system',
+    content: systemPrompt,
+  } as OpenAI.Chat.Completions.ChatCompletionMessageParam;
+
+  return [
+    normalizedSystemMessage,
+    ...messages.slice(0, firstSystemIndex),
+    ...messages.slice(firstSystemIndex + 1),
+  ];
 }
 
 function getSessionsDir(): string {
@@ -42,11 +84,13 @@ function getSessionsDir(): string {
 
 async function ensureSessionsDir(): Promise<string> {
   const dir = getSessionsDir();
-  await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(dir, { recursive: true, mode: SESSION_DIR_MODE });
+  hardenPermissions(dir, SESSION_DIR_MODE);
   return dir;
 }
 
 function sessionPath(id: string): string {
+  assertValidSessionId(id);
   return path.join(getSessionsDir(), `${id}.json`);
 }
 
@@ -59,7 +103,8 @@ export function createSession(model: string, provider: string): Session {
     updatedAt: new Date().toISOString(),
     model,
     provider,
-    messages: [],
+    todos: [],
+    completionMessages: [],
   };
 }
 
@@ -68,7 +113,8 @@ export async function saveSession(session: Session): Promise<void> {
   await ensureSessionsDir();
   session.updatedAt = new Date().toISOString();
   const filePath = sessionPath(session.id);
-  await fs.writeFile(filePath, JSON.stringify(session, null, 2), 'utf8');
+  await fs.writeFile(filePath, JSON.stringify(session, null, 2), { encoding: 'utf8', mode: SESSION_FILE_MODE });
+  hardenPermissions(filePath, SESSION_FILE_MODE);
   logger.debug(`Session saved: ${session.id}`);
 }
 
@@ -76,7 +122,17 @@ export async function saveSession(session: Session): Promise<void> {
 export async function loadSession(id: string): Promise<Session | null> {
   try {
     const content = await fs.readFile(sessionPath(id), 'utf8');
-    return JSON.parse(content) as Session;
+    const session = JSON.parse(content) as Partial<Session>;
+    return {
+      id: session.id ?? id,
+      title: session.title ?? 'New session',
+      createdAt: session.createdAt ?? new Date().toISOString(),
+      updatedAt: session.updatedAt ?? new Date().toISOString(),
+      model: session.model ?? '',
+      provider: session.provider ?? '',
+      todos: Array.isArray(session.todos) ? session.todos : [],
+      completionMessages: Array.isArray(session.completionMessages) ? session.completionMessages : [],
+    };
   } catch {
     return null;
   }
@@ -103,7 +159,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
         title: session.title,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
-        messageCount: session.messages.length,
+        messageCount: session.completionMessages.length,
       });
     } catch {
       // Skip corrupt session files

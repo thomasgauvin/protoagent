@@ -1,44 +1,53 @@
 # Sessions
 
-Here's something annoying about most CLI tools: you close the terminal and everything's gone. All that context the agent built up — what files it read, what it learned about your codebase, what you were working on — just disappears.
+ProtoAgent auto-saves session state so you can stop and resume work later.
 
-ProtoAgent saves your conversations automatically, so you can pick up right where you left off.
+## Where sessions live
 
-## How it works
+- **macOS/Linux**: `~/.local/share/protoagent/sessions/`
+- **Windows**: `%USERPROFILE%/AppData/Local/protoagent/sessions/`
 
-After each turn, ProtoAgent saves the full conversation to a JSON file in `~/.local/share/protoagent/sessions/`. Each session gets a unique ID and a title generated from your first message.
+Each session is stored as one JSON file named by UUID.
 
-There's nothing to configure. It just happens.
-
-## Resuming a session
-
-Use the `--session` flag:
-
-```bash
-protoagent --session abc123
-```
-
-ProtoAgent restores the full message history — your messages, the agent's responses, tool calls and results — and continues the conversation as if you never left.
+On non-Windows platforms, ProtoAgent also hardens session directory and file permissions.
 
 ## What gets saved
 
-- The full messages array (everything the agent needs to continue)
-- Session metadata — ID, title, when it was created, message count
+Each session stores:
 
-## What doesn't get saved
+- a UUID session ID
+- a generated title
+- creation and update timestamps
+- provider and model metadata
+- `completionMessages`
+- the session TODO list
 
-A few things are ephemeral by design:
+## What does not get saved
 
-- **TODO list** — the agent's in-memory task tracker resets each session
-- **MCP connections** — re-established on startup
-- **Approval decisions** — you start fresh each time (security-first default)
+- approval decisions
+- live MCP connections
+- in-flight request state
 
-## Managing sessions
+## Resuming a session
 
-Sessions are stored as plain JSON files. You can list them, inspect them, or delete old ones to free up space. Nothing fancy — it's files on disk.
+Use:
 
-## Why not something fancier?
+```bash
+protoagent --session <uuid>
+```
 
-Production agents have more sophisticated session systems. Codex uses JSONL streaming with a session index. Claude Code has tree-structured entries with branching (like git for conversations). OpenCode uses a full storage layer with migrations.
+When a session loads, ProtoAgent refreshes the top system prompt before continuing.
 
-ProtoAgent goes with the simplest thing that works — serialize the messages array to JSON. It covers the main use case (resume a conversation) without the complexity. If you want branching or streaming persistence, those are great upgrade paths.
+When you quit from the UI with `/quit` or `/exit`, ProtoAgent saves the session and prints the exact resume command.
+
+## Session IDs
+
+Session IDs are validated as UUIDs. Invalid IDs are rejected before a session file path is built.
+
+## Starting fresh
+
+Inside the UI, `/clear` starts a new session, resets the visible conversation, clears TODO state for the previous session, and creates a fresh session ID.
+
+## Titles
+
+Session titles are currently generated with a simple heuristic: ProtoAgent takes the first user message and truncates it if needed.

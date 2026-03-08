@@ -1,19 +1,25 @@
 # MCP Servers
 
-If you've used MCP servers with Claude Desktop or Claude Code, you already know the idea — you configure a tool server, and the agent automatically discovers and uses its tools. ProtoAgent works the same way.
+ProtoAgent supports MCP servers so external tools can be discovered at startup and exposed alongside built-in tools.
 
-If you haven't used MCP before, here's the short version: [Model Context Protocol](https://modelcontextprotocol.io/) is an open standard for connecting AI agents to external tools. Instead of building every possible tool into the agent, you run separate servers that expose tools (database queries, API calls, documentation search, whatever) and the agent discovers them at startup.
+Configuration lives in project-local `.protoagent/mcp.json`.
 
-I wrote a more detailed breakdown of [how MCP works at the protocol level](https://thomasgauvin.com/writing/learning-how-mcp-works-by-reading-logs-and-building-mcp-interceptor) if you're curious about what's happening under the hood.
+## Supported server types
 
-## Setting up an MCP server
+ProtoAgent currently supports:
 
-Create a `.protoagent/mcp.json` file in your project:
+- `stdio` servers started as child processes
+- `http` servers reached through Streamable HTTP transport
+
+The implementation uses the official `@modelcontextprotocol/sdk`.
+
+## Stdio servers
 
 ```json
 {
   "servers": {
     "my-server": {
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "@example/mcp-server"],
       "env": {
@@ -24,28 +30,53 @@ Create a `.protoagent/mcp.json` file in your project:
 }
 ```
 
-Each entry has:
+Fields:
 
-- **command**: what to run to start the server
-- **args**: command-line arguments
-- **env**: environment variables to pass along
+- `type`: must be `"stdio"`
+- `command`: executable to run
+- `args`: optional command-line arguments
+- `env`: optional environment variables
 
-That's the same format Claude Desktop uses, so if you've configured MCP servers before, this should look familiar.
+`type` is expected explicitly in the current implementation.
+
+## HTTP servers
+
+```json
+{
+  "servers": {
+    "remote-server": {
+      "type": "http",
+      "url": "http://localhost:3000/mcp"
+    }
+  }
+}
+```
+
+Fields:
+
+- `type`: must be `"http"`
+- `url`: full MCP endpoint URL
 
 ## What happens at startup
 
-When ProtoAgent launches, it reads `.protoagent/mcp.json` and spawns each server as a child process. Communication happens over stdio using JSON-RPC — the same protocol all MCP clients and servers speak.
+When ProtoAgent launches, it reads `.protoagent/mcp.json` and:
 
-ProtoAgent sends a `tools/list` request to discover what tools each server provides, then registers them in the tool registry with namespaced names (like `my-server__search_docs`). From that point on, the LLM can call these tools just like it calls built-in ones.
+1. connects to each configured server
+2. calls `listTools()` through the MCP client
+3. registers each remote tool dynamically
+4. exposes them to the model with names like `mcp_<server>_<tool>`
 
-When you exit ProtoAgent, all MCP server processes get shut down cleanly.
+For example, a tool named `search_docs` from a server named `github` becomes `mcp_github_search_docs`.
 
-## What's supported (and what's not)
+## Tool results
 
-ProtoAgent implements a minimal MCP client — enough to cover the most common use case of running local tool servers:
+When an MCP tool is called, ProtoAgent forwards the arguments with `callTool()` and flattens text content blocks into a single string result. Non-text blocks are JSON-stringified.
 
-- **Stdio transport** — supported
-- **HTTP transport** — not supported
-- **OAuth authentication** — not supported
+## Shutdown
 
-If you need HTTP transport or OAuth, production agents like [OpenCode](https://github.com/anomalyco/opencode) have full implementations. ProtoAgent keeps it simple.
+On app cleanup, ProtoAgent closes MCP client connections.
+
+## Current limits
+
+- OAuth support is not implemented
+- tool results are flattened into strings rather than preserved as rich structured blocks

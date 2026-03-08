@@ -5,9 +5,12 @@
  *   ERROR (0) → WARN (1) → INFO (2) → DEBUG (3) → TRACE (4)
  *
  * Set the level via `setLogLevel()` or the `--log-level` CLI flag.
- * All log output goes to stderr so it never interferes with streamed
- * LLM output on stdout.
+ * Logs are written to a file to avoid interfering with Ink UI rendering.
  */
+
+import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 export enum LogLevel {
   ERROR = 0,
@@ -18,6 +21,18 @@ export enum LogLevel {
 }
 
 let currentLevel: LogLevel = LogLevel.INFO;
+let logFilePath: string | null = null;
+
+// In-memory log buffer for UI display
+export interface LogEntry {
+  timestamp: string;
+  level: LogLevel;
+  message: string;
+  context?: Record<string, unknown>;
+}
+
+let logBuffer: LogEntry[] = [];
+let logListeners: Array<(entry: LogEntry) => void> = [];
 
 export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
@@ -25,6 +40,46 @@ export function setLogLevel(level: LogLevel): void {
 
 export function getLogLevel(): LogLevel {
   return currentLevel;
+}
+
+export function onLog(listener: (entry: LogEntry) => void): () => void {
+  logListeners.push(listener);
+  // Return unsubscribe function
+  return () => {
+    logListeners = logListeners.filter(l => l !== listener);
+  };
+}
+
+export function getRecentLogs(count: number = 50): LogEntry[] {
+  return logBuffer.slice(-count);
+}
+
+export function initLogFile(): string {
+  // Create logs directory
+  const logsDir = join(homedir(), '.local', 'share', 'protoagent', 'logs');
+  if (!existsSync(logsDir)) {
+    mkdirSync(logsDir, { recursive: true });
+  }
+
+  // Create log file with timestamp
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  logFilePath = join(logsDir, `protoagent-${timestamp}.log`);
+
+  // Write header
+  writeToFile(`\n${'='.repeat(80)}\nProtoAgent Log - ${new Date().toISOString()}\n${'='.repeat(80)}\n`);
+
+  return logFilePath;
+}
+
+function writeToFile(message: string): void {
+  if (!logFilePath) {
+    initLogFile();
+  }
+  try {
+    appendFileSync(logFilePath!, message);
+  } catch (err) {
+    // Silently fail if we can't write to log file
+  }
 }
 
 function timestamp(): string {
@@ -36,27 +91,38 @@ function timestamp(): string {
   return `${hh}:${mm}:${ss}.${ms}`;
 }
 
-const COLORS = {
-  red: '\x1b[31m',
-  yellow: '\x1b[33m',
-  cyan: '\x1b[36m',
-  gray: '\x1b[90m',
-  reset: '\x1b[0m',
-} as const;
-
-function log(level: LogLevel, label: string, color: string, message: string, context?: Record<string, unknown>): void {
+function log(level: LogLevel, label: string, message: string, context?: Record<string, unknown>): void {
   if (level > currentLevel) return;
   const ts = timestamp();
+
+  // Create log entry
+  const entry: LogEntry = {
+    timestamp: ts,
+    level,
+    message,
+    context,
+  };
+
+  // Add to buffer (keep last 100 entries)
+  logBuffer.push(entry);
+  if (logBuffer.length > 100) {
+    logBuffer.shift();
+  }
+
+  // Notify listeners
+  logListeners.forEach(listener => listener(entry));
+
+  // Write to file
   const ctx = context ? ` ${JSON.stringify(context)}` : '';
-  process.stderr.write(`${color}[${ts}] ${label}${COLORS.reset} ${message}${ctx}\n`);
+  writeToFile(`[${ts}] ${label.padEnd(5)} ${message}${ctx}\n`);
 }
 
 export const logger = {
-  error: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.ERROR, 'ERROR', COLORS.red, msg, ctx),
-  warn: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.WARN, 'WARN', COLORS.yellow, msg, ctx),
-  info: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.INFO, 'INFO', COLORS.reset, msg, ctx),
-  debug: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.DEBUG, 'DEBUG', COLORS.cyan, msg, ctx),
-  trace: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.TRACE, 'TRACE', COLORS.gray, msg, ctx),
+  error: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.ERROR, 'ERROR', msg, ctx),
+  warn: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.WARN, 'WARN', msg, ctx),
+  info: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.INFO, 'INFO', msg, ctx),
+  debug: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.DEBUG, 'DEBUG', msg, ctx),
+  trace: (msg: string, ctx?: Record<string, unknown>) => log(LogLevel.TRACE, 'TRACE', msg, ctx),
 
   /** Start a timed operation. Call the returned `end()` to log the duration. */
   startOperation(name: string): { end: () => void } {
@@ -68,5 +134,10 @@ export const logger = {
         logger.debug(`${name} completed`, { durationMs: ms });
       },
     };
+  },
+
+  /** Get the path to the current log file */
+  getLogFilePath(): string | null {
+    return logFilePath;
   },
 };

@@ -27,7 +27,20 @@ const program = new Command();
 
 program
   .description('ProtoAgent — a simple, hackable coding agent CLI')
-  .version(packageJson.version);
+  .version(packageJson.version)
+  .option('--dangerously-accept-all', 'Auto-approve all file writes and shell commands')
+  .option('--log-level <level>', 'Log level: TRACE, DEBUG, INFO, WARN, ERROR', 'INFO')
+  .option('--session <id>', 'Resume a previous session by ID')
+  .action((options) => {
+    // Default action - start the main app
+    render(
+      <App
+        dangerouslyAcceptAll={options.dangerouslyAcceptAll || false}
+        logLevel={options.logLevel}
+        sessionId={options.session}
+      />
+    );
+  });
 
 // Configure subcommand
 program
@@ -37,29 +50,4 @@ program
     render(<ConfigureComponent />);
   });
 
-// Main command options
-program
-  .option('--dangerously-accept-all', 'Auto-approve all file writes and shell commands')
-  .option('--log-level <level>', 'Log level: TRACE, DEBUG, INFO, WARN, ERROR', 'INFO')
-  .option('--session <id>', 'Resume a previous session by ID');
-
-const args = process.argv.slice(2);
-
-// Check if the first argument is a known command or a help flag
-const isCommand = program.commands.some(cmd => cmd.name() === args[0]);
-const isHelp = args.includes('-h') || args.includes('--help') || args[0] === 'help';
-
-if (isCommand || isHelp) {
-  program.parse(process.argv);
-} else {
-  // For the main App, we still parse the options
-  program.parse(process.argv);
-  const options = program.opts();
-  render(
-    <App
-      dangerouslyAcceptAll={options.dangerouslyAcceptAll || false}
-      logLevel={options.logLevel}
-      sessionId={options.session}
-    />
-  );
-}
+program.parse(process.argv);

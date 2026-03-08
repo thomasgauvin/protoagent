@@ -1,212 +1,40 @@
 # Part 2: AI Integration
 
-Now, let's add LLM completions. We're going to be using the OpenAI SDK to get our responses, because most other providers provide OpenAI compatible endpoints which will allow us to swap models. We will also implement streaming to provide a more interactive user experience.
+This part is where the CLI stops being a terminal shell and starts talking to a model.
 
-## Setup Environment Variables
+## What the current source does
 
-To securely use API keys, we'll use environment variables (just for development). Create a `.env` file in your project's root directory:
+ProtoAgent builds clients with the OpenAI SDK, even for non-OpenAI providers that expose compatible endpoints.
 
-```bash
-touch .env
-```
+The main pieces are:
 
-```
-OPENAI_API_KEY="your_openai_api_key_here"
-```
+- `src/App.tsx` for client creation and UI wiring
+- `src/providers.ts` for provider metadata
+- `src/config.tsx` for persisted provider/model selection
 
-## Update package.json
+`buildClient()` in `src/App.tsx` resolves the selected provider, reads the API key from config or the provider env var, and applies a provider-specific `baseURL` when needed.
 
-Update your `package.json` to include the new dependencies:
+## Current providers
 
-```json
-{
-  "name": "protoagent",
-  "version": "0.0.1",
-  "description": "A simple coding agent CLI.",
-  "bin": "dist/cli.js",
-  "type": "module",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsx src/cli.tsx",
-    "build:watch": "tsc --watch"
-  },
-  "files": ["dist"],
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "@inkjs/ui": "^2.0.0",
-    "commander": "^14.0.3",
-    "dotenv": "^16.4.7",
-    "ink": "^6.7.0",
-    "ink-big-text": "^2.0.0",
-    "openai": "^4.70.0",
-    "react": "^19.1.1"
-  },
-  "devDependencies": {
-    "@types/node": "^24.5.2",
-    "@types/react": "^19.1.15",
-    "ink-testing-library": "^4.0.0",
-    "tsx": "^4.20.6",
-    "typescript": "^5.9.2"
-  }
-}
-```
+The app currently ships with:
 
-Or, install the packages manually:
+- OpenAI
+- Anthropic Claude
+- Google Gemini
+- Cerebras
 
-```bash
-npm install openai dotenv
-```
+## Streaming model output
 
-## Configure streaming responses
+ProtoAgent streams assistant output rather than waiting for a full response. That streaming behavior is later reused by the full tool loop in `src/agentic-loop.ts`.
 
-We will modify `src/App.tsx` to call the OpenAI API with streaming enabled. The chat `messages` state will be updated iteratively as chunks of the AI's response are received. Update your `src/App.tsx`:
+The important idea is unchanged from the early tutorial versions: the UI reacts to incremental text updates instead of waiting for one big blob.
 
-```typescript
-import React, { useState } from 'react';
-import { Box, Text } from 'ink';
-import { TextInput } from '@inkjs/ui';
-import BigText from 'ink-big-text';
-import { OptionValues } from 'commander';
-import OpenAI from 'openai'; // [!code ++]
-import 'dotenv/config'; // [!code ++]
+## Core takeaway
 
-interface Message { // [!code ++]
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
+AI integration is not just "call the model." In the current codebase it also means:
 
-const openai = new OpenAI({ // [!code ++]
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-export const App = (options: OptionValues) => {
-  const [messages, setMessages] = useState<Message[]>([ // [!code ++]
-    { role: 'system', content: 'You are ProtoAgent, a helpful AI coding assistant.' },
-  ]);
-  const [inputKey, setInputKey] = useState(0);
-  const [loading, setLoading] = useState(false); // [!code ++]
-
-  const handleSubmit = async (value: string) => { // [!code ++]
-    if (value.trim() !== '') {
-      const userMessage: Message = { role: 'user', content: value }; // [!code ++]
-      const updatedMessages = [...messages, userMessage];
-      setMessages(updatedMessages);
-      setInputKey(prev => prev + 1);
-      setLoading(true);
-
-      try {
-        const stream = await openai.chat.completions.create({ // [!code ++]
-          messages: updatedMessages,
-          model: 'gpt-4o-mini',
-          stream: true,
-        });
-
-        let assistantResponse = '';
-        setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
-
-        for await (const chunk of stream) {
-          const content = chunk.choices[0]?.delta?.content || '';
-          assistantResponse += content;
-          setMessages((prev) => {
-            const lastMessage = prev[prev.length - 1];
-            if (lastMessage && lastMessage.role === 'assistant') {
-              return [
-                ...prev.slice(0, prev.length - 1),
-                { ...lastMessage, content: assistantResponse },
-              ];
-            }
-            return prev;
-          });
-        }
-      } catch (error: any) {
-        setMessages((prev) => [
-          ...prev,
-          { role: 'assistant', content: `Error: ${error.message}` },
-        ]);
-      } finally {
-        setLoading(false);
-      }
-    }
-  };
-
-  const introductoryMessage = [
-    <BigText key="welcome-1" text="ProtoAgent" font="tiny" colors={["#09A469"]} />,
-    <Text key="welcome-2" italic dimColor>"The prefix "proto-" comes from the Greek word prōtos and is used to denote the beginning stage or the primitive form of something that will later evolve or develop into a more complex version."</Text>,
-    <Text key="padding-above-welcome"> </Text>,
-    <Text key="welcome-3" color="green">Welcome to ProtoAgent, a simple coding agent CLI with tool support.</Text>,
-    <Text key="padding-above-welcome-2"> </Text>,
-    <Text key="welcome-4" color="green">ProtoAgent has the core capabilities of the popular coding agents but stripped down to the core functionality to help you understand how coding agents work.</Text>
-  ];
-
-  return (
-    <Box flexDirection="column" height="100%">
-      <Box flexDirection="column" flexGrow={1}>
-        {introductoryMessage}
-        {messages.filter(msg => msg.role !== 'system').map((msg, index) => (
-          <React.Fragment key={index}>
-            <Text> </Text>
-            <Text dimColor={msg.role === 'user'} color={msg.role === 'user' ? 'lightgrey' : 'white'}>
-              {msg.role === 'user' ? '> ' : 'Agent: '}{msg.content}
-            </Text>
-            <Text> </Text>
-          </React.Fragment>
-        ))}
-        {loading && <Text>Agent is thinking...</Text>}
-      </Box>
-
-      <Box marginTop={1} borderStyle="single" borderColor="green" paddingX={1}>
-        <Text color="green">❯ </Text>
-        <TextInput
-          key={inputKey}
-          placeholder="Type your message here..."
-          onSubmit={handleSubmit}
-        />
-      </Box>
-    </Box>
-  );
-};
-```
-
-## Test it out
-
-Start the development server:
-
-```bash
-npm run dev
-```
-
-You should see:
-
-```
-█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
-█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █
-
-"The prefix "proto-" comes from the Greek word prōtos and is used to denote the beginning stage or the
-primitive form of something that will later evolve or develop into a more complex version."
-
-Welcome to ProtoAgent, a simple coding agent CLI with tool support.
-
-ProtoAgent has the core capabilities of the popular coding agents but stripped down to the core
-functionality to help you understand how coding agents work.
-
-> hi
-
-Agent: Hello! How can I assist you today?
-
-┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ ❯ Type your message here...                                                                             │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Summary
-
-You now have a fully functional AI-powered CLI agent that:
-
-- Integrates with OpenAI's API using the OpenAI SDK
-- Streams responses in real-time for a more interactive experience
-- Maintains conversation history and context
-- Uses environment variables securely for API key management
-- Has a responsive terminal UI with Ink
-
-In the next part, we'll add configuration management to support multiple AI providers (OpenAI, Google Gemini, and Anthropic Claude) and allow users to configure their preferred model through the CLI.
+- provider abstraction
+- API key resolution
+- streaming updates
+- error handling
+- stable client reuse across turns

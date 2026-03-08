@@ -1,16 +1,38 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
-import SelectInput from 'ink-select-input';
-import TextInput from 'ink-text-input';
+import { Select, TextInput, PasswordInput } from '@inkjs/ui';
 import { SUPPORTED_MODELS, getProvider } from './providers.js';
 
 export interface Config {
   provider: string;
   model: string;
-  apiKey: string;
+  apiKey?: string;
+}
+
+const CONFIG_DIR_MODE = 0o700;
+const CONFIG_FILE_MODE = 0o600;
+
+function hardenPermissions(targetPath: string, mode: number): void {
+  if (process.platform === 'win32') return;
+  chmodSync(targetPath, mode);
+}
+
+export function resolveApiKey(config: Pick<Config, 'provider' | 'apiKey'>): string | null {
+  const directApiKey = config.apiKey?.trim();
+  if (directApiKey) {
+    return directApiKey;
+  }
+
+  const provider = getProvider(config.provider);
+  if (!provider?.apiKeyEnvVar) {
+    return null;
+  }
+
+  const envApiKey = process.env[provider.apiKeyEnvVar]?.trim();
+  return envApiKey || null;
 }
 
 export const getConfigDirectory = () => {
@@ -28,8 +50,9 @@ export const getConfigPath = () => {
 export const ensureConfigDirectory = () => {
   const dir = getConfigDirectory();
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: CONFIG_DIR_MODE });
   }
+  hardenPermissions(dir, CONFIG_DIR_MODE);
 };
 
 export const readConfig = (): Config | null => {
@@ -52,11 +75,15 @@ export const readConfig = (): Config | null => {
         }
       }
 
-      if (!raw.provider || !raw.model || !apiKey) {
+      if (!raw.provider || !raw.model) {
         return null;
       }
 
-      return { provider: raw.provider, model: raw.model, apiKey } as Config;
+      return {
+        provider: raw.provider,
+        model: raw.model,
+        apiKey: typeof apiKey === 'string' && apiKey.trim().length > 0 ? apiKey.trim() : undefined,
+      } as Config;
     } catch (error) {
       console.error('Error reading config file:', error);
       return null;
@@ -68,7 +95,13 @@ export const readConfig = (): Config | null => {
 export const writeConfig = (config: Config) => {
   ensureConfigDirectory();
   const configPath = getConfigPath();
-  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+  const normalizedConfig: Config = {
+    provider: config.provider,
+    model: config.model,
+    ...(config.apiKey?.trim() ? { apiKey: config.apiKey.trim() } : {}),
+  };
+  writeFileSync(configPath, JSON.stringify(normalizedConfig, null, 2), { encoding: 'utf8', mode: CONFIG_FILE_MODE });
+  hardenPermissions(configPath, CONFIG_FILE_MODE);
 };
 
 // ─── Step Components ───
@@ -108,9 +141,7 @@ export const ResetPrompt: React.FC<ResetPromptProps> = ({ existingConfig, setSte
       <Text> </Text>
       <Text>Do you want to reset and configure a new one? (y/n)</Text>
       <TextInput
-        value={resetInput}
-        onChange={setResetInput}
-        onSubmit={(answer) => {
+        onSubmit={(answer: string) => {
           if (answer.toLowerCase() === 'y') {
             setStep(2);
           } else {
@@ -140,8 +171,8 @@ export const ModelSelection: React.FC<ModelSelectionProps> = ({
     })),
   );
 
-  const handleSelect = (item: { value: string; label: string }) => {
-    const [providerId, modelId] = item.value.split(':::');
+  const handleSelect = (value: string) => {
+    const [providerId, modelId] = value.split(':::');
     setSelectedProviderId(providerId);
     setSelectedModelId(modelId);
     setStep(3);
@@ -150,7 +181,7 @@ export const ModelSelection: React.FC<ModelSelectionProps> = ({
   return (
     <Box flexDirection="column">
       <Text>Select an AI Model:</Text>
-      <SelectInput items={items} onSelect={handleSelect} />
+      <Select options={items} onChange={handleSelect} />
     </Box>
   );
 };
@@ -167,12 +198,11 @@ export const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
   setStep,
   setConfigWritten,
 }) => {
-  const [apiKey, setApiKey] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const provider = getProvider(selectedProviderId);
 
-  const handleApiKeySubmit = () => {
-    if (apiKey.trim().length === 0) {
+  const handleApiKeySubmit = (value: string) => {
+    if (value.trim().length === 0) {
       setErrorMessage('API key cannot be empty.');
       return;
     }
@@ -180,7 +210,7 @@ export const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
     const newConfig: Config = {
       provider: selectedProviderId,
       model: selectedModelId,
-      apiKey: apiKey.trim(),
+      apiKey: value.trim(),
     };
     writeConfig(newConfig);
     setConfigWritten(true);
@@ -191,12 +221,9 @@ export const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
     <Box flexDirection="column">
       <Text>Enter API Key for {provider?.name || selectedProviderId}:</Text>
       {errorMessage && <Text color="red">{errorMessage}</Text>}
-      <TextInput
-        value={apiKey}
-        onChange={setApiKey}
+      <PasswordInput
         placeholder={`Enter your ${provider?.apiKeyEnvVar || 'API'} key`}
         onSubmit={handleApiKeySubmit}
-        mask="*"
       />
     </Box>
   );

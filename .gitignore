@@ -1,4 +1,7 @@
 dist
-PROTOAGENT_TODO.md
 node_modules
 .env
+.DS_Store
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+.vscode/

@@ -8,29 +8,185 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import { TextInput, Select } from '@inkjs/ui';
+import { TextInput, Select, PasswordInput } from '@inkjs/ui';
 import BigText from 'ink-big-text';
 import { OpenAI } from 'openai';
-import { readConfig, writeConfig, type Config } from './config.js';
+import { readConfig, writeConfig, resolveApiKey, type Config } from './config.js';
 import { getProvider, getModelPricing, SUPPORTED_MODELS } from './providers.js';
 import {
   runAgenticLoop,
   initializeMessages,
   type Message,
   type AgentEvent,
-  type ToolCallEvent,
 } from './agentic-loop.js';
-import { setDangerouslyAcceptAll, setApprovalHandler } from './tools/index.js';
+import { setDangerouslyAcceptAll, setApprovalHandler, clearApprovalHandler } from './tools/index.js';
 import type { ApprovalRequest, ApprovalResponse } from './utils/approval.js';
-import { setLogLevel, LogLevel } from './utils/logger.js';
+import { setLogLevel, LogLevel, initLogFile, logger } from './utils/logger.js';
 import {
   createSession,
+  ensureSystemPromptAtTop,
   saveSession,
   loadSession,
   generateTitle,
   type Session,
 } from './sessions.js';
+import { clearTodos, getTodosForSession, setTodosForSession } from './tools/todo.js';
 import { initializeMcp, closeMcp } from './mcp.js';
+import { generateSystemPrompt } from './system-prompt.js';
+import { CollapsibleBox } from './components/CollapsibleBox.js';
+import { ConsolidatedToolMessage } from './components/ConsolidatedToolMessage.js';
+import { ConfigDialog } from './components/ConfigDialog.js';
+import { FormattedMessage } from './components/FormattedMessage.js';
+
+interface InlineThreadError {
+  id: string;
+  message: string;
+  transient?: boolean;
+}
+
+function renderMessageList(
+  messagesToRender: Message[],
+  allMessages: Message[],
+  expandedMessages: Set<number>,
+  startIndex = 0,
+): React.ReactNode[] {
+  const rendered: React.ReactNode[] = [];
+  const skippedIndices = new Set<number>();
+
+  messagesToRender.forEach((msg, localIndex) => {
+    if (skippedIndices.has(localIndex)) {
+      return;
+    }
+
+    const index = startIndex + localIndex;
+    const msgAny = msg as any;
+    const isToolCall = msg.role === 'assistant' && msgAny.tool_calls && msgAny.tool_calls.length > 0;
+    const displayContent = 'content' in msg && typeof msg.content === 'string' ? msg.content : null;
+    const isFirstSystemMessage = msg.role === 'system' && !allMessages.slice(0, index).some((message) => message.role === 'system');
+    const previousMessage = index > 0 ? allMessages[index - 1] : null;
+    const followsToolMessage = previousMessage?.role === 'tool';
+    const currentSpeaker = getVisualSpeaker(msg);
+    const previousSpeaker = getVisualSpeaker(previousMessage);
+    const isConversationTurn = currentSpeaker === 'user' || currentSpeaker === 'assistant';
+    const previousWasConversationTurn = previousSpeaker === 'user' || previousSpeaker === 'assistant';
+    const speakerChanged = previousSpeaker !== currentSpeaker;
+
+    if (isFirstSystemMessage) {
+      rendered.push(<Text key={`spacer-${index}`}> </Text>);
+    }
+
+    if (isConversationTurn && previousWasConversationTurn && speakerChanged) {
+      rendered.push(<Text key={`turn-spacer-${index}`}> </Text>);
+    }
+
+    if (msg.role === 'user') {
+      rendered.push(
+        <Box key={index} flexDirection="column">
+          <Text>
+            <Text color="green" bold>
+              {'> '}
+            </Text>
+            <Text>{displayContent}</Text>
+          </Text>
+        </Box>
+      );
+      return;
+    }
+
+    if (msg.role === 'system') {
+      rendered.push(
+        <CollapsibleBox
+          key={index}
+          title="System Prompt"
+          content={displayContent || ''}
+          titleColor="green"
+          dimColor={false}
+          maxPreviewLines={3}
+          expanded={expandedMessages.has(index)}
+        />
+      );
+      return;
+    }
+
+    if (isToolCall) {
+      if (displayContent && displayContent.trim().length > 0) {
+        rendered.push(
+          <Box key={`${index}-text`} flexDirection="column">
+            <FormattedMessage content={displayContent.trimEnd()} />
+          </Box>
+        );
+      }
+
+      const toolCalls = msgAny.tool_calls.map((tc: any) => ({
+        id: tc.id,
+        name: tc.function?.name || 'tool',
+      }));
+      const toolResults = new Map<string, { content: string; name: string }>();
+
+      let nextLocalIndex = localIndex + 1;
+      for (const toolCall of toolCalls) {
+        if (nextLocalIndex < messagesToRender.length) {
+          const nextMsg = messagesToRender[nextLocalIndex] as any;
+          if (nextMsg.role === 'tool' && nextMsg.tool_call_id === toolCall.id) {
+            toolResults.set(toolCall.id, {
+              content: nextMsg.content || '',
+              name: nextMsg.name || toolCall.name,
+            });
+            skippedIndices.add(nextLocalIndex);
+            nextLocalIndex++;
+          }
+        }
+      }
+
+      rendered.push(
+        <ConsolidatedToolMessage
+          key={index}
+          toolCalls={toolCalls}
+          toolResults={toolResults}
+          expanded={expandedMessages.has(index)}
+        />
+      );
+      return;
+    }
+
+    if (msg.role === 'tool') {
+      rendered.push(
+        <CollapsibleBox
+          key={index}
+          title={`${msgAny.name || 'tool'} result`}
+          content={displayContent || ''}
+          dimColor={true}
+          maxPreviewLines={3}
+          expanded={expandedMessages.has(index)}
+        />
+      );
+      return;
+    }
+
+    rendered.push(
+      <Box key={index} flexDirection="column">
+        <FormattedMessage content={trimAssistantSpacing(displayContent || '', followsToolMessage ? 'start' : 'both')} />
+      </Box>
+    );
+  });
+
+  return rendered;
+}
+
+function trimAssistantSpacing(message: string, trimMode: 'start' | 'end' | 'both' = 'both'): string {
+  if (trimMode === 'start') return message.trimStart();
+  if (trimMode === 'end') return message.trimEnd();
+  return message.trim();
+}
+
+function getVisualSpeaker(message: Message | null): 'user' | 'assistant' | 'system' | null {
+  if (!message) return null;
+  if (message.role === 'tool') return 'assistant';
+  if (message.role === 'user' || message.role === 'assistant' || message.role === 'system') {
+    return message.role;
+  }
+  return null;
+}
 
 // ─── Props ───
 
@@ -44,11 +200,48 @@ export interface AppProps {
 
 const SLASH_COMMANDS = [
   { name: '/clear', description: 'Clear conversation and start fresh' },
+  { name: '/collapse', description: 'Collapse all long messages' },
   { name: '/config', description: 'Change provider, model, or API key' },
-  { name: '/cost', description: 'Show total session cost' },
+  { name: '/expand', description: 'Expand all collapsed messages' },
   { name: '/help', description: 'Show all available commands' },
   { name: '/quit', description: 'Exit ProtoAgent' },
 ];
+
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const HELP_TEXT = [
+  'Commands:',
+  '  /clear    - Clear conversation and start fresh',
+  '  /collapse - Collapse all long messages',
+  '  /config   - Change provider, model, or API key',
+  '  /expand   - Expand all collapsed messages',
+  '  /help     - Show this help',
+  '  /quit     - Exit ProtoAgent',
+].join('\n');
+
+function buildClient(config: Config): OpenAI {
+  const provider = getProvider(config.provider);
+  const apiKey = resolveApiKey(config);
+
+  if (!apiKey) {
+    const providerName = provider?.name || config.provider;
+    const envVar = provider?.apiKeyEnvVar;
+    throw new Error(
+      envVar
+        ? `Missing API key for ${providerName}. Set it in config or export ${envVar}.`
+        : `Missing API key for ${providerName}.`
+    );
+  }
+
+  const clientOptions: ConstructorParameters<typeof OpenAI>[0] = {
+    apiKey,
+  };
+
+  if (provider?.baseURL) {
+    clientOptions.baseURL = provider.baseURL;
+  }
+
+  return new OpenAI(clientOptions);
+}
 
 // ─── Sub-components ───
 
@@ -73,48 +266,18 @@ const CommandFilter: React.FC<{ inputText: string }> = ({ inputText }) => {
   );
 };
 
-/** Renders a single tool call with status indicator. */
-const ToolCallDisplay: React.FC<{ tc: ToolCallEvent }> = ({ tc }) => {
-  const icon =
-    tc.status === 'running' ? '⟳' :
-    tc.status === 'done' ? '✓' :
-    '✗';
-  const color =
-    tc.status === 'running' ? 'yellow' :
-    tc.status === 'done' ? 'green' :
-    'red';
-
-  // Parse args for a short summary
-  let argSummary = '';
-  try {
-    const parsed = JSON.parse(tc.args);
-    // Show the most useful arg for common tools
-    if (parsed.file_path) argSummary = parsed.file_path;
-    else if (parsed.command) argSummary = parsed.command.slice(0, 60);
-    else if (parsed.search_term) argSummary = `"${parsed.search_term}"`;
-    else if (parsed.directory_path) argSummary = parsed.directory_path;
-    else if (parsed.task) argSummary = parsed.task.slice(0, 60);
-  } catch {
-    // args might not be valid JSON yet during streaming
-  }
-
-  return (
-    <Box>
-      <Text color={color}>{icon} </Text>
-      <Text color={color} bold>{tc.name}</Text>
-      {argSummary && <Text dimColor> {argSummary}</Text>}
-    </Box>
-  );
-};
-
 /** Interactive approval prompt rendered inline. */
 const ApprovalPrompt: React.FC<{
   request: ApprovalRequest;
   onRespond: (response: ApprovalResponse) => void;
 }> = ({ request, onRespond }) => {
+  const sessionApprovalLabel = request.sessionScopeKey
+    ? 'Approve this operation for session'
+    : `Approve all "${request.type}" for session`;
+
   const items = [
     { label: 'Approve once', value: 'approve_once' as const },
-    { label: `Approve all "${request.type}" for session`, value: 'approve_session' as const },
+    { label: sessionApprovalLabel, value: 'approve_session' as const },
     { label: 'Reject', value: 'reject' as const },
   ];
 
@@ -163,7 +326,6 @@ const InlineSetup: React.FC<{
   const [setupStep, setSetupStep] = useState<'provider' | 'api_key'>('provider');
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModelId, setSelectedModelId] = useState('');
-  const [apiKey, setApiKey] = useState('');
   const [apiKeyError, setApiKeyError] = useState('');
 
   const providerItems = SUPPORTED_MODELS.flatMap((provider) =>
@@ -203,20 +365,17 @@ const InlineSetup: React.FC<{
       </Text>
       <Text>Enter your API key:</Text>
       {apiKeyError && <Text color="red">{apiKeyError}</Text>}
-      <TextInput
-        value={apiKey}
-        onChange={setApiKey}
+      <PasswordInput
         placeholder={`Paste your ${provider?.apiKeyEnvVar || 'API'} key`}
-        mask="*"
-        onSubmit={() => {
-          if (apiKey.trim().length === 0) {
+        onSubmit={(value) => {
+          if (value.trim().length === 0) {
             setApiKeyError('API key cannot be empty.');
             return;
           }
           const newConfig: Config = {
             provider: selectedProviderId,
             model: selectedModelId,
-            apiKey: apiKey.trim(),
+            apiKey: value.trim(),
           };
           writeConfig(newConfig);
           onComplete(newConfig);
@@ -237,16 +396,30 @@ export const App: React.FC<AppProps> = ({
 
   // Core state
   const [config, setConfig] = useState<Config | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [completionMessages, setCompletionMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [helpMessage, setHelpMessage] = useState<string | null>(null);
+  const [threadErrors, setThreadErrors] = useState<InlineThreadError[]>([]);
   const [initialized, setInitialized] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [logFilePath, setLogFilePath] = useState<string | null>(null);
 
-  // Tool call display state
-  const [activeToolCalls, setActiveToolCalls] = useState<ToolCallEvent[]>([]);
-  const [streamedText, setStreamedText] = useState('');
+  // Collapsible state — track which message indices are expanded
+  const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
+
+  const expandLatestMessage = useCallback((index: number) => {
+    setExpandedMessages((prev) => {
+      if (prev.has(index)) return prev;
+      const next = new Set(prev);
+      next.add(index);
+      return next;
+    });
+  }, []);
+
+  // Config dialog state
+  const [showConfigDialog, setShowConfigDialog] = useState(false);
 
   // Approval state
   const [pendingApproval, setPendingApproval] = useState<{
@@ -257,30 +430,33 @@ export const App: React.FC<AppProps> = ({
   // Usage state
   const [lastUsage, setLastUsage] = useState<AgentEvent['usage'] | null>(null);
   const [totalCost, setTotalCost] = useState(0);
+  const [spinnerFrame, setSpinnerFrame] = useState(0);
 
   // Session state
   const [session, setSession] = useState<Session | null>(null);
 
+  // Quitting state — shows the resume command before exiting
+  const [quittingSession, setQuittingSession] = useState<Session | null>(null);
+
   // OpenAI client ref (stable across renders)
   const clientRef = useRef<OpenAI | null>(null);
 
-  // Chat history for display (role + content pairs)
-  const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([]);
+  // Track current assistant message being built in the event handler
+  const assistantMessageRef = useRef<{
+    message: any;
+    index: number;
+    kind: 'streaming_text' | 'tool_call_assistant';
+  } | null>(null);
+
+  // Abort controller for cancelling the current completion
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // ─── Post-config initialization (reused after inline setup) ───
 
   const initializeWithConfig = useCallback(async (loadedConfig: Config) => {
     setConfig(loadedConfig);
 
-    // Create OpenAI client with provider's baseURL
-    const provider = getProvider(loadedConfig.provider);
-    const clientOptions: any = {
-      apiKey: loadedConfig.apiKey,
-    };
-    if (provider?.baseURL) {
-      clientOptions.baseURL = provider.baseURL;
-    }
-    clientRef.current = new OpenAI(clientOptions);
+    clientRef.current = buildClient(loadedConfig);
 
     // Initialize MCP servers
     await initializeMcp();
@@ -290,16 +466,14 @@ export const App: React.FC<AppProps> = ({
     if (sessionId) {
       loadedSession = await loadSession(sessionId);
       if (loadedSession) {
+        const systemPrompt = await generateSystemPrompt();
+        loadedSession.completionMessages = ensureSystemPromptAtTop(
+          loadedSession.completionMessages,
+          systemPrompt
+        );
+        setTodosForSession(loadedSession.id, loadedSession.todos);
         setSession(loadedSession);
-        setMessages(loadedSession.messages);
-        // Rebuild chat history from loaded messages
-        const history: { role: string; content: string }[] = [];
-        for (const msg of loadedSession.messages) {
-          if ((msg.role === 'user' || msg.role === 'assistant') && 'content' in msg && typeof msg.content === 'string') {
-            history.push({ role: msg.role, content: msg.content });
-          }
-        }
-        setChatHistory(history);
+        setCompletionMessages(loadedSession.completionMessages);
       } else {
         setError(`Session "${sessionId}" not found. Starting a new session.`);
       }
@@ -307,11 +481,12 @@ export const App: React.FC<AppProps> = ({
 
     if (!loadedSession) {
       // Initialize fresh conversation
-      const initialMessages = await initializeMessages();
-      setMessages(initialMessages);
+      const initialCompletionMessages = await initializeMessages();
+      setCompletionMessages(initialCompletionMessages);
 
       const newSession = createSession(loadedConfig.model, loadedConfig.provider);
-      newSession.messages = initialMessages;
+      clearTodos(newSession.id);
+      newSession.completionMessages = initialCompletionMessages;
       setSession(newSession);
     }
 
@@ -322,12 +497,30 @@ export const App: React.FC<AppProps> = ({
   // ─── Initialization ───
 
   useEffect(() => {
+    if (!loading) {
+      setSpinnerFrame(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setSpinnerFrame((prev) => (prev + 1) % SPINNER_FRAMES.length);
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [loading]);
+
+  useEffect(() => {
     const init = async () => {
-      // Set log level
+      // Set log level and initialize log file
       if (logLevel) {
         const level = LogLevel[logLevel.toUpperCase() as keyof typeof LogLevel];
         if (level !== undefined) {
           setLogLevel(level);
+          const logPath = initLogFile();
+          setLogFilePath(logPath);
+
+          logger.info(`ProtoAgent started with log level: ${logLevel}`);
+          logger.info(`Log file: ${logPath}`);
         }
       }
 
@@ -357,125 +550,223 @@ export const App: React.FC<AppProps> = ({
       setError(`Initialization failed: ${err.message}`);
     });
 
-    // Cleanup MCP on unmount
+    // Cleanup on unmount
     return () => {
+      clearApprovalHandler();
       closeMcp();
     };
   }, []);
 
   // ─── Slash commands ───
 
-  const handleSlashCommand = useCallback((cmd: string): boolean => {
+  const handleSlashCommand = useCallback(async (cmd: string): Promise<boolean> => {
     const parts = cmd.trim().split(/\s+/);
     const command = parts[0]?.toLowerCase();
 
     switch (command) {
-      case '/quit':
-      case '/exit':
-        exit();
+        case '/quit':
+        case '/exit':
+        if (!session) {
+          exit();
+          return true;
+        }
+
+        try {
+          const nextSession: Session = {
+            ...session,
+            completionMessages,
+            todos: getTodosForSession(session.id),
+            title: generateTitle(completionMessages),
+          };
+
+          await saveSession(nextSession);
+          setSession(nextSession);
+          setQuittingSession(nextSession);
+          setError(null);
+
+          // Exit after a short delay to allow render
+          setTimeout(() => exit(), 100);
+        } catch (err: any) {
+          setError(`Failed to save session before exit: ${err.message}`);
+        }
         return true;
       case '/clear':
-        setChatHistory([]);
         // Re-initialize messages with just the system prompt
         initializeMessages().then((msgs) => {
-          setMessages(msgs);
+          setCompletionMessages(msgs);
+          setHelpMessage(null);
+          setLastUsage(null);
+          setTotalCost(0);
+          setThreadErrors([]);
+          setExpandedMessages(new Set());
           if (session) {
             const newSession = createSession(config!.model, config!.provider);
-            newSession.messages = msgs;
+            clearTodos(session.id);
+            clearTodos(newSession.id);
+            newSession.completionMessages = msgs;
             setSession(newSession);
           }
         });
         return true;
-      case '/config':
-        setNeedsSetup(true);
-        setInitialized(false);
+       case '/config':
+         if (initialized && config) {
+          // Mid-conversation: show config dialog
+          setShowConfigDialog(true);
+        } else {
+          // Initial setup: show inline setup
+          setNeedsSetup(true);
+        }
         return true;
-      case '/cost':
-        setChatHistory((prev) => [
-          ...prev,
-          { role: 'system', content: `Total session cost: $${totalCost.toFixed(4)}` },
-        ]);
+      case '/expand':
+        // Expand all collapsed messages
+        const allIndices = new Set(completionMessages.map((_, i) => i));
+        setExpandedMessages(allIndices);
         return true;
-      case '/help':
-        setChatHistory((prev) => [
-          ...prev,
-          {
-            role: 'system',
-            content: [
-              'Commands:',
-              '  /clear   — Clear conversation and start fresh',
-              '  /config  — Change provider, model, or API key',
-              '  /cost    — Show total session cost',
-              '  /help    — Show this help',
-              '  /quit    — Exit ProtoAgent',
-            ].join('\n'),
-          },
-        ]);
+      case '/collapse':
+        // Collapse all messages
+        setExpandedMessages(new Set());
+        return true;
+       case '/help':
+        setHelpMessage(HELP_TEXT);
         return true;
       default:
         return false;
     }
-  }, [exit, session, config, totalCost]);
+  }, [exit, session, completionMessages]);
 
   // ─── Submit handler ───
 
   const handleSubmit = useCallback(async (value: string) => {
     const trimmed = value.trim();
-    if (!trimmed || loading || !clientRef.current || !config) return;
+      if (!trimmed || loading || !clientRef.current || !config) return;
 
-    // Handle slash commands
-    if (trimmed.startsWith('/')) {
-      const handled = handleSlashCommand(trimmed);
-      if (handled) {
-        setInputText('');
-        return;
+      // Handle slash commands
+      if (trimmed.startsWith('/')) {
+        const handled = await handleSlashCommand(trimmed);
+        if (handled) {
+          setInputText('');
+          return;
       }
     }
 
     setInputText('');
     setLoading(true);
-    setStreamedText('');
-    setActiveToolCalls([]);
     setError(null);
+    setHelpMessage(null);
+    setThreadErrors([]);
 
-    // Add user message to chat history
-    setChatHistory((prev) => [...prev, { role: 'user', content: trimmed }]);
+    // Add user message to completion messages IMMEDIATELY for real-time UI display
+    const userMessage: Message = { role: 'user', content: trimmed };
+    setCompletionMessages((prev) => [...prev, userMessage]);
+
+    // Reset assistant message tracker
+    assistantMessageRef.current = null;
 
     try {
       const pricing = getModelPricing(config.provider, config.model);
 
+      // Create abort controller for this completion
+      abortControllerRef.current = new AbortController();
+
       const updatedMessages = await runAgenticLoop(
         clientRef.current,
         config.model,
-        messages,
+        [...completionMessages, userMessage],
         trimmed,
         (event: AgentEvent) => {
           switch (event.type) {
             case 'text_delta':
-              setStreamedText((prev) => prev + (event.content || ''));
+              // Update the current assistant message in completionMessages in real-time
+              if (!assistantMessageRef.current || assistantMessageRef.current.kind !== 'streaming_text') {
+                // First text delta - create the assistant message
+                const assistantMsg = { role: 'assistant', content: event.content || '', tool_calls: [] } as Message;
+                setCompletionMessages((prev) => {
+                  assistantMessageRef.current = { message: assistantMsg, index: prev.length, kind: 'streaming_text' };
+                  return [...prev, assistantMsg];
+                });
+              } else {
+                // Subsequent text delta - update the assistant message
+                assistantMessageRef.current.message.content += event.content || '';
+                setCompletionMessages((prev) => {
+                  const updated = [...prev];
+                  updated[assistantMessageRef.current!.index] = { ...assistantMessageRef.current!.message };
+                  return updated;
+                });
+              }
               break;
             case 'tool_call':
               if (event.toolCall) {
-                setActiveToolCalls((prev) => {
-                  const existing = prev.findIndex((tc) => tc.name === event.toolCall!.name && tc.status === 'running');
-                  if (existing >= 0) {
+                const toolCall = event.toolCall;
+                setCompletionMessages((prev) => {
+                  const existingRef = assistantMessageRef.current;
+                  const existingMessage = existingRef?.message
+                    ? {
+                        ...existingRef.message,
+                        tool_calls: [...(existingRef.message.tool_calls || [])],
+                      }
+                    : null;
+
+                  const assistantMsg = existingMessage || {
+                    role: 'assistant',
+                    content: '',
+                    tool_calls: [],
+                  };
+
+                  const existingToolCallIndex = assistantMsg.tool_calls.findIndex(
+                    (existingToolCall: any) => existingToolCall.id === toolCall.id
+                  );
+
+                  const nextToolCall = {
+                    id: toolCall.id,
+                    type: 'function',
+                    function: {
+                      name: toolCall.name,
+                      arguments: toolCall.args,
+                    },
+                  };
+
+                  if (existingToolCallIndex === -1) {
+                    assistantMsg.tool_calls.push(nextToolCall);
+                  } else {
+                    assistantMsg.tool_calls[existingToolCallIndex] = nextToolCall;
+                  }
+
+                  const nextIndex = existingRef?.index ?? prev.length;
+                  assistantMessageRef.current = {
+                    message: assistantMsg,
+                    index: nextIndex,
+                    kind: 'tool_call_assistant',
+                  };
+
+                  if (existingRef) {
                     const updated = [...prev];
-                    updated[existing] = event.toolCall!;
+                    updated[existingRef.index] = assistantMsg;
                     return updated;
                   }
-                  return [...prev, event.toolCall!];
+
+                  return [...prev, assistantMsg as Message];
                 });
               }
               break;
             case 'tool_result':
               if (event.toolCall) {
-                setActiveToolCalls((prev) =>
-                  prev.map((tc) =>
-                    tc.name === event.toolCall!.name && tc.status === 'running'
-                      ? event.toolCall!
-                      : tc
-                  )
-                );
+                const toolCall = event.toolCall;
+                if (toolCall.name === 'todo_read' || toolCall.name === 'todo_write') {
+                  const currentAssistantIndex = assistantMessageRef.current?.index;
+                  if (typeof currentAssistantIndex === 'number') {
+                    expandLatestMessage(currentAssistantIndex);
+                  }
+                }
+                // Add tool result message to completion messages
+                setCompletionMessages((prev) => [
+                  ...prev,
+                  {
+                    role: 'tool',
+                    tool_call_id: toolCall.id,
+                    content: toolCall.result || '',
+                    name: toolCall.name,
+                  } as any,
+                ]);
               }
               break;
             case 'usage':
@@ -485,26 +776,52 @@ export const App: React.FC<AppProps> = ({
               }
               break;
             case 'error':
-              setError(event.error || 'Unknown error');
+              if (event.error) {
+                const errorMessage = event.error;
+                setThreadErrors((prev) => {
+                  if (event.transient) {
+                    return [
+                      ...prev.filter((threadError) => !threadError.transient),
+                      {
+                        id: `${Date.now()}-${prev.length}`,
+                        message: errorMessage,
+                        transient: true,
+                      },
+                    ];
+                  }
+
+                  if (prev[prev.length - 1]?.message === errorMessage) {
+                    return prev;
+                  }
+
+                  return [
+                    ...prev,
+                    {
+                      id: `${Date.now()}-${prev.length}`,
+                      message: errorMessage,
+                      transient: false,
+                    },
+                  ];
+                });
+              } else {
+                setError('Unknown error');
+              }
               break;
             case 'done':
+              setThreadErrors((prev) => prev.filter((threadError) => !threadError.transient));
               break;
           }
         },
-        { pricing: pricing || undefined }
+        { pricing: pricing || undefined, abortSignal: abortControllerRef.current.signal, sessionId: session?.id }
       );
 
-      setMessages(updatedMessages);
-
-      // Extract the final assistant response and add to chat history
-      const lastMsg = updatedMessages[updatedMessages.length - 1];
-      if (lastMsg && lastMsg.role === 'assistant' && 'content' in lastMsg && typeof lastMsg.content === 'string') {
-        setChatHistory((prev) => [...prev, { role: 'assistant', content: lastMsg.content as string }]);
-      }
+      // Final update to ensure we have the complete message history
+      setCompletionMessages(updatedMessages);
 
       // Update session
       if (session) {
-        session.messages = updatedMessages;
+        session.completionMessages = updatedMessages;
+        session.todos = getTodosForSession(session.id);
         session.title = generateTitle(updatedMessages);
         await saveSession(session);
       }
@@ -512,10 +829,8 @@ export const App: React.FC<AppProps> = ({
       setError(`Error: ${err.message}`);
     } finally {
       setLoading(false);
-      setStreamedText('');
-      setActiveToolCalls([]);
     }
-  }, [loading, config, messages, session, handleSlashCommand]);
+  }, [loading, config, completionMessages, session, handleSlashCommand, expandLatestMessage]);
 
   // ─── Keyboard shortcuts ───
 
@@ -523,11 +838,24 @@ export const App: React.FC<AppProps> = ({
     if (key.ctrl && input === 'c') {
       exit();
     }
+    if (key.escape && loading && abortControllerRef.current) {
+      // Abort the current completion
+      abortControllerRef.current.abort();
+    }
   });
 
   // ─── Render ───
 
   const providerInfo = config ? getProvider(config.provider) : null;
+  const liveStartIndex = loading
+    ? (typeof assistantMessageRef.current?.index === 'number'
+        ? assistantMessageRef.current.index
+        : Math.max(completionMessages.length - 1, 0))
+    : completionMessages.length;
+  const archivedMessages = completionMessages.slice(0, liveStartIndex);
+  const liveMessages = completionMessages.slice(liveStartIndex);
+  const archivedMessageNodes = renderMessageList(archivedMessages, completionMessages, expandedMessages);
+  const liveMessageNodes = renderMessageList(liveMessages, completionMessages, expandedMessages, liveStartIndex);
 
   return (
     <Box flexDirection="column" height="100%">
@@ -544,10 +872,25 @@ export const App: React.FC<AppProps> = ({
           {session && <Text dimColor> | Session: {session.id.slice(0, 8)}</Text>}
         </Text>
       )}
+      {logFilePath && (
+        <Text dimColor>
+          Debug logs: {logFilePath}
+        </Text>
+      )}
       {error && <Text color="red">{error}</Text>}
+      {helpMessage && (
+        <CollapsibleBox
+          title="Help"
+          content={helpMessage}
+          titleColor="green"
+          dimColor={false}
+          maxPreviewLines={10}
+          expanded={true}
+        />
+      )}
       {!initialized && !error && !needsSetup && <Text>Initializing...</Text>}
 
-      {/* Inline setup wizard */}
+       {/* Inline setup wizard */}
       {needsSetup && (
         <InlineSetup
           onComplete={(newConfig) => {
@@ -558,42 +901,25 @@ export const App: React.FC<AppProps> = ({
         />
       )}
 
-      {/* Chat history */}
-      <Box flexDirection="column" flexGrow={1} marginTop={1}>
-        {chatHistory.map((msg, index) => (
-          <Box key={index} flexDirection="column" marginBottom={1}>
-            {msg.role === 'user' ? (
-              <Text>
-                <Text color="green" bold>{'> '}</Text>
-                <Text>{msg.content}</Text>
-              </Text>
-            ) : msg.role === 'system' ? (
-              <Text color="yellow">{msg.content}</Text>
-            ) : (
-              <Text>{msg.content}</Text>
-            )}
+        {/* Chat messages area (grows to fill space) */}
+       <Box flexDirection="column" flexGrow={1} overflowY="hidden">
+        {archivedMessageNodes}
+        {liveMessageNodes}
+
+        {threadErrors.map((threadError) => (
+          <Box key={`thread-error-${threadError.id}`} marginBottom={1} borderStyle="round" borderColor="red" paddingX={1}>
+            <Text color="red">Error: {threadError.message}</Text>
           </Box>
         ))}
 
-        {/* Streaming text */}
-        {streamedText && (
-          <Box marginBottom={1}>
-            <Text>{streamedText}</Text>
-          </Box>
-        )}
 
-        {/* Active tool calls */}
-        {activeToolCalls.length > 0 && (
-          <Box flexDirection="column" marginBottom={1}>
-            {activeToolCalls.map((tc, i) => (
-              <ToolCallDisplay key={`${tc.name}-${i}`} tc={tc} />
-            ))}
-          </Box>
-        )}
-
-        {/* Loading indicator */}
-        {loading && activeToolCalls.length === 0 && !streamedText && (
-          <Text dimColor>Thinking...</Text>
+        {/* Loading indicator - show only if loading and no assistant response yet */}
+        {loading && completionMessages.length > 0 && (
+          (() => {
+            const lastMsg = completionMessages[completionMessages.length - 1];
+            // Show "Thinking..." only if the last message is a user message (no assistant response yet)
+            return lastMsg.role === 'user' ? <Text dimColor>Thinking...</Text> : null;
+          })()
         )}
 
         {/* Approval prompt */}
@@ -608,24 +934,76 @@ export const App: React.FC<AppProps> = ({
         )}
       </Box>
 
-       {/* Usage bar */}
-       <UsageDisplay usage={lastUsage ?? null} totalCost={totalCost} />
+      {/* Usage bar */}
+      <UsageDisplay usage={lastUsage ?? null} totalCost={totalCost} />
 
        {/* Command filter (show available commands when typing /) */}
-       {initialized && !pendingApproval && inputText.startsWith('/') && (
-         <CommandFilter inputText={inputText} />
-       )}
+      {initialized && !pendingApproval && inputText.startsWith('/') && (
+        <CommandFilter inputText={inputText} />
+      )}
 
-       {/* Input */}
-      {initialized && !pendingApproval && (
+      {/* Config dialog (mid-conversation) */}
+      {showConfigDialog && config && (
+        <ConfigDialog
+          currentConfig={config}
+          onComplete={(newConfig) => {
+            try {
+              const nextClient = buildClient(newConfig);
+              writeConfig(newConfig);
+              clientRef.current = nextClient;
+              setConfig(newConfig);
+              setLastUsage(null);
+              setError(null);
+
+              if (session) {
+                const nextSession = {
+                  ...session,
+                  provider: newConfig.provider,
+                  model: newConfig.model,
+                };
+                setSession(nextSession);
+                saveSession(nextSession).catch((err) => {
+                  setError(`Failed to save updated session config: ${err.message}`);
+                });
+              }
+
+              setShowConfigDialog(false);
+            } catch (err: any) {
+              setError(`Failed to update configuration: ${err.message}`);
+            }
+          }}
+          onCancel={() => {
+            setShowConfigDialog(false);
+          }}
+        />
+      )}
+
+       {/* Working indicator */}
+      {initialized && !pendingApproval && loading && (
+        <Box marginBottom={1}>
+          <Text color="green" bold>{SPINNER_FRAMES[spinnerFrame]} Working...</Text>
+        </Box>
+      )}
+
+      {/* Input */}
+       {initialized && !pendingApproval && (
         <Box borderStyle="single" borderColor="green" paddingX={1}>
           <Text color="green">{'> '}</Text>
           <TextInput
-            value={inputText}
+            key={inputText === '' ? 'reset' : 'active'}
+            defaultValue={inputText}
             onChange={setInputText}
             placeholder="Type your message... (/help for commands)"
             onSubmit={handleSubmit}
           />
+        </Box>
+      )}
+
+       {/* Resume session command (shown when quitting) */}
+      {quittingSession && (
+        <Box flexDirection="column" marginTop={1} paddingX={1} marginBottom={1}>
+          <Text dimColor>Session saved. Resume with:</Text>
+          <Text color="green">protoagent --session {quittingSession.id}</Text>
         </Box>
       )}
     </Box>

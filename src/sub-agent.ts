@@ -9,9 +9,11 @@
  */
 
 import type OpenAI from 'openai';
+import crypto from 'node:crypto';
 import { handleToolCall, getAllTools } from './tools/index.js';
 import { generateSystemPrompt } from './system-prompt.js';
 import { logger } from './utils/logger.js';
+import { clearTodos } from './tools/todo.js';
 
 export const subAgentTool = {
   type: 'function' as const,
@@ -46,10 +48,10 @@ export async function runSubAgent(
   client: OpenAI,
   model: string,
   task: string,
-  maxIterations = 30,
-  onProgress?: (message: string) => void
+  maxIterations = 30
 ): Promise<string> {
   const op = logger.startOperation('sub-agent');
+  const subAgentSessionId = `sub-agent-${crypto.randomUUID()}`;
 
   const systemPrompt = await generateSystemPrompt();
   const subSystemPrompt = `${systemPrompt}
@@ -65,51 +67,53 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
     { role: 'user', content: task },
   ];
 
-  for (let i = 0; i < maxIterations; i++) {
-    const response = await client.chat.completions.create({
-      model,
-      messages,
-      tools: getAllTools(),
-      tool_choice: 'auto',
-    });
+  try {
+    for (let i = 0; i < maxIterations; i++) {
+      const response = await client.chat.completions.create({
+        model,
+        messages,
+        tools: getAllTools(),
+        tool_choice: 'auto',
+      });
 
-    const message = response.choices[0]?.message;
-    if (!message) break;
+      const message = response.choices[0]?.message;
+      if (!message) break;
 
-    // Check for tool calls
-    if (message.tool_calls && message.tool_calls.length > 0) {
-      messages.push(message as any);
+      // Check for tool calls
+      if (message.tool_calls && message.tool_calls.length > 0) {
+        messages.push(message as any);
 
-      for (const toolCall of message.tool_calls) {
-        const { name, arguments: argsStr } = (toolCall as any).function;
-        onProgress?.(`  [sub-agent] ${name}`);
-        logger.debug(`Sub-agent tool call: ${name}`);
+        for (const toolCall of message.tool_calls) {
+          const { name, arguments: argsStr } = (toolCall as any).function;
+          logger.debug(`Sub-agent tool call: ${name}`);
 
-        try {
-          const args = JSON.parse(argsStr);
-          const result = await handleToolCall(name, args);
-          messages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: result,
-          } as any);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          messages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: `Error: ${msg}`,
-          } as any);
+          try {
+            const args = JSON.parse(argsStr);
+            const result = await handleToolCall(name, args, { sessionId: subAgentSessionId });
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: result,
+            } as any);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: `Error: ${msg}`,
+            } as any);
+          }
         }
+        continue;
       }
-      continue;
+
+      // Plain text response — we're done
+      return message.content || '(sub-agent completed with no response)';
     }
 
-    // Plain text response — we're done
+    return '(sub-agent reached iteration limit)';
+  } finally {
     op.end();
-    return message.content || '(sub-agent completed with no response)';
+    clearTodos(subAgentSessionId);
   }
-
-  op.end();
-  return '(sub-agent reached iteration limit)';
 }

@@ -13,6 +13,10 @@ import { logger } from './logger.js';
 
 const RECENT_MESSAGES_TO_KEEP = 5;
 
+function isProtectedSkillMessage(message: OpenAI.Chat.Completions.ChatCompletionMessageParam): boolean {
+  return message.role === 'tool' && typeof message.content === 'string' && message.content.includes('<skill_content ');
+}
+
 const COMPRESSION_PROMPT = `You are a conversation state manager. Your job is to compress a conversation history into a compact summary that preserves all important context.
 
 Produce a structured summary in this format:
@@ -59,7 +63,9 @@ async function compactConversation(
   // Separate system message, history to compress, and recent messages
   const systemMessage = messages[0];
   const recentMessages = messages.slice(-RECENT_MESSAGES_TO_KEEP);
-  const historyToCompress = messages.slice(1, messages.length - RECENT_MESSAGES_TO_KEEP);
+  const middleMessages = messages.slice(1, messages.length - RECENT_MESSAGES_TO_KEEP);
+  const protectedMessages = middleMessages.filter(isProtectedSkillMessage);
+  const historyToCompress = middleMessages.filter((message) => !isProtectedSkillMessage(message));
 
   if (historyToCompress.length === 0) {
     logger.debug('Nothing to compact — conversation too short');
@@ -93,6 +99,7 @@ async function compactConversation(
   const compacted: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     systemMessage,
     { role: 'system', content: `Previous conversation summary:\n\n${summary}` },
+    ...protectedMessages,
     ...recentMessages,
   ];
 

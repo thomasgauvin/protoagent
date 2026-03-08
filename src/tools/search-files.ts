@@ -36,7 +36,13 @@ export async function searchFiles(
 ): Promise<string> {
   const validated = await validatePath(directoryPath);
   const flags = caseSensitive ? 'g' : 'gi';
-  const regex = new RegExp(escapeRegex(searchTerm), flags);
+  let regex: RegExp;
+  try {
+    regex = new RegExp(searchTerm, flags);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `Error: invalid regex pattern "${searchTerm}": ${message}`;
+  }
 
   const results: string[] = [];
   const MAX_RESULTS = 100;
@@ -69,7 +75,14 @@ export async function searchFiles(
         for (let i = 0; i < lines.length && results.length < MAX_RESULTS; i++) {
           if (regex.test(lines[i])) {
             const relativePath = path.relative(validated, fullPath);
-            results.push(`${relativePath}:${i + 1}: ${lines[i].trim()}`);
+            let lineContent = lines[i].trim();
+
+            // Truncate long lines
+            if (lineContent.length > 500) {
+              lineContent = lineContent.slice(0, 500) + '... (truncated)';
+            }
+            
+            results.push(`${relativePath}:${i + 1}: ${lineContent}`);
           }
           regex.lastIndex = 0; // reset regex state
         }
@@ -87,8 +100,4 @@ export async function searchFiles(
 
   const suffix = results.length >= MAX_RESULTS ? `\n(results truncated at ${MAX_RESULTS})` : '';
   return `Found ${results.length} match(es) for "${searchTerm}":\n${results.join('\n')}${suffix}`;
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

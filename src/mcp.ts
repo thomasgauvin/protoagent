@@ -1,184 +1,173 @@
 /**
  * MCP (Model Context Protocol) client.
  *
- * MCP allows connecting external tool servers that expose tools,
- * prompts, and resources over a standardised protocol. ProtoAgent
- * acts as an MCP client — it connects to MCP servers, discovers
- * their tools, and makes them available to the agent.
+ * Uses the official @modelcontextprotocol/sdk to connect to MCP servers
+ * over both stdio (spawned processes) and HTTP transports.
  *
  * Configuration in `.protoagent/mcp.json`:
  * {
  *   "servers": {
- *     "my-server": {
+ *     "my-stdio-server": {
+ *       "type": "stdio",
  *       "command": "npx",
  *       "args": ["-y", "@my/mcp-server"],
  *       "env": { "API_KEY": "..." }
+ *     },
+ *     "my-http-server": {
+ *       "type": "http",
+ *       "url": "http://localhost:3000/mcp"
  *     }
  *   }
  * }
  *
- * Each server is spawned as a child process communicating over
- * stdin/stdout using JSON-RPC (the MCP stdio transport).
+ * Stdio servers are spawned as child processes communicating over stdin/stdout.
+ * HTTP servers connect to a running server via HTTP POST/GET with SSE streaming.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import readline from 'node:readline';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { logger } from './utils/logger.js';
 import { registerDynamicTool, registerDynamicHandler } from './tools/index.js';
 
-// ─── MCP Protocol Types ───
+// ─── MCP Server Configuration ───
 
-interface McpRequest {
-  jsonrpc: '2.0';
-  id: number;
-  method: string;
-  params?: any;
-}
-
-interface McpResponse {
-  jsonrpc: '2.0';
-  id: number;
-  result?: any;
-  error?: { code: number; message: string; data?: any };
-}
-
-interface McpToolDefinition {
-  name: string;
-  description?: string;
-  inputSchema: {
-    type: 'object';
-    properties?: Record<string, any>;
-    required?: string[];
-  };
-}
-
-// ─── MCP Server Connection ───
-
-interface McpServerConfig {
+interface StdioServerConfig {
+  type: 'stdio';
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
 
+interface HttpServerConfig {
+  type: 'http';
+  url: string;
+}
+
+type McpServerConfig = StdioServerConfig | HttpServerConfig;
+
 interface McpConfig {
   servers: Record<string, McpServerConfig>;
 }
 
-class McpConnection {
-  private process: ChildProcess;
-  private nextId = 1;
-  private pending = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
-  private rl: readline.Interface;
-  public serverName: string;
-  public tools: McpToolDefinition[] = [];
+// ─── MCP Server Connection Manager ───
 
-  constructor(serverName: string, config: McpServerConfig) {
-    this.serverName = serverName;
-
-    this.process = spawn(config.command, config.args || [], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...config.env },
-    });
-
-    this.rl = readline.createInterface({ input: this.process.stdout! });
-    this.rl.on('line', (line) => this.handleLine(line));
-
-    this.process.stderr?.on('data', (data: Buffer) => {
-      logger.debug(`MCP [${serverName}] stderr: ${data.toString().trim()}`);
-    });
-
-    this.process.on('exit', (code) => {
-      logger.debug(`MCP [${serverName}] exited with code ${code}`);
-    });
-  }
-
-  private handleLine(line: string): void {
-    try {
-      const msg = JSON.parse(line) as McpResponse;
-      const pending = this.pending.get(msg.id);
-      if (pending) {
-        this.pending.delete(msg.id);
-        if (msg.error) {
-          pending.reject(new Error(`MCP error: ${msg.error.message}`));
-        } else {
-          pending.resolve(msg.result);
-        }
-      }
-    } catch {
-      // Ignore non-JSON lines
-    }
-  }
-
-  async send(method: string, params?: any): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const id = this.nextId++;
-      const request: McpRequest = { jsonrpc: '2.0', id, method, params };
-
-      this.pending.set(id, { resolve, reject });
-
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`MCP request timed out: ${method}`));
-      }, 30_000);
-
-      this.pending.set(id, {
-        resolve: (val) => { clearTimeout(timeout); resolve(val); },
-        reject: (err) => { clearTimeout(timeout); reject(err); },
-      });
-
-      this.process.stdin!.write(JSON.stringify(request) + '\n');
-    });
-  }
-
-  async initialize(): Promise<void> {
-    // Send initialize request
-    const result = await this.send('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'protoagent', version: '0.0.1' },
-    });
-
-    logger.debug(`MCP [${this.serverName}] initialized: ${JSON.stringify(result?.serverInfo)}`);
-
-    // Send initialized notification
-    this.process.stdin!.write(JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'notifications/initialized',
-    }) + '\n');
-
-    // List tools
-    const toolsResult = await this.send('tools/list', {});
-    this.tools = toolsResult?.tools || [];
-    logger.info(`MCP [${this.serverName}] discovered ${this.tools.length} tools`);
-  }
-
-  async callTool(name: string, args: any): Promise<string> {
-    const result = await this.send('tools/call', { name, arguments: args });
-
-    // MCP tool results are arrays of content blocks
-    if (Array.isArray(result?.content)) {
-      return result.content
-        .map((c: any) => {
-          if (c.type === 'text') return c.text;
-          return JSON.stringify(c);
-        })
-        .join('\n');
-    }
-
-    return JSON.stringify(result);
-  }
-
-  close(): void {
-    this.rl.close();
-    this.process.kill();
-  }
+interface McpConnection {
+  client: Client;
+  serverName: string;
+  transport: StdioClientTransport | StreamableHTTPClientTransport;
 }
 
-// ─── MCP Manager ───
-
 const connections = new Map<string, McpConnection>();
+
+/**
+ * Create an MCP client connection for a stdio server.
+ */
+async function connectStdioServer(
+  serverName: string,
+  config: StdioServerConfig
+): Promise<McpConnection> {
+  const transport = new StdioClientTransport({
+    command: config.command,
+    args: config.args || [],
+    env: config.env || {},
+  });
+
+  const client = new Client(
+    {
+      name: 'protoagent',
+      version: '0.0.1',
+    },
+    {
+      capabilities: {},
+    }
+  );
+
+  await client.connect(transport);
+
+  return {
+    client,
+    serverName,
+    transport,
+  };
+}
+
+/**
+ * Create an MCP client connection for an HTTP server.
+ */
+async function connectHttpServer(
+  serverName: string,
+  config: HttpServerConfig
+): Promise<McpConnection> {
+  const transport = new StreamableHTTPClientTransport(new URL(config.url));
+
+  const client = new Client(
+    {
+      name: 'protoagent',
+      version: '0.0.1',
+    },
+    {
+      capabilities: {},
+    }
+  );
+
+  await client.connect(transport);
+
+  return {
+    client,
+    serverName,
+    transport,
+  };
+}
+
+/**
+ * Register all tools from an MCP server into the dynamic tool registry.
+ */
+async function registerMcpTools(conn: McpConnection): Promise<void> {
+  try {
+    const response = await conn.client.listTools();
+    const tools = response.tools || [];
+
+    logger.info(`MCP [${conn.serverName}] discovered ${tools.length} tools`);
+
+    for (const tool of tools) {
+      const toolName = `mcp_${conn.serverName}_${tool.name}`;
+
+      registerDynamicTool({
+        type: 'function' as const,
+        function: {
+          name: toolName,
+          description: `[MCP: ${conn.serverName}] ${tool.description || tool.name}`,
+          parameters: tool.inputSchema as any,
+        },
+      });
+
+      registerDynamicHandler(toolName, async (args) => {
+        const result = await conn.client.callTool({
+          name: tool.name,
+          arguments: args,
+        });
+
+        // MCP tool results are arrays of content blocks
+        if (Array.isArray(result.content)) {
+          return result.content
+            .map((c: any) => {
+              if (c.type === 'text') return c.text;
+              return JSON.stringify(c);
+            })
+            .join('\n');
+        }
+
+        return JSON.stringify(result);
+      });
+    }
+  } catch (err) {
+    logger.error(`Failed to register tools for MCP [${conn.serverName}]: ${err}`);
+  }
+}
 
 /**
  * Load MCP configuration and connect to all configured servers.
@@ -202,38 +191,38 @@ export async function initializeMcp(): Promise<void> {
 
   for (const [name, serverConfig] of Object.entries(config.servers)) {
     try {
-      const conn = new McpConnection(name, serverConfig);
-      await conn.initialize();
-      connections.set(name, conn);
+      let conn: McpConnection;
 
-      // Register each MCP tool in the dynamic tool registry
-      for (const mcpTool of conn.tools) {
-        const toolName = `mcp_${name}_${mcpTool.name}`;
-
-        registerDynamicTool({
-          type: 'function' as const,
-          function: {
-            name: toolName,
-            description: `[MCP: ${name}] ${mcpTool.description || mcpTool.name}`,
-            parameters: mcpTool.inputSchema as any,
-          },
-        });
-
-        registerDynamicHandler(toolName, async (args) => {
-          return await conn.callTool(mcpTool.name, args);
-        });
+      if (serverConfig.type === 'stdio') {
+        logger.debug(`Connecting to stdio MCP server: ${name}`);
+        conn = await connectStdioServer(name, serverConfig);
+      } else if (serverConfig.type === 'http') {
+        logger.debug(`Connecting to HTTP MCP server: ${name} (${serverConfig.url})`);
+        conn = await connectHttpServer(name, serverConfig);
+      } else {
+        logger.error(`Unknown MCP server type for "${name}": ${(serverConfig as any).type}`);
+        continue;
       }
+
+      connections.set(name, conn);
+      await registerMcpTools(conn);
     } catch (err) {
       logger.error(`Failed to connect to MCP server "${name}": ${err}`);
     }
   }
 }
 
-/** Close all MCP connections. */
+/**
+ * Close all MCP connections.
+ */
 export async function closeMcp(): Promise<void> {
   for (const [name, conn] of connections) {
-    logger.debug(`Closing MCP connection: ${name}`);
-    conn.close();
+    try {
+      logger.debug(`Closing MCP connection: ${name}`);
+      await conn.client.close();
+    } catch (err) {
+      logger.error(`Error closing MCP connection [${name}]: ${err}`);
+    }
   }
   connections.clear();
 }

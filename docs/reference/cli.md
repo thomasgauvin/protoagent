@@ -1,32 +1,30 @@
 # CLI Reference
 
-Everything you can do from the command line.
-
 ## Basic usage
 
 ```bash
 protoagent [options] [command]
 ```
 
-Run it with no arguments to start an interactive session.
+Running with no command starts the interactive TUI.
 
 ## Commands
 
 ### `protoagent`
 
-Starts an interactive agent session. The agent reads your project, accepts natural language input, and uses tools to get things done.
+Starts the main interactive app. If no config exists, ProtoAgent shows the first-run setup flow inside the TUI.
 
 ### `protoagent configure`
 
-Launches the configuration wizard. Walks you through picking a provider, choosing a model, and entering your API key. Run this on first use, or anytime you want to switch models.
+Launches the standalone configuration wizard for provider, model, and API key selection.
 
 ## Flags
 
 ### `--dangerously-accept-all`
 
-Skips all approval prompts for file writes, edits, and shell commands. The agent gets unrestricted access to modify files and run commands.
+Skips normal approval prompts for file writes, file edits, and non-safe shell commands.
 
-Use with caution — or in CI where there's no one to click "approve."
+Hard-blocked shell patterns are still denied.
 
 ```bash
 protoagent --dangerously-accept-all
@@ -34,35 +32,42 @@ protoagent --dangerously-accept-all
 
 ### `--log-level <level>`
 
-Controls how much logging output you see. Logs go to stderr so they don't interfere with the Ink UI.
+Controls log verbosity.
 
-| Level | What you see |
+| Level | Meaning |
 |---|---|
-| `error` | Only errors |
-| `warn` | Errors and warnings |
-| `info` | General operational info (this is the default) |
-| `debug` | Detailed debugging output |
-| `trace` | Everything — including raw API calls |
+| `ERROR` | only errors |
+| `WARN` | errors and warnings |
+| `INFO` | normal operational info |
+| `DEBUG` | detailed debugging output |
+| `TRACE` | very verbose tracing |
 
-```bash
-protoagent --log-level debug
-```
+When logging is enabled, ProtoAgent initializes a log file and shows its path in the UI.
 
 ### `--session <id>`
 
-Resume a previously saved session. The full conversation history gets restored and you continue where you left off.
+Resumes a previously saved session by UUID.
 
 ```bash
-protoagent --session abc123def
+protoagent --session 123e4567-e89b-12d3-a456-426614174000
 ```
 
 ## Slash commands
 
-These work during an interactive session:
-
 | Command | What it does |
 |---|---|
-| `/quit` or `/exit` | Exit the agent |
-| `/clear` | Clear the conversation history and start fresh |
-| `/cost` | Show token usage and estimated cost for the current session |
-| `/help` | Show available slash commands |
+| `/quit` or `/exit` | save the session and exit |
+| `/clear` | start a fresh session |
+| `/config` | change provider, model, or API key |
+| `/collapse` | collapse long messages |
+| `/expand` | expand all messages |
+| `/help` | show available slash commands |
+
+When quitting through `/quit` or `/exit`, ProtoAgent prints the exact `protoagent --session <id>` resume command.
+
+## Keyboard shortcuts
+
+| Shortcut | What it does |
+|---|---|
+| `Esc` | abort the current in-flight completion |
+| `Ctrl-C` | exit immediately |

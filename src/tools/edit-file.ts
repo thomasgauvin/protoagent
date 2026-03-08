@@ -3,6 +3,7 @@
  */
 
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
 
@@ -34,8 +35,13 @@ export async function editFile(
   filePath: string,
   oldString: string,
   newString: string,
-  expectedReplacements = 1
+  expectedReplacements = 1,
+  sessionId?: string,
 ): Promise<string> {
+  if (oldString.length === 0) {
+    return 'Error: old_string cannot be empty.';
+  }
+
   const validated = await validatePath(filePath);
   const content = await fs.readFile(validated, 'utf8');
 
@@ -64,6 +70,8 @@ export async function editFile(
     type: 'file_edit',
     description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})`,
     detail: `Replace:\n${oldPreview}\n\nWith:\n${newPreview}`,
+    sessionId,
+    sessionScopeKey: `file_edit:${validated}`,
   });
 
   if (!approved) {
@@ -72,7 +80,14 @@ export async function editFile(
 
   // Perform replacement
   const newContent = content.split(oldString).join(newString);
-  await fs.writeFile(validated, newContent, 'utf8');
+  const directory = path.dirname(validated);
+  const tempPath = path.join(directory, `.protoagent-edit-${process.pid}-${Date.now()}-${path.basename(validated)}`);
+  try {
+    await fs.writeFile(tempPath, newContent, 'utf8');
+    await fs.rename(tempPath, validated);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+  }
 
   return `Successfully edited ${filePath}: ${count} replacement(s) made.`;
 }

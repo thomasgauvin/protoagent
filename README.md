@@ -1,17 +1,16 @@
 # ProtoAgent
 
-A minimal, educational AI coding agent CLI written in TypeScript. Learn how to build multi-turn agentic systems from first principles — no frameworks, just clear, annotated code.
+A minimal, educational AI coding agent CLI written in TypeScript. It stays small enough to read in an afternoon, but it still has the core pieces you expect from a real coding agent: a streaming tool-use loop, approvals, sessions, MCP, skills, sub-agents, and cost tracking.
 
 ## Features
 
-- **Multi-turn conversation** — Talk to any LLM (OpenAI, Anthropic, Google, Cerebras, Cloudflare)
-- **Tool use** — Read/write files, search code, execute shell commands, manage todos, trigger sub-agents
-- **MCP support** — Connect to Claude's Model Context Protocol servers for extended capabilities
-- **Approval workflows** — Confirm dangerous operations before they run (or approve all for the session)
-- **Session persistence** — Save conversations and resume them later
-- **Skills system** — Load custom instructions and tools into your session
-- **Sub-agents** — Spawn parallel AI agents for independent research tasks
-- **Cost tracking** — See real-time token usage and pricing for each model
+- **Multi-provider chat** — OpenAI, Anthropic, Google Gemini, and Cerebras via the OpenAI SDK
+- **Built-in tools** — Read, write, edit, list, search, run shell commands, manage todos, and fetch web pages with `webfetch`
+- **Approval system** — Inline confirmation for file writes, file edits, and non-safe shell commands
+- **Session persistence** — Conversations and TODO state are saved automatically and can be resumed with `--session`
+- **Dynamic extensions** — Load skills on demand and add external tools through MCP servers
+- **Sub-agents** — Delegate self-contained tasks to isolated child conversations
+- **Usage tracking** — Live token, context, and estimated cost display in the TUI
 
 ## Quick Start
 
@@ -20,50 +19,49 @@ npm install -g protoagent
 protoagent
 ```
 
-On first run, you'll be prompted to select an LLM provider (OpenAI, Anthropic, Google, or free tier options) and enter an API key. Your config is saved to `~/.protoagent-config.json`.
+On first run, ProtoAgent shows an inline setup flow where you pick a provider/model pair and enter an API key. Config is stored in `~/.local/share/protoagent/config.json` on macOS/Linux and `~/AppData/Local/protoagent/config.json` on Windows.
 
-## Configuration
+You can also run the standalone wizard directly:
 
-Set up a new provider or change your active model anytime:
-
-```
-/config
+```bash
+protoagent configure
 ```
 
-This opens the inline setup wizard. You can also edit your config manually — see `docs/guide/configuration.md` for details.
+## Interactive Commands
 
-## Available Commands
+- `/help` — Show available slash commands
+- `/config` — Change the saved provider, model, or API key
+- `/clear` — Start a fresh conversation in a new session
+- `/collapse` — Collapse long system and tool output
+- `/expand` — Expand collapsed messages
+- `/quit` or `/exit` — Save and exit
 
-- `/help` — Show all available commands
-- `/config` — Re-run the configuration wizard
-- `/session-save` — Save current conversation
-- `/session-load <id>` — Resume a saved session
-- `/skill-load <name>` — Load a skill (custom instructions + tools)
-- `/mcp-start <name>` — Start an MCP server
-- `/mcp-stop <name>` — Stop an MCP server
-- `/approve-all <type>` — Auto-approve all tool calls of a type for this session
-- `/reject-all <type>` — Auto-reject all tool calls of a type for this session
-- `/model-switch <name>` — Switch to a different model mid-session
+Other useful shortcuts:
 
-## Building from Source
+- `Esc` — Abort the current in-flight completion
+- `Ctrl-C` — Exit immediately
+
+## Building From Source
 
 ```bash
 npm install
 npm run build
-npm run dev  # Run in dev mode (tsx)
+npm run dev
 ```
 
 ## Documentation
 
-Full guides and tutorials are available in `docs/`:
+Full guides and tutorials live in `docs/`:
 
-- **Getting Started** — `docs/guide/getting-started.md`
-- **Configuration** — `docs/guide/configuration.md`
-- **Tools** — `docs/guide/tools.md`
-- **Skills** — `docs/guide/skills.md`
-- **MCP** — `docs/guide/mcp.md`
-- **Sessions** — `docs/guide/sessions.md`
-- **Sub-agents** — `docs/guide/sub-agents.md`
+- `docs/guide/getting-started.md`
+- `docs/guide/configuration.md`
+- `docs/guide/tools.md`
+- `docs/guide/webfetch.md`
+- `docs/guide/approvals.md`
+- `docs/guide/sessions.md`
+- `docs/guide/skills.md`
+- `docs/guide/sub-agents.md`
+- `docs/guide/mcp.md`
 
 Build the docs site locally:
 
@@ -72,55 +70,52 @@ npm run docs:dev
 npm run docs:build
 ```
 
+Top-level technical references:
+
+- `SPEC.md` — current implementation specification
+- `ARCHITECTURE.md` — current runtime architecture and module relationships
+
 ## Architecture
 
-This is a learning project. The source code is annotated and organized to be readable:
+The codebase is organized so each part is easy to trace:
 
-- `src/cli.tsx` — Entry point and CLI argument parsing
-- `src/App.tsx` — React terminal UI
-- `src/agentic-loop.ts` — Core agent logic (tool use, conversation loop)
-- `src/tools/` — Tool implementations (file operations, shell, todos, etc.)
-- `src/config.tsx` — Config management
-- `src/providers.ts` — LLM provider definitions (OpenAI, Anthropic, Google, etc.)
-- `src/sessions.ts` — Session save/load
-- `src/mcp.ts` — MCP client
-- `src/skills.ts` — Skill system
+- `src/cli.tsx` — CLI flags and the `configure` subcommand
+- `src/App.tsx` — Ink app shell, runtime orchestration, slash commands, approvals, config dialog, session display
+- `src/agentic-loop.ts` — Streaming tool-use loop and error handling
+- `src/tools/` — Built-in tools such as file I/O, shell, todo tracking, and `webfetch`
+- `src/config.tsx` — Config persistence and setup wizard
+- `src/providers.ts` — Provider/model catalog and pricing metadata
+- `src/sessions.ts` — Session save/load and TODO persistence
+- `src/skills.ts` — Skill discovery and dynamic `activate_skill` tool registration
+- `src/mcp.ts` — MCP server loading and dynamic tool registration
+- `src/sub-agent.ts` — Isolated child agent execution
 
-## Supported Models
+## Supported Providers
 
 ### OpenAI
-- GPT-5.2 (premium reasoning)
-- GPT-5 Mini (fast, cheap)
+- GPT-5.2
+- GPT-5 Mini
 - GPT-4.1
 
-### Anthropic
-- Claude Opus 4.6 (flagship)
-- Claude Sonnet 4.5 (balanced)
-- Claude Haiku 4.5 (fast)
+### Anthropic Claude
+- Claude Opus 4.6
+- Claude Sonnet 4.6
+- Claude Haiku 4.5
 
-### Google
-- Gemini 2.5 Flash (multimodal)
+### Google Gemini
+- Gemini 3 Flash (Preview)
+- Gemini 3 Pro (Preview)
+- Gemini 2.5 Flash
 - Gemini 2.5 Pro
 
-### Free Tier
-- Cerebras (free API)
-- Cloudflare (free with workers account)
+### Cerebras
+- Cerebras — Llama 4 Scout 17B
 
 ## Why ProtoAgent?
 
-ProtoAgent is not meant to be a production framework. It's an experiment in building understandable AI systems — every line of code should teach something. Read through the tutorial (`docs/tutorial/`) to see how to build:
+ProtoAgent is not trying to be a giant framework. It is a compact reference implementation for how coding agents work in practice: configuration, dynamic system prompts, a streaming agent loop, tool registries, approvals, sessions, MCP, skills, and delegated sub-agents.
 
-1. Configuration and provider selection
-2. Agentic loops and tool registries
-3. File and shell command tools
-4. Approval workflows
-5. Session persistence
-6. Cost tracking
-7. Dynamic system prompts
-8. MCP integration
-9. Skills and sub-agents
-
-Perfect for learning or as a foundation for your own agent experiments.
+If you want to learn by reading source instead of magic abstractions, this repo is built for that.
 
 ## License
 

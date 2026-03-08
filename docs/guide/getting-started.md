@@ -1,8 +1,6 @@
 # Getting Started
 
-You've probably used coding agents like Claude Code, Cursor, or Copilot. They read your files, run commands, write code — it feels like magic. But have you ever wondered what's actually happening under the hood?
-
-That's what ProtoAgent is. It's a fully functional coding agent CLI that you can read, understand, and hack on. The entire source is around 2,000 lines of TypeScript — small enough to read in one sitting, but capable enough to use as a real day-to-day tool.
+ProtoAgent is a TypeScript coding-agent CLI built to stay readable. It uses an Ink terminal UI, an OpenAI-compatible client layer, a streaming tool loop, inline approvals, and session persistence.
 
 ## Install it
 
@@ -12,53 +10,84 @@ Install globally via npm:
 npm install -g protoagent
 ```
 
-Or clone and run from source:
+Or run it from a local checkout:
 
 ```bash
-git clone https://github.com/user/protoagent.git
-cd protoagent
 npm install
 npm run dev
 ```
 
 ## First run
 
-The first time you launch ProtoAgent, it walks you through picking a provider and entering your API key. Nothing fancy — just a terminal wizard.
+Launch ProtoAgent:
 
 ```bash
 protoagent
 ```
 
-You can come back and change this anytime with:
+If no config exists yet, ProtoAgent opens an inline setup flow where you pick a provider, choose a model, and enter an API key.
+
+You can reopen configuration later with:
 
 ```bash
 protoagent configure
 ```
 
+Or, during a running session:
+
+```text
+/config
+```
+
 ## Using it
 
-Once you're set up, just type what you want and hit Enter. ProtoAgent reads your project, calls tools as needed, and gets things done.
+Once configured, type a task and press Enter. ProtoAgent reads the project, decides which tools to call, asks for approval when needed, and keeps iterating until it reaches a final answer.
 
-Some things you might try:
+Example prompts:
 
-- "Read the README and tell me what this project does"
-- "Find all TODO comments in the codebase"
-- "Add error handling to the fetchData function"
-- "Run the tests and fix any failures"
+- `Read the README and explain the project`
+- `Find every TODO in src/`
+- `Add error handling to the fetchData function`
+- `Run the tests and fix any failures`
 
-The agent decides which tools to call, asks for your approval on anything destructive, and keeps going until the task is done.
+## Interactive commands
+
+- `/help`
+- `/config`
+- `/clear`
+- `/collapse`
+- `/expand`
+- `/quit` or `/exit`
+
+Useful shortcuts:
+
+- `Esc` aborts the current in-flight completion
+- `Ctrl-C` exits immediately
+
+`/quit` and `/exit` save the current session first and print the exact resume command.
 
 ## CLI flags
 
 | Flag | What it does |
 |---|---|
-| `--dangerously-accept-all` | Skip all approval prompts (use with caution) |
-| `--log-level <level>` | Set log verbosity (error, warn, info, debug, trace) |
-| `--session <id>` | Resume a previous conversation |
+| `--dangerously-accept-all` | Skip normal approval prompts for writes, edits, and non-safe shell commands |
+| `--log-level <level>` | Set log verbosity: `TRACE`, `DEBUG`, `INFO`, `WARN`, or `ERROR` |
+| `--session <id>` | Resume a previously saved session |
+
+## What you see while working
+
+- streamed assistant output
+- consolidated tool calls and tool results
+- inline approval prompts
+- token, context, and cost status
+- auto-saved session state and TODOs
+- a log file path when logging is enabled
 
 ## What's next
 
-- [Configuration](/guide/configuration) — set up providers and models
-- [Tools](/guide/tools) — what the agent can actually do
-- [Skills](/guide/skills) — customise agent behaviour with markdown files
-- [Build your own](/tutorial/) — the step-by-step tutorial
+- [Configuration](/guide/configuration)
+- [Tools](/guide/tools)
+- [Approvals](/guide/approvals)
+- [Sessions](/guide/sessions)
+- [Skills](/guide/skills)
+- [Build your own](/tutorial/)

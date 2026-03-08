@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
-  title: 'ProtoAgent',
-  description: 'A minimal, tutorial-friendly AI coding agent CLI',
+  title: 'PROTOAGENT',
+  description: 'Terminal-themed docs for a readable AI coding agent CLI',
 
   appearance: false,
 
@@ -21,6 +21,8 @@ export default defineConfig({
             { text: 'Getting Started', link: '/guide/getting-started' },
             { text: 'Configuration', link: '/guide/configuration' },
             { text: 'Tools', link: '/guide/tools' },
+            { text: 'Web Fetch', link: '/guide/webfetch' },
+            { text: 'Approvals', link: '/guide/approvals' },
             { text: 'Skills', link: '/guide/skills' },
             { text: 'MCP Servers', link: '/guide/mcp' },
             { text: 'Sessions', link: '/guide/sessions' },
@@ -59,12 +61,10 @@ export default defineConfig({
       ],
     },
 
-    socialLinks: [
-      { icon: 'github', link: 'https://github.com/user/protoagent' },
-    ],
+    socialLinks: [],
 
     footer: {
-      message: 'Built as an educational project to learn how coding agents work.',
+      message: 'Built to teach how production-style coding agents actually work.',
     },
   },
 })

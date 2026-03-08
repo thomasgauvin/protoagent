@@ -8,8 +8,10 @@ import DefaultTheme from 'vitepress/theme'
 </template>
 
 <style>
-/* Hide the default VitePress navbar since we use our custom one */
-.VPNav {
+/* Hide duplicated VitePress chrome; custom docs shell provides it. */
+.VPNav,
+.VPSidebar,
+.VPLocalNav {
   display: none !important;
 }
 </style>

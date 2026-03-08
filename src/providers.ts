@@ -58,21 +58,21 @@ export const SUPPORTED_MODELS: ModelProvider[] = [
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
     models: [
       {
-        id: 'claude-opus-4.6-20250514',
+        id: 'claude-opus-4-6',
         name: 'Claude Opus 4.6',
         contextWindow: 200_000,
         pricingPerMillionInput: 5.00,
         pricingPerMillionOutput: 25.00,
       },
       {
-        id: 'claude-sonnet-4.5-20250514',
-        name: 'Claude Sonnet 4.5',
+        id: 'claude-sonnet-4-6',
+        name: 'Claude Sonnet 4.6',
         contextWindow: 200_000,
         pricingPerMillionInput: 3.00,
         pricingPerMillionOutput: 15.00,
       },
       {
-        id: 'claude-haiku-4.5-20250514',
+        id: 'claude-haiku-4-5',
         name: 'Claude Haiku 4.5',
         contextWindow: 200_000,
         pricingPerMillionInput: 1.00,
@@ -126,21 +126,6 @@ export const SUPPORTED_MODELS: ModelProvider[] = [
         id: 'llama-4-scout-17b-16e-instruct',
         name: 'Llama 4 Scout 17B',
         contextWindow: 128_000,
-        pricingPerMillionInput: 0.00,
-        pricingPerMillionOutput: 0.00,
-      },
-    ],
-  },
-  {
-    id: 'cloudflare',
-    name: 'Cloudflare Workers AI',
-    baseURL: 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1',
-    apiKeyEnvVar: 'CLOUDFLARE_API_TOKEN',
-    models: [
-      {
-        id: '@cf/meta/llama-4-scout-17b-16e-instruct',
-        name: 'Llama 4 Scout 17B',
-        contextWindow: 131_072,
         pricingPerMillionInput: 0.00,
         pricingPerMillionOutput: 0.00,
       },
