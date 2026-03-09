@@ -10,6 +10,7 @@
 import type OpenAI from 'openai';
 import { estimateConversationTokens } from './cost-tracker.js';
 import { logger } from './logger.js';
+import { getTodosForSession, type TodoItem } from '../tools/todo.js';
 
 const RECENT_MESSAGES_TO_KEEP = 5;
 
@@ -40,7 +41,9 @@ export async function compactIfNeeded(
   model: string,
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   contextWindow: number,
-  currentTokens: number
+  currentTokens: number,
+  requestDefaults: Record<string, unknown> = {},
+  sessionId?: string
 ): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
   const utilisation = (currentTokens / contextWindow) * 100;
   if (utilisation < 90) return messages;
@@ -48,7 +51,7 @@ export async function compactIfNeeded(
   logger.info(`Compacting conversation (${utilisation.toFixed(1)}% of context window used)`);
 
   try {
-    return await compactConversation(client, model, messages);
+    return await compactConversation(client, model, messages, requestDefaults, sessionId);
   } catch (err) {
     logger.error(`Compaction failed, continuing with original messages: ${err}`);
     return messages;
@@ -58,7 +61,9 @@ export async function compactIfNeeded(
 async function compactConversation(
   client: OpenAI,
   model: string,
-  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  _requestDefaults: Record<string, unknown>,
+  sessionId?: string
 ): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
   // Separate system message, history to compress, and recent messages
   const systemMessage = messages[0];
@@ -73,13 +78,18 @@ async function compactConversation(
   }
 
   // Build compression request
+  const activeTodos = getTodosForSession(sessionId);
+  const todoReminder = activeTodos.length > 0
+    ? `\n\nActive TODOs:\n${activeTodos.map((todo: TodoItem) => `- [${todo.status}] ${todo.content}`).join('\n')}\n\nThe agent must not stop until the TODO list is fully complete. Preserve that instruction in the summary if work remains.`
+    : '';
+
   const compressionMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: COMPRESSION_PROMPT },
     {
       role: 'user',
       content: `Here is the conversation history to compress:\n\n${historyToCompress
         .map((m) => `[${(m as any).role}]: ${(m as any).content || JSON.stringify((m as any).tool_calls || '')}`)
-        .join('\n\n')}`,
+        .join('\n\n')}${todoReminder}`,
     },
   ];
 

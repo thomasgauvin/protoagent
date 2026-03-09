@@ -1,13 +1,15 @@
 # Sessions
 
-ProtoAgent auto-saves session state so you can stop and resume work later.
+Most toy CLIs forget everything the moment you close the terminal. ProtoAgent does not.
+
+It saves session state so you can stop in the middle of a task, come back later, and keep going.
 
 ## Where sessions live
 
 - **macOS/Linux**: `~/.local/share/protoagent/sessions/`
 - **Windows**: `%USERPROFILE%/AppData/Local/protoagent/sessions/`
 
-Each session is stored as one JSON file named by UUID.
+Each session is stored as a JSON file named by UUID.
 
 On non-Windows platforms, ProtoAgent also hardens session directory and file permissions.
 
@@ -47,6 +49,8 @@ Session IDs are validated as UUIDs. Invalid IDs are rejected before a session fi
 ## Starting fresh
 
 Inside the UI, `/clear` starts a new session, resets the visible conversation, clears TODO state for the previous session, and creates a fresh session ID.
+
+That distinction matters. `/clear` is not just wiping visible messages. It is starting a new persisted thread of work.
 
 ## Titles
 

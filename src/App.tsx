@@ -6,13 +6,14 @@
  * this file is purely presentation + state wiring.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Box, Text, Static, useApp, useInput, useStdout } from 'ink';
 import { TextInput, Select, PasswordInput } from '@inkjs/ui';
 import BigText from 'ink-big-text';
 import { OpenAI } from 'openai';
 import { readConfig, writeConfig, resolveApiKey, type Config } from './config.js';
-import { getProvider, getModelPricing, SUPPORTED_MODELS } from './providers.js';
+import { loadRuntimeConfig } from './runtime-config.js';
+import { getAllProviders, getProvider, getModelPricing, getRequestDefaultParams } from './providers.js';
 import {
   runAgenticLoop,
   initializeMessages,
@@ -35,7 +36,6 @@ import { initializeMcp, closeMcp } from './mcp.js';
 import { generateSystemPrompt } from './system-prompt.js';
 import { CollapsibleBox } from './components/CollapsibleBox.js';
 import { ConsolidatedToolMessage } from './components/ConsolidatedToolMessage.js';
-import { ConfigDialog } from './components/ConfigDialog.js';
 import { FormattedMessage } from './components/FormattedMessage.js';
 
 interface InlineThreadError {
@@ -49,6 +49,7 @@ function renderMessageList(
   allMessages: Message[],
   expandedMessages: Set<number>,
   startIndex = 0,
+  deferTables = false,
 ): React.ReactNode[] {
   const rendered: React.ReactNode[] = [];
   const skippedIndices = new Set<number>();
@@ -62,6 +63,7 @@ function renderMessageList(
     const msgAny = msg as any;
     const isToolCall = msg.role === 'assistant' && msgAny.tool_calls && msgAny.tool_calls.length > 0;
     const displayContent = 'content' in msg && typeof msg.content === 'string' ? msg.content : null;
+    const normalizedContent = normalizeMessageSpacing(displayContent || '', msg.role === 'tool' ? 'tool' : 'assistant');
     const isFirstSystemMessage = msg.role === 'system' && !allMessages.slice(0, index).some((message) => message.role === 'system');
     const previousMessage = index > 0 ? allMessages[index - 1] : null;
     const followsToolMessage = previousMessage?.role === 'tool';
@@ -71,12 +73,16 @@ function renderMessageList(
     const previousWasConversationTurn = previousSpeaker === 'user' || previousSpeaker === 'assistant';
     const speakerChanged = previousSpeaker !== currentSpeaker;
 
-    if (isFirstSystemMessage) {
-      rendered.push(<Text key={`spacer-${index}`}> </Text>);
-    }
+    // Determine if we need a blank-line spacer above this message.
+    // At most one spacer is added per message to avoid doubling.
+    const needsSpacer =
+      isFirstSystemMessage ||
+      (isConversationTurn && previousWasConversationTurn && speakerChanged) ||
+      followsToolMessage ||
+      (isToolCall && previousMessage != null);
 
-    if (isConversationTurn && previousWasConversationTurn && speakerChanged) {
-      rendered.push(<Text key={`turn-spacer-${index}`}> </Text>);
+    if (needsSpacer) {
+      rendered.push(<Text key={`spacer-${index}`}> </Text>);
     }
 
     if (msg.role === 'user') {
@@ -109,10 +115,10 @@ function renderMessageList(
     }
 
     if (isToolCall) {
-      if (displayContent && displayContent.trim().length > 0) {
+      if (normalizedContent.length > 0) {
         rendered.push(
           <Box key={`${index}-text`} flexDirection="column">
-            <FormattedMessage content={displayContent.trimEnd()} />
+            <FormattedMessage content={normalizedContent} deferTables={deferTables} />
           </Box>
         );
       }
@@ -129,7 +135,7 @@ function renderMessageList(
           const nextMsg = messagesToRender[nextLocalIndex] as any;
           if (nextMsg.role === 'tool' && nextMsg.tool_call_id === toolCall.id) {
             toolResults.set(toolCall.id, {
-              content: nextMsg.content || '',
+              content: normalizeMessageSpacing(nextMsg.content || '', 'tool'),
               name: nextMsg.name || toolCall.name,
             });
             skippedIndices.add(nextLocalIndex);
@@ -154,7 +160,7 @@ function renderMessageList(
         <CollapsibleBox
           key={index}
           title={`${msgAny.name || 'tool'} result`}
-          content={displayContent || ''}
+          content={normalizedContent}
           dimColor={true}
           maxPreviewLines={3}
           expanded={expandedMessages.has(index)}
@@ -165,7 +171,10 @@ function renderMessageList(
 
     rendered.push(
       <Box key={index} flexDirection="column">
-        <FormattedMessage content={trimAssistantSpacing(displayContent || '', followsToolMessage ? 'start' : 'both')} />
+        <FormattedMessage
+          content={normalizedContent}
+          deferTables={deferTables}
+        />
       </Box>
     );
   });
@@ -173,10 +182,19 @@ function renderMessageList(
   return rendered;
 }
 
-function trimAssistantSpacing(message: string, trimMode: 'start' | 'end' | 'both' = 'both'): string {
-  if (trimMode === 'start') return message.trimStart();
-  if (trimMode === 'end') return message.trimEnd();
-  return message.trim();
+function normalizeMessageSpacing(message: string, _role: 'assistant' | 'tool'): string {
+  const normalized = message.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+
+  while (lines.length > 0 && lines[0].trim() === '') {
+    lines.shift();
+  }
+
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+    lines.pop();
+  }
+
+  return lines.join('\n');
 }
 
 function getVisualSpeaker(message: Message | null): 'user' | 'assistant' | 'system' | null {
@@ -201,7 +219,6 @@ export interface AppProps {
 const SLASH_COMMANDS = [
   { name: '/clear', description: 'Clear conversation and start fresh' },
   { name: '/collapse', description: 'Collapse all long messages' },
-  { name: '/config', description: 'Change provider, model, or API key' },
   { name: '/expand', description: 'Expand all collapsed messages' },
   { name: '/help', description: 'Show all available commands' },
   { name: '/quit', description: 'Exit ProtoAgent' },
@@ -212,7 +229,6 @@ const HELP_TEXT = [
   'Commands:',
   '  /clear    - Clear conversation and start fresh',
   '  /collapse - Collapse all long messages',
-  '  /config   - Change provider, model, or API key',
   '  /expand   - Expand all collapsed messages',
   '  /help     - Show this help',
   '  /quit     - Exit ProtoAgent',
@@ -236,8 +252,29 @@ function buildClient(config: Config): OpenAI {
     apiKey,
   };
 
-  if (provider?.baseURL) {
-    clientOptions.baseURL = provider.baseURL;
+  // baseURL: env var override takes precedence over provider default
+  const baseURLOverride = process.env.PROTOAGENT_BASE_URL?.trim();
+  const baseURL = baseURLOverride || provider?.baseURL;
+  if (baseURL) {
+    clientOptions.baseURL = baseURL;
+  }
+
+  // Custom headers: env override takes precedence over provider defaults
+  const rawHeaders = process.env.PROTOAGENT_CUSTOM_HEADERS?.trim();
+  if (rawHeaders) {
+    const defaultHeaders: Record<string, string> = {};
+    for (const line of rawHeaders.split('\n')) {
+      const sep = line.indexOf(': ');
+      if (sep === -1) continue;
+      const key = line.slice(0, sep).trim();
+      const value = line.slice(sep + 2).trim();
+      if (key && value) defaultHeaders[key] = value;
+    }
+    if (Object.keys(defaultHeaders).length > 0) {
+      clientOptions.defaultHeaders = defaultHeaders;
+    }
+  } else if (provider?.headers && Object.keys(provider.headers).length > 0) {
+    clientOptions.defaultHeaders = provider.headers;
   }
 
   return new OpenAI(clientOptions);
@@ -282,8 +319,8 @@ const ApprovalPrompt: React.FC<{
   ];
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} marginY={1}>
-      <Text color="yellow" bold>Approval Required</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={1} marginY={1}>
+      <Text color="green" bold>Approval Required</Text>
       <Text>{request.description}</Text>
       {request.detail && (
         <Text dimColor>{request.detail.length > 200 ? request.detail.slice(0, 200) + '...' : request.detail}</Text>
@@ -306,7 +343,7 @@ const UsageDisplay: React.FC<{
   if (!usage && totalCost === 0) return null;
 
   return (
-    <Box>
+    <Box marginTop={1}>
       {usage && (
         <Text dimColor>
           tokens: {usage.inputTokens}↓ {usage.outputTokens}↑ | ctx: {usage.contextPercent.toFixed(0)}%
@@ -328,7 +365,7 @@ const InlineSetup: React.FC<{
   const [selectedModelId, setSelectedModelId] = useState('');
   const [apiKeyError, setApiKeyError] = useState('');
 
-  const providerItems = SUPPORTED_MODELS.flatMap((provider) =>
+  const providerItems = getAllProviders().flatMap((provider) =>
     provider.models.map((model) => ({
       label: `${provider.name} - ${model.name}`,
       value: `${provider.id}:::${model.id}`,
@@ -356,6 +393,7 @@ const InlineSetup: React.FC<{
   }
 
   const provider = getProvider(selectedProviderId);
+  const hasResolvedAuth = Boolean(resolveApiKey({ provider: selectedProviderId, apiKey: undefined }));
 
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -363,19 +401,19 @@ const InlineSetup: React.FC<{
       <Text dimColor>
         Selected: {provider?.name} / {selectedModelId}
       </Text>
-      <Text>Enter your API key:</Text>
+      <Text>{hasResolvedAuth ? 'Optional API key:' : 'Enter your API key:'}</Text>
       {apiKeyError && <Text color="red">{apiKeyError}</Text>}
       <PasswordInput
-        placeholder={`Paste your ${provider?.apiKeyEnvVar || 'API'} key`}
+        placeholder={hasResolvedAuth ? 'Press enter to keep resolved auth' : `Paste your ${provider?.apiKeyEnvVar || 'API'} key`}
         onSubmit={(value) => {
-          if (value.trim().length === 0) {
+          if (value.trim().length === 0 && !hasResolvedAuth) {
             setApiKeyError('API key cannot be empty.');
             return;
           }
           const newConfig: Config = {
             provider: selectedProviderId,
             model: selectedModelId,
-            apiKey: value.trim(),
+            ...(value.trim().length > 0 ? { apiKey: value.trim() } : {}),
           };
           writeConfig(newConfig);
           onComplete(newConfig);
@@ -393,6 +431,7 @@ export const App: React.FC<AppProps> = ({
   sessionId,
 }) => {
   const { exit } = useApp();
+  const { stdout } = useStdout();
 
   // Core state
   const [config, setConfig] = useState<Config | null>(null);
@@ -406,7 +445,16 @@ export const App: React.FC<AppProps> = ({
   const [needsSetup, setNeedsSetup] = useState(false);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
 
-  // Collapsible state — track which message indices are expanded
+  // Static output — completed turns flushed to stdout via <Static>, never re-rendered
+  const [staticItems, setStaticItems] = useState<Array<{ key: string; nodes: React.ReactNode[] }>>([]);
+  // Track how many messages have already been flushed to static (prevents double-rendering)
+  const flushedUpToRef = useRef<number>(0);
+
+  // Input reset key — incremented on submit to force TextInput remount and clear
+  const [inputResetKey, setInputResetKey] = useState(0);
+  const [inputWidthKey, setInputWidthKey] = useState(stdout?.columns ?? 80);
+
+  // Collapsible state — only applies to live (current turn) messages
   const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
 
   const expandLatestMessage = useCallback((index: number) => {
@@ -418,9 +466,6 @@ export const App: React.FC<AppProps> = ({
     });
   }, []);
 
-  // Config dialog state
-  const [showConfigDialog, setShowConfigDialog] = useState(false);
-
   // Approval state
   const [pendingApproval, setPendingApproval] = useState<{
     request: ApprovalRequest;
@@ -431,6 +476,9 @@ export const App: React.FC<AppProps> = ({
   const [lastUsage, setLastUsage] = useState<AgentEvent['usage'] | null>(null);
   const [totalCost, setTotalCost] = useState(0);
   const [spinnerFrame, setSpinnerFrame] = useState(0);
+
+  // Active tool tracking — shows which tool is currently executing
+  const [activeTool, setActiveTool] = useState<string | null>(null);
 
   // Session state
   const [session, setSession] = useState<Session | null>(null);
@@ -450,6 +498,30 @@ export const App: React.FC<AppProps> = ({
 
   // Abort controller for cancelling the current completion
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Lock the live-start boundary at the beginning of each completion to prevent jumps
+  const liveStartRef = useRef<number>(0);
+
+  // Debounce timer for text_delta renders (~50ms batching)
+  const textFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Track expandedMessages in a ref so async callbacks can read the latest value
+  const expandedMessagesRef = useRef(expandedMessages);
+  expandedMessagesRef.current = expandedMessages;
+
+  // ─── Header rendering helper (for static flush) ───
+
+  const renderHeader = useCallback((loadedConfig: Config): React.ReactNode[] => {
+    const provider = getProvider(loadedConfig.provider);
+    return [
+      <BigText key="logo" text="ProtoAgent" font="tiny" colors={["#09A469"]} />,
+      <Text key="model" dimColor>
+        Model: {provider?.name || loadedConfig.provider} / {loadedConfig.model}
+        {dangerouslyAcceptAll && <Text color="red"> (auto-approve all)</Text>}
+      </Text>,
+      <Text key="spacer"> </Text>,
+    ];
+  }, [dangerouslyAcceptAll]);
 
   // ─── Post-config initialization (reused after inline setup) ───
 
@@ -474,6 +546,17 @@ export const App: React.FC<AppProps> = ({
         setTodosForSession(loadedSession.id, loadedSession.todos);
         setSession(loadedSession);
         setCompletionMessages(loadedSession.completionMessages);
+        // Flush header + restored session messages to static output
+        const headerNodes = renderHeader(loadedConfig);
+        const msgNodes = renderMessageList(
+          loadedSession.completionMessages,
+          loadedSession.completionMessages,
+          new Set(),
+          0,
+          false,
+        );
+        flushedUpToRef.current = loadedSession.completionMessages.length;
+        setStaticItems([{ key: 'session-restore', nodes: [...headerNodes, ...msgNodes] }]);
       } else {
         setError(`Session "${sessionId}" not found. Starting a new session.`);
       }
@@ -488,6 +571,18 @@ export const App: React.FC<AppProps> = ({
       clearTodos(newSession.id);
       newSession.completionMessages = initialCompletionMessages;
       setSession(newSession);
+
+      // Flush header + system prompt to static output
+      const headerNodes = renderHeader(loadedConfig);
+        const msgNodes = renderMessageList(
+          initialCompletionMessages,
+          initialCompletionMessages,
+          new Set(),
+          0,
+          false,
+        );
+      flushedUpToRef.current = initialCompletionMessages.length;
+      setStaticItems([{ key: 'init', nodes: [...headerNodes, ...msgNodes] }]);
     }
 
     setNeedsSetup(false);
@@ -508,6 +603,21 @@ export const App: React.FC<AppProps> = ({
 
     return () => clearInterval(interval);
   }, [loading]);
+
+  useEffect(() => {
+    if (!stdout) return;
+
+    const handleResize = () => {
+      setInputWidthKey(stdout.columns ?? 80);
+    };
+
+    handleResize();
+    stdout.on('resize', handleResize);
+
+    return () => {
+      stdout.off('resize', handleResize);
+    };
+  }, [stdout]);
 
   useEffect(() => {
     const init = async () => {
@@ -535,6 +645,8 @@ export const App: React.FC<AppProps> = ({
           setPendingApproval({ request: req, resolve });
         });
       });
+
+      await loadRuntimeConfig();
 
       // Load config — if none exists, show inline setup
       const loadedConfig = readConfig();
@@ -594,6 +706,9 @@ export const App: React.FC<AppProps> = ({
         // Re-initialize messages with just the system prompt
         initializeMessages().then((msgs) => {
           setCompletionMessages(msgs);
+          setStaticItems([]); // Clear static output
+          flushedUpToRef.current = 0;
+          liveStartRef.current = 0;
           setHelpMessage(null);
           setLastUsage(null);
           setTotalCost(0);
@@ -607,15 +722,6 @@ export const App: React.FC<AppProps> = ({
             setSession(newSession);
           }
         });
-        return true;
-       case '/config':
-         if (initialized && config) {
-          // Mid-conversation: show config dialog
-          setShowConfigDialog(true);
-        } else {
-          // Initial setup: show inline setup
-          setNeedsSetup(true);
-        }
         return true;
       case '/expand':
         // Expand all collapsed messages
@@ -645,11 +751,13 @@ export const App: React.FC<AppProps> = ({
         const handled = await handleSlashCommand(trimmed);
         if (handled) {
           setInputText('');
+          setInputResetKey((prev) => prev + 1);
           return;
       }
     }
 
     setInputText('');
+    setInputResetKey((prev) => prev + 1); // Force TextInput to remount and clear
     setLoading(true);
     setError(null);
     setHelpMessage(null);
@@ -657,13 +765,18 @@ export const App: React.FC<AppProps> = ({
 
     // Add user message to completion messages IMMEDIATELY for real-time UI display
     const userMessage: Message = { role: 'user', content: trimmed };
-    setCompletionMessages((prev) => [...prev, userMessage]);
+    setCompletionMessages((prev) => {
+      // Lock the live-start boundary to where flushed content ends
+      liveStartRef.current = flushedUpToRef.current;
+      return [...prev, userMessage];
+    });
 
     // Reset assistant message tracker
     assistantMessageRef.current = null;
 
     try {
       const pricing = getModelPricing(config.provider, config.model);
+      const requestDefaults = getRequestDefaultParams(config.provider, config.model);
 
       // Create abort controller for this completion
       abortControllerRef.current = new AbortController();
@@ -676,97 +789,108 @@ export const App: React.FC<AppProps> = ({
         (event: AgentEvent) => {
           switch (event.type) {
             case 'text_delta':
-              // Update the current assistant message in completionMessages in real-time
+              // Update the current assistant message in completionMessages
               if (!assistantMessageRef.current || assistantMessageRef.current.kind !== 'streaming_text') {
-                // First text delta - create the assistant message
+                // First text delta — create the assistant message immediately
                 const assistantMsg = { role: 'assistant', content: event.content || '', tool_calls: [] } as Message;
                 setCompletionMessages((prev) => {
                   assistantMessageRef.current = { message: assistantMsg, index: prev.length, kind: 'streaming_text' };
                   return [...prev, assistantMsg];
                 });
               } else {
-                // Subsequent text delta - update the assistant message
+                // Subsequent deltas — accumulate in ref, debounce the render (~50ms)
                 assistantMessageRef.current.message.content += event.content || '';
-                setCompletionMessages((prev) => {
-                  const updated = [...prev];
-                  updated[assistantMessageRef.current!.index] = { ...assistantMessageRef.current!.message };
-                  return updated;
-                });
+                if (!textFlushTimerRef.current) {
+                  textFlushTimerRef.current = setTimeout(() => {
+                    textFlushTimerRef.current = null;
+                    setCompletionMessages((prev) => {
+                      if (!assistantMessageRef.current) return prev;
+                      const updated = [...prev];
+                      updated[assistantMessageRef.current.index] = { ...assistantMessageRef.current.message };
+                      return updated;
+                    });
+                  }, 50);
+                }
               }
               break;
             case 'tool_call':
               if (event.toolCall) {
                 const toolCall = event.toolCall;
-                setCompletionMessages((prev) => {
-                  const existingRef = assistantMessageRef.current;
-                  const existingMessage = existingRef?.message
-                    ? {
-                        ...existingRef.message,
-                        tool_calls: [...(existingRef.message.tool_calls || [])],
-                      }
-                    : null;
+                setActiveTool(toolCall.name);
 
-                  const assistantMsg = existingMessage || {
-                    role: 'assistant',
-                    content: '',
-                    tool_calls: [],
-                  };
+                // Track the tool call in the ref WITHOUT triggering a render.
+                // The render will happen when tool_result arrives.
+                const existingRef = assistantMessageRef.current;
+                const assistantMsg = existingRef?.message
+                  ? {
+                      ...existingRef.message,
+                      tool_calls: [...(existingRef.message.tool_calls || [])],
+                    }
+                  : { role: 'assistant', content: '', tool_calls: [] as any[] };
 
-                  const existingToolCallIndex = assistantMsg.tool_calls.findIndex(
-                    (existingToolCall: any) => existingToolCall.id === toolCall.id
-                  );
+                const nextToolCall = {
+                  id: toolCall.id,
+                  type: 'function',
+                  function: { name: toolCall.name, arguments: toolCall.args },
+                };
 
-                  const nextToolCall = {
-                    id: toolCall.id,
-                    type: 'function',
-                    function: {
-                      name: toolCall.name,
-                      arguments: toolCall.args,
-                    },
-                  };
+                const idx = assistantMsg.tool_calls.findIndex(
+                  (tc: any) => tc.id === toolCall.id
+                );
+                if (idx === -1) {
+                  assistantMsg.tool_calls.push(nextToolCall);
+                } else {
+                  assistantMsg.tool_calls[idx] = nextToolCall;
+                }
 
-                  if (existingToolCallIndex === -1) {
-                    assistantMsg.tool_calls.push(nextToolCall);
-                  } else {
-                    assistantMsg.tool_calls[existingToolCallIndex] = nextToolCall;
-                  }
-
-                  const nextIndex = existingRef?.index ?? prev.length;
+                if (!existingRef) {
+                  // First tool call — we need to add the assistant message to state
+                  setCompletionMessages((prev) => {
+                    assistantMessageRef.current = {
+                      message: assistantMsg,
+                      index: prev.length,
+                      kind: 'tool_call_assistant',
+                    };
+                    return [...prev, assistantMsg as Message];
+                  });
+                } else {
+                  // Subsequent tool calls — just update the ref, no render
                   assistantMessageRef.current = {
+                    ...existingRef,
                     message: assistantMsg,
-                    index: nextIndex,
                     kind: 'tool_call_assistant',
                   };
-
-                  if (existingRef) {
-                    const updated = [...prev];
-                    updated[existingRef.index] = assistantMsg;
-                    return updated;
-                  }
-
-                  return [...prev, assistantMsg as Message];
-                });
+                }
               }
               break;
             case 'tool_result':
               if (event.toolCall) {
                 const toolCall = event.toolCall;
+                setActiveTool(null);
                 if (toolCall.name === 'todo_read' || toolCall.name === 'todo_write') {
                   const currentAssistantIndex = assistantMessageRef.current?.index;
                   if (typeof currentAssistantIndex === 'number') {
                     expandLatestMessage(currentAssistantIndex);
                   }
                 }
-                // Add tool result message to completion messages
-                setCompletionMessages((prev) => [
-                  ...prev,
-                  {
+                // Flush the assistant message update + tool result in a SINGLE state update
+                setCompletionMessages((prev) => {
+                  const updated = [...prev];
+                  // Sync assistant message (may have new tool_calls since last render)
+                  if (assistantMessageRef.current) {
+                    updated[assistantMessageRef.current.index] = {
+                      ...assistantMessageRef.current.message,
+                    };
+                  }
+                  // Append tool result
+                  updated.push({
                     role: 'tool',
                     tool_call_id: toolCall.id,
                     content: toolCall.result || '',
                     name: toolCall.name,
-                  } as any,
-                ]);
+                  } as any);
+                  return updated;
+                });
               }
               break;
             case 'usage':
@@ -807,12 +931,48 @@ export const App: React.FC<AppProps> = ({
                 setError('Unknown error');
               }
               break;
+            case 'iteration_done':
+              // Flush completed iteration to static output so the live area stays small.
+              // This is the key optimization: previous tool call groups become static
+              // and never re-render when new tool results arrive.
+              setCompletionMessages((current) => {
+                const unflushed = current.slice(flushedUpToRef.current);
+                if (unflushed.length > 0) {
+                  const nodes = renderMessageList(
+                    unflushed,
+                    current,
+                    expandedMessagesRef.current,
+                    flushedUpToRef.current,
+                    false,
+                  );
+                  if (nodes.length > 0) {
+                    setStaticItems((prev) => [...prev, { key: `iter-${Date.now()}`, nodes }]);
+                  }
+                }
+                flushedUpToRef.current = current.length;
+                liveStartRef.current = current.length;
+                return current;
+              });
+              // Reset assistant message tracker for next iteration
+              assistantMessageRef.current = null;
+              break;
             case 'done':
+              // Clear any pending text delta timer
+              if (textFlushTimerRef.current) {
+                clearTimeout(textFlushTimerRef.current);
+                textFlushTimerRef.current = null;
+              }
+              setActiveTool(null);
               setThreadErrors((prev) => prev.filter((threadError) => !threadError.transient));
               break;
           }
         },
-        { pricing: pricing || undefined, abortSignal: abortControllerRef.current.signal, sessionId: session?.id }
+        {
+          pricing: pricing || undefined,
+          abortSignal: abortControllerRef.current.signal,
+          sessionId: session?.id,
+          requestDefaults,
+        }
       );
 
       // Final update to ensure we have the complete message history
@@ -828,6 +988,20 @@ export const App: React.FC<AppProps> = ({
     } catch (err: any) {
       setError(`Error: ${err.message}`);
     } finally {
+      // Flush only NEW messages (since last flush) to static output
+      setCompletionMessages((current) => {
+        const unflushed = current.slice(flushedUpToRef.current);
+        if (unflushed.length > 0) {
+          const nodes = renderMessageList(unflushed, current, new Set(), flushedUpToRef.current, false);
+          if (nodes.length > 0) {
+            setStaticItems((prev) => [...prev, { key: `turn-${Date.now()}`, nodes }]);
+          }
+        }
+        flushedUpToRef.current = current.length;
+        return current;
+      });
+      liveStartRef.current = Infinity; // nothing is "live" anymore
+      setExpandedMessages(new Set());
       setLoading(false);
     }
   }, [loading, config, completionMessages, session, handleSlashCommand, expandLatestMessage]);
@@ -846,37 +1020,25 @@ export const App: React.FC<AppProps> = ({
 
   // ─── Render ───
 
-  const providerInfo = config ? getProvider(config.provider) : null;
-  const liveStartIndex = loading
-    ? (typeof assistantMessageRef.current?.index === 'number'
-        ? assistantMessageRef.current.index
-        : Math.max(completionMessages.length - 1, 0))
-    : completionMessages.length;
-  const archivedMessages = completionMessages.slice(0, liveStartIndex);
-  const liveMessages = completionMessages.slice(liveStartIndex);
-  const archivedMessageNodes = renderMessageList(archivedMessages, completionMessages, expandedMessages);
-  const liveMessageNodes = renderMessageList(liveMessages, completionMessages, expandedMessages, liveStartIndex);
+  // Only render messages from the current live turn in the active area.
+  // Memoized so spinner ticks (spinnerFrame) don't recompute the message list.
+  const liveStartIndex = loading ? liveStartRef.current : completionMessages.length;
+  const liveMessageNodes = useMemo(() => {
+    const liveMessages = completionMessages.slice(liveStartIndex);
+    return renderMessageList(liveMessages, completionMessages, expandedMessages, liveStartIndex, loading);
+  }, [completionMessages, expandedMessages, liveStartIndex, loading]);
 
   return (
     <Box flexDirection="column" height="100%">
-      {/* Header */}
-      <BigText text="ProtoAgent" font="tiny" colors={["#09A469"]} />
-      <Text italic dimColor>
-        "The prefix "proto-" comes from the Greek word prōtos — the beginning stage of something that will later evolve."
-      </Text>
-      <Text> </Text>
-      {config && (
-        <Text dimColor>
-          Model: {providerInfo?.name || config.provider} / {config.model}
-          {dangerouslyAcceptAll && <Text color="red"> (auto-approve all)</Text>}
-          {session && <Text dimColor> | Session: {session.id.slice(0, 8)}</Text>}
-        </Text>
-      )}
-      {logFilePath && (
-        <Text dimColor>
-          Debug logs: {logFilePath}
-        </Text>
-      )}
+      {/* Static output — completed turns, written to stdout once, never re-rendered */}
+      <Static items={staticItems}>
+        {(item) => (
+          <Box key={item.key} flexDirection="column">
+            {item.nodes}
+          </Box>
+        )}
+      </Static>
+
       {error && <Text color="red">{error}</Text>}
       {helpMessage && (
         <CollapsibleBox
@@ -901,9 +1063,8 @@ export const App: React.FC<AppProps> = ({
         />
       )}
 
-        {/* Chat messages area (grows to fill space) */}
-       <Box flexDirection="column" flexGrow={1} overflowY="hidden">
-        {archivedMessageNodes}
+        {/* Live messages — only the current streaming turn, re-rendered on updates */}
+       <Box flexDirection="column" flexGrow={1}>
         {liveMessageNodes}
 
         {threadErrors.map((threadError) => (
@@ -942,60 +1103,33 @@ export const App: React.FC<AppProps> = ({
         <CommandFilter inputText={inputText} />
       )}
 
-      {/* Config dialog (mid-conversation) */}
-      {showConfigDialog && config && (
-        <ConfigDialog
-          currentConfig={config}
-          onComplete={(newConfig) => {
-            try {
-              const nextClient = buildClient(newConfig);
-              writeConfig(newConfig);
-              clientRef.current = nextClient;
-              setConfig(newConfig);
-              setLastUsage(null);
-              setError(null);
-
-              if (session) {
-                const nextSession = {
-                  ...session,
-                  provider: newConfig.provider,
-                  model: newConfig.model,
-                };
-                setSession(nextSession);
-                saveSession(nextSession).catch((err) => {
-                  setError(`Failed to save updated session config: ${err.message}`);
-                });
-              }
-
-              setShowConfigDialog(false);
-            } catch (err: any) {
-              setError(`Failed to update configuration: ${err.message}`);
-            }
-          }}
-          onCancel={() => {
-            setShowConfigDialog(false);
-          }}
-        />
-      )}
-
-       {/* Working indicator */}
+      {/* Working indicator */}
       {initialized && !pendingApproval && loading && (
         <Box marginBottom={1}>
-          <Text color="green" bold>{SPINNER_FRAMES[spinnerFrame]} Working...</Text>
+          <Text color="green" bold>
+            {SPINNER_FRAMES[spinnerFrame]}{' '}
+            {activeTool ? `Running ${activeTool}...` : 'Working...'}
+          </Text>
         </Box>
       )}
 
       {/* Input */}
        {initialized && !pendingApproval && (
-        <Box borderStyle="single" borderColor="green" paddingX={1}>
-          <Text color="green">{'> '}</Text>
-          <TextInput
-            key={inputText === '' ? 'reset' : 'active'}
-            defaultValue={inputText}
-            onChange={setInputText}
-            placeholder="Type your message... (/help for commands)"
-            onSubmit={handleSubmit}
-          />
+        <Box key={`input-shell-${inputWidthKey}`} borderStyle="round" borderColor="green" paddingX={1} flexDirection="column">
+          <Box flexDirection="row">
+            <Box width={2} flexShrink={0}>
+              <Text color="green" bold>{'>'}</Text>
+            </Box>
+            <Box flexGrow={1} minWidth={10}>
+              <TextInput
+                key={`${inputResetKey}-${inputWidthKey}`}
+                defaultValue={inputText}
+                onChange={setInputText}
+                placeholder="Type your message... (/help for commands)"
+                onSubmit={handleSubmit}
+              />
+            </Box>
+          </Box>
         </Box>
       )}
 

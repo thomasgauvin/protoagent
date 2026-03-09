@@ -42,7 +42,7 @@ Controls log verbosity.
 | `DEBUG` | detailed debugging output |
 | `TRACE` | very verbose tracing |
 
-When logging is enabled, ProtoAgent initializes a log file and shows its path in the UI.
+ProtoAgent initializes a log file and shows its path in the UI.
 
 ### `--session <id>`
 
@@ -58,7 +58,6 @@ protoagent --session 123e4567-e89b-12d3-a456-426614174000
 |---|---|
 | `/quit` or `/exit` | save the session and exit |
 | `/clear` | start a fresh session |
-| `/config` | change provider, model, or API key |
 | `/collapse` | collapse long messages |
 | `/expand` | expand all messages |
 | `/help` | show available slash commands |

@@ -37,13 +37,11 @@ export const CollapsibleBox: React.FC<CollapsibleBoxProps> = ({
   // If content is short, always show it
   if (!isLong) {
     return (
-      <Box flexDirection="column" marginBottom={marginBottom} borderStyle="round" borderColor={titleColor || 'white'}>
-        <Box paddingX={1}>
-          <Text color={titleColor} dimColor={dimColor} bold>
-            {title}
-          </Text>
-        </Box>
-        <Box marginLeft={2} paddingRight={1}>
+      <Box flexDirection="column" marginBottom={marginBottom}>
+        <Text color={titleColor} dimColor={dimColor} bold>
+          {title}
+        </Text>
+        <Box marginLeft={1}>
           <Text dimColor={dimColor}>{content}</Text>
         </Box>
       </Box>
@@ -64,13 +62,11 @@ export const CollapsibleBox: React.FC<CollapsibleBoxProps> = ({
   const hasMore = !expanded;
 
   return (
-    <Box flexDirection="column" marginBottom={marginBottom} borderStyle="round" borderColor={titleColor || 'white'}>
-      <Box paddingX={1}>
-        <Text color={titleColor} dimColor={dimColor} bold>
-          {expanded ? '▼' : '▶'} {title}
-        </Text>
-      </Box>
-      <Box flexDirection="column" marginLeft={2} paddingRight={1}>
+    <Box flexDirection="column" marginBottom={marginBottom}>
+      <Text color={titleColor} dimColor={dimColor} bold>
+        {expanded ? '▼' : '▶'} {title}
+      </Text>
+      <Box flexDirection="column" marginLeft={1}>
         <Text dimColor={dimColor}>{preview}</Text>
         {hasMore && <Text dimColor={true}>... (use /expand to see all)</Text>}
       </Box>

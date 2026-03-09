@@ -77,7 +77,7 @@ At runtime, the user interacts only with the Ink UI. The UI delegates model/tool
   - Extends allowed filesystem roots to activated skill directories.
 
 - `src/mcp.ts`
-  - Loads `.protoagent/mcp.json`.
+  - Loads merged `protoagent.jsonc` runtime config.
   - Connects to stdio or HTTP MCP servers.
   - Registers MCP tools dynamically.
 
@@ -102,12 +102,11 @@ At runtime, the user interacts only with the Ink UI. The UI delegates model/tool
 
 - `src/components/CollapsibleBox.tsx`
 - `src/components/ConsolidatedToolMessage.tsx`
-- `src/components/ConfigDialog.tsx`
 - `src/components/FormattedMessage.tsx`
 - `src/components/Table.tsx`
 - `src/utils/format-message.tsx`
 
-These handle collapsible long output, grouped tool rendering, in-app config changes, Markdown-ish formatting, and table rendering.
+These handle collapsible long output, grouped tool rendering, Markdown-ish formatting, and table rendering.
 
 ### Shared utilities
 
@@ -332,7 +331,7 @@ Because `generateSystemPrompt()` calls `initializeSkillsSupport()`, prompt gener
 
 ## 9. MCP Architecture
 
-`src/mcp.ts` reads `.protoagent/mcp.json` and supports two transport types:
+`src/mcp.ts` reads merged `protoagent.jsonc` config and supports two transport types:
 
 - `stdio`
 - `http` via `StreamableHTTPClientTransport`
@@ -398,7 +397,6 @@ The output is a rebuilt message list with a synthetic summary system message.
 - keyboard shortcuts
 - approval prompts
 - inline setup
-- inline config dialog
 - loading and usage display
 - MCP initialization/cleanup
 

@@ -12,30 +12,30 @@ const marqueeItems = [
   'MULTI-STEP TOOL LOOPS',
   'MCP + SKILLS SUPPORT',
   'SESSION PERSISTENCE',
-  'DOCS BUILT LIKE A TERMINAL',
+  'LEARNING BY BUILDING',
 ]
 
 const stats = [
-  { label: '// readable codebase', value: '~2K', width: '78%' },
+  { label: '// readable codebase', value: 'SMALL', width: '78%' },
   { label: '// core loop', value: 'VISIBLE', width: '92%' },
   { label: '// docs mode', value: 'LIVE', width: '100%' },
 ]
 
 const terminalLines = [
-  { type: 'prompt', text: 'C:\\PROTO> agent start --repo="./myapp"' },
-  { type: 'dim', text: '  Indexing 847 files [########] 100%' },
+  { type: 'prompt', text: 'PROTO> read this repo and explain how the agent loop works' },
+  { type: 'dim', text: '  Reading src/agentic-loop.ts...' },
   { type: 'gap', text: '' },
-  { type: 'prompt', text: 'USER> add rate limiting to all API routes' },
+  { type: 'prompt', text: 'USER> now add session resume support' },
   { type: 'gap', text: '' },
-  { type: 'dim', text: '  [PLAN] Found 14 unprotected endpoints' },
-  { type: 'dim', text: '  [PLAN] Strategy: Redis sliding window' },
-  { type: 'dim', text: '  [EXEC] Creating middleware/rateLimit.ts' },
-  { type: 'dim', text: '  [EXEC] Patching 14 route files...' },
+  { type: 'dim', text: '  [PLAN] Add session persistence in src/sessions.ts' },
+  { type: 'dim', text: '  [PLAN] Wire --session into src/cli.tsx' },
+  { type: 'dim', text: '  [EXEC] Updating App state and save/load flow...' },
+  { type: 'dim', text: '  [TEST] Re-running the flow from a fresh terminal...' },
   { type: 'dim', text: '  [TEST] Running test suite...' },
   { type: 'gap', text: '' },
-  { type: 'ok', text: '  [OK] 52/52 tests passing' },
-  { type: 'ok', text: '  [OK] PR #847 opened on GitHub' },
-  { type: 'ok', text: '  [OK] Changelog generated' },
+  { type: 'ok', text: '  [OK] sessions resume with TODO state intact' },
+  { type: 'ok', text: '  [OK] the exact resume command is printed on quit' },
+  { type: 'ok', text: '  [OK] docs updated to match the runtime' },
 ]
 </script>
 
@@ -138,7 +138,7 @@ const terminalLines = [
   color: var(--text-dim);
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
 }
 
 .pa-marquee-item span {
@@ -149,23 +149,23 @@ const terminalLines = [
 .pa-features {
   max-width: var(--content-width);
   margin: 0 auto;
-  padding-left: 28px;
-  padding-right: 28px;
+  padding-left: clamp(18px, 3vw, 28px);
+  padding-right: clamp(18px, 3vw, 28px);
 }
 
 .pa-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
-  gap: 42px;
-  padding-top: 54px;
-  padding-bottom: 54px;
+  grid-template-columns: minmax(0, 1.08fr) minmax(280px, 0.92fr);
+  gap: clamp(24px, 4vw, 42px);
+  padding-top: clamp(32px, 5vw, 54px);
+  padding-bottom: clamp(32px, 5vw, 54px);
   border-bottom: 2px solid var(--border-strong);
 }
 
 .pa-hero-eyebrow {
   margin-bottom: 16px;
   color: var(--text-dim);
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
   letter-spacing: 0.24em;
   text-transform: uppercase;
 }
@@ -173,10 +173,12 @@ const terminalLines = [
 .pa-logo {
   margin: 0 0 20px;
   color: var(--green);
-  font-family: var(--mono);
-  font-size: clamp(0.9rem, 1.6vw, 1.25rem);
-  line-height: 1.15;
+  font-family: monospace;
+  font-size: clamp(0.76rem, 1.4vw, 1.05rem);
+  line-height: 1;
   text-shadow: 0 0 10px var(--green-glow), 0 0 34px rgba(114, 255, 140, 0.12);
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .pa-hero-sub {
@@ -185,7 +187,7 @@ const terminalLines = [
   border-left: 3px solid var(--green);
   color: var(--green-bright);
   font-family: var(--display);
-  font-size: clamp(2rem, 4vw, 3.1rem);
+  font-size: clamp(1.5rem, 3.1vw, 2.5rem);
   letter-spacing: 0.08em;
   line-height: 0.96;
   text-transform: uppercase;
@@ -194,8 +196,9 @@ const terminalLines = [
 .pa-hero-text,
 .pa-hero-subtext {
   max-width: 640px;
-  font-size: 1rem;
-  line-height: 1.85;
+  font-family: var(--sans);
+  font-size: clamp(var(--text-base), 1vw, 0.95rem);
+  line-height: 1.75;
 }
 
 .pa-hero-text {
@@ -218,12 +221,12 @@ const terminalLines = [
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 46px;
-  padding: 12px 20px;
+  min-height: 52px;
+  padding: 14px 20px;
   text-decoration: none;
   text-transform: uppercase;
   letter-spacing: 0.16em;
-  font-size: 0.76rem;
+  font-size: var(--text-sm);
   transition: all 0.15s ease;
 }
 
@@ -253,15 +256,15 @@ const terminalLines = [
 .pa-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-  margin-top: 34px;
+  gap: 16px;
+  margin-top: 28px;
   padding-top: 24px;
   border-top: 1px solid var(--border);
 }
 
 .pa-stat-label {
   color: var(--text-dim);
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
@@ -270,7 +273,7 @@ const terminalLines = [
   margin-top: 6px;
   color: var(--green-bright);
   font-family: var(--display);
-  font-size: 2.6rem;
+  font-size: clamp(1.7rem, 2.7vw, 2.2rem);
   line-height: 1;
   letter-spacing: 0.05em;
   text-shadow: 0 0 10px var(--green-glow);
@@ -302,16 +305,17 @@ const terminalLines = [
   padding: 10px 16px;
   background: var(--green);
   color: var(--bg);
-  font-size: 0.76rem;
+  font-size: var(--text-sm);
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
 .pa-terminal-body {
   min-height: 100%;
-  padding: 20px;
-  font-size: 0.88rem;
-  line-height: 1.85;
+  padding: clamp(16px, 2vw, 20px);
+  font-size: clamp(0.65rem, 0.85vw, 0.76rem);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
 }
 
 .pa-terminal-line.is-prompt {
@@ -346,12 +350,12 @@ const terminalLines = [
 }
 
 .pa-section-bar {
-  margin: 0 0 34px;
-  padding: 11px 16px;
+  margin: 0 0 24px;
+  padding: 8px 14px;
   background: var(--green);
   color: var(--bg);
   font-family: var(--display);
-  font-size: 1.6rem;
+  font-size: clamp(0.8rem, 1.8vw, 1.05rem);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -364,7 +368,7 @@ const terminalLines = [
 
 .pa-feature-card {
   min-height: 100%;
-  padding: 26px 22px;
+  padding: 18px 16px;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   background: rgba(7, 17, 10, 0.88);
@@ -385,20 +389,20 @@ const terminalLines = [
 
 .pa-feature-num {
   display: inline-block;
-  margin-bottom: 12px;
-  padding: 2px 9px;
+  margin-bottom: 8px;
+  padding: 1px 7px;
   border: 1px solid var(--text-faint);
   color: var(--text-faint);
   font-family: var(--display);
-  font-size: 2.2rem;
+  font-size: clamp(1.05rem, 1.8vw, 1.3rem);
   line-height: 1;
 }
 
 .pa-feature-title {
-  margin: 0 0 10px;
+  margin: 0 0 6px;
   color: var(--green-bright);
   font-family: var(--display);
-  font-size: 2rem;
+  font-size: clamp(0.95rem, 1.6vw, 1.2rem);
   letter-spacing: 0.08em;
   line-height: 0.92;
   text-transform: uppercase;
@@ -407,13 +411,15 @@ const terminalLines = [
 .pa-feature-text {
   margin: 0;
   color: var(--text);
-  line-height: 1.8;
+  font-family: var(--sans);
+  font-size: var(--text-sm);
+  line-height: 1.7;
 }
 
 .pa-feature-tag {
-  margin-top: 14px;
+  margin-top: 10px;
   color: var(--green);
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
@@ -427,8 +433,78 @@ const terminalLines = [
   to { transform: translateX(-50%); }
 }
 
+@media (max-width: 1180px) {
+  .pa-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .pa-feature-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pa-feature-card:nth-child(3n) {
+    border-right: 1px solid var(--border);
+  }
+
+  .pa-feature-card:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .pa-feature-card:nth-last-child(-n + 3) {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pa-feature-card:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+}
+
 @media (max-width: 960px) {
-  .pa-hero,
+  .pa-hero {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .pa-hero-copy {
+    display: contents;
+  }
+
+  .pa-hero-eyebrow {
+    order: 1;
+  }
+
+  .pa-logo {
+    order: 2;
+  }
+
+  .pa-hero-sub {
+    order: 3;
+    margin-bottom: 24px;
+  }
+
+  .pa-terminal {
+    order: 4;
+    margin-bottom: 24px;
+  }
+
+  .pa-hero-text {
+    order: 5;
+  }
+
+  .pa-hero-subtext {
+    order: 6;
+  }
+
+  .pa-actions {
+    order: 7;
+  }
+
+  .pa-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    order: 8;
+  }
+
   .pa-feature-grid {
     grid-template-columns: 1fr;
   }
@@ -448,24 +524,13 @@ const terminalLines = [
 }
 
 @media (max-width: 640px) {
-  .pa-hero,
-  .pa-features {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-
   .pa-hero {
     padding-top: 30px;
-    gap: 26px;
-  }
-
-  .pa-logo {
-    font-size: 0.7rem;
+    gap: 0;
   }
 
   .pa-actions,
   .pa-stats {
-    grid-template-columns: 1fr;
     flex-direction: column;
   }
 
@@ -475,11 +540,18 @@ const terminalLines = [
 
   .pa-stats {
     display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .pa-terminal-head {
+    padding: 10px 12px;
+    font-size: 0.58rem;
+    letter-spacing: 0.12em;
   }
 
   .pa-terminal-body {
     padding: 14px;
-    font-size: 0.76rem;
+    font-size: var(--text-sm);
   }
 }
 </style>

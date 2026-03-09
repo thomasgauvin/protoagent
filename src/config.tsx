@@ -4,7 +4,8 @@ import os from 'node:os';
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import { Select, TextInput, PasswordInput } from '@inkjs/ui';
-import { SUPPORTED_MODELS, getProvider } from './providers.js';
+import { loadRuntimeConfig } from './runtime-config.js';
+import { getAllProviders, getProvider } from './providers.js';
 
 export interface Config {
   provider: string;
@@ -27,12 +28,41 @@ export function resolveApiKey(config: Pick<Config, 'provider' | 'apiKey'>): stri
   }
 
   const provider = getProvider(config.provider);
+
+  if (provider?.apiKeyEnvVar) {
+    const providerEnvOverride = process.env[provider.apiKeyEnvVar]?.trim();
+    if (providerEnvOverride) {
+      return providerEnvOverride;
+    }
+  }
+
+  const envOverride = process.env.PROTOAGENT_API_KEY?.trim();
+  if (envOverride) {
+    return envOverride;
+  }
+
+  const providerApiKey = provider?.apiKey?.trim();
+  if (providerApiKey) {
+    return providerApiKey;
+  }
+
+  // Fallback for Cloudflare Gateway or other custom header setups
+  if (process.env.PROTOAGENT_CUSTOM_HEADERS) {
+    return 'none';
+  }
+
   if (!provider?.apiKeyEnvVar) {
+    if (provider?.headers && Object.keys(provider.headers).length > 0) {
+      return 'none';
+    }
     return null;
   }
 
-  const envApiKey = process.env[provider.apiKeyEnvVar]?.trim();
-  return envApiKey || null;
+  if (provider?.headers && Object.keys(provider.headers).length > 0) {
+    return 'none';
+  }
+
+  return null;
 }
 
 export const getConfigDirectory = () => {
@@ -65,8 +95,8 @@ export const readConfig = (): Config | null => {
       // Handle legacy format: { provider, model, credentials: { KEY: "..." } }
       let apiKey = raw.apiKey;
       if (!apiKey && raw.credentials && typeof raw.credentials === 'object') {
-        const provider = SUPPORTED_MODELS.find((p) => p.id === raw.provider);
-        if (provider) {
+        const provider = getAllProviders().find((p) => p.id === raw.provider);
+        if (provider?.apiKeyEnvVar) {
           apiKey = raw.credentials[provider.apiKeyEnvVar];
         }
         // Fallback: grab the first non-empty value
@@ -112,13 +142,20 @@ interface InitialLoadingProps {
 }
 export const InitialLoading: React.FC<InitialLoadingProps> = ({ setExistingConfig, setStep }) => {
   useEffect(() => {
-    const config = readConfig();
-    if (config) {
-      setExistingConfig(config);
-      setStep(1);
-    } else {
-      setStep(2);
-    }
+    loadRuntimeConfig()
+      .then(() => {
+        const config = readConfig();
+        if (config) {
+          setExistingConfig(config);
+          setStep(1);
+        } else {
+          setStep(2);
+        }
+      })
+      .catch((error) => {
+        console.error('Error loading runtime config:', error);
+        setStep(2);
+      });
   }, []);
   return <Text>Loading configuration...</Text>;
 };
@@ -164,7 +201,7 @@ export const ModelSelection: React.FC<ModelSelectionProps> = ({
   setSelectedModelId,
   setStep,
 }) => {
-  const items = SUPPORTED_MODELS.flatMap((provider) =>
+  const items = getAllProviders().flatMap((provider) =>
     provider.models.map((model) => ({
       label: `${provider.name} - ${model.name}`,
       value: `${provider.id}:::${model.id}`,
@@ -200,9 +237,10 @@ export const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
 }) => {
   const [errorMessage, setErrorMessage] = useState('');
   const provider = getProvider(selectedProviderId);
+  const canUseResolvedAuth = Boolean(resolveApiKey({ provider: selectedProviderId, apiKey: undefined }));
 
   const handleApiKeySubmit = (value: string) => {
-    if (value.trim().length === 0) {
+    if (value.trim().length === 0 && !canUseResolvedAuth) {
       setErrorMessage('API key cannot be empty.');
       return;
     }
@@ -210,7 +248,7 @@ export const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
     const newConfig: Config = {
       provider: selectedProviderId,
       model: selectedModelId,
-      apiKey: value.trim(),
+      ...(value.trim().length > 0 ? { apiKey: value.trim() } : {}),
     };
     writeConfig(newConfig);
     setConfigWritten(true);
@@ -219,10 +257,17 @@ export const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
 
   return (
     <Box flexDirection="column">
-      <Text>Enter API Key for {provider?.name || selectedProviderId}:</Text>
+      <Text>
+        {canUseResolvedAuth ? 'Optional API Key' : 'Enter API Key'} for {provider?.name || selectedProviderId}:
+      </Text>
+      {provider?.headers && Object.keys(provider.headers).length > 0 && (
+        <Text dimColor>
+          This provider can authenticate with configured headers or environment variables.
+        </Text>
+      )}
       {errorMessage && <Text color="red">{errorMessage}</Text>}
       <PasswordInput
-        placeholder={`Enter your ${provider?.apiKeyEnvVar || 'API'} key`}
+        placeholder={canUseResolvedAuth ? 'Press enter to keep resolved auth' : `Enter your ${provider?.apiKeyEnvVar || 'API'} key`}
         onSubmit={handleApiKeySubmit}
       />
     </Box>

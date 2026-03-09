@@ -1,6 +1,10 @@
 # Sub-agents
 
-Sub-agents let ProtoAgent move a focused task into an isolated child run so the main conversation stays cleaner.
+Sub-agents exist for a pretty simple reason: long-running agent sessions get noisy.
+
+If the model has to explore a bunch of files just to answer one focused question, the main conversation fills up with tool chatter that is useful in the moment and then mostly noise afterward.
+
+Sub-agents move that work into an isolated child run.
 
 ## How it works
 

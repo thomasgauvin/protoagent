@@ -7,8 +7,8 @@
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import { PasswordInput, Select } from '@inkjs/ui';
-import { getProvider, SUPPORTED_MODELS } from '../providers.js';
-import type { Config } from '../config.js';
+import { getAllProviders, getProvider } from '../providers.js';
+import { resolveApiKey, type Config } from '../config.js';
 
 export interface ConfigDialogProps {
   currentConfig: Config;
@@ -25,7 +25,7 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({
   const [selectedProviderId, setSelectedProviderId] = useState(currentConfig.provider);
   const [selectedModelId, setSelectedModelId] = useState(currentConfig.model);
 
-  const providerItems = SUPPORTED_MODELS.flatMap((provider) =>
+  const providerItems = getAllProviders().flatMap((provider) =>
     provider.models.map((model) => ({
       label: `${provider.name} - ${model.name}`,
       value: `${provider.id}:::${model.id}`,
@@ -60,6 +60,7 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({
 
   // API key entry step
   const provider = getProvider(selectedProviderId);
+  const hasResolvedAuth = Boolean(resolveApiKey({ provider: selectedProviderId, apiKey: undefined }));
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="green" paddingX={1}>
       <Text color="green" bold>
@@ -68,7 +69,7 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({
       <Text dimColor>
         Provider: {provider?.name} / {selectedModelId}
       </Text>
-      <Text>Enter your API key (or leave empty to keep current/env var):</Text>
+      <Text>{hasResolvedAuth ? 'Optional API key (leave empty to keep resolved auth):' : 'Enter your API key:'}</Text>
       <PasswordInput
         placeholder={`Paste your ${provider?.apiKeyEnvVar || 'API'} key`}
         onSubmit={(value) => {
@@ -76,7 +77,7 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({
           const newConfig: Config = {
             provider: selectedProviderId,
             model: selectedModelId,
-            apiKey: finalApiKey,
+            ...(finalApiKey?.trim() ? { apiKey: finalApiKey.trim() } : {}),
           };
           onComplete(newConfig);
         }}

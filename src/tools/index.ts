@@ -86,7 +86,7 @@ export async function handleToolCall(toolName: string, args: any, context: ToolC
   try {
     switch (toolName) {
       case 'read_file':
-        return await readFile(args.file_path, args.offset, args.limit);
+        return await readFile(args.file_path, args.offset, args.limit, context.sessionId);
       case 'write_file':
         return await writeFile(args.file_path, args.content, context.sessionId);
       case 'edit_file':

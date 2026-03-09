@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&family=Inter:wght@400;500;600&display=swap');
 
 :root {
   --green: #72ff8c;
@@ -18,11 +18,18 @@
   --text-faint: #356043;
   --danger: #ff7a7a;
   --warning: #ffe37a;
+  --sans: 'Inter', system-ui, sans-serif;
   --mono: 'Share Tech Mono', monospace;
   --display: 'VT323', monospace;
-  --sidebar-width: 268px;
-  --nav-height: 108px;
-  --content-width: 1200px;
+  --sidebar-width: clamp(210px, 20vw, 240px);
+  --nav-height: 98px;
+  --content-width: 1120px;
+  
+  --text-xs: 0.6rem;
+  --text-sm: 0.72rem;
+  --text-base: 0.84rem;
+  --text-lg: 1.05rem;
+  --text-xl: 1.3rem;
 }
 
 * {
@@ -83,7 +90,7 @@ a {
 .VPDoc,
 .VPContent,
 .VPFooter {
-  font-family: var(--mono);
+  font-family: var(--sans);
 }
 
 .vp-doc a,
@@ -103,7 +110,7 @@ a {
 .VPDoc h1 {
   font-family: var(--display);
   color: var(--green-bright);
-  font-size: clamp(2.5rem, 5vw, 4rem);
+  font-size: clamp(1.85rem, 3.8vw, 2.9rem);
   line-height: 0.95;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -116,7 +123,7 @@ a {
   padding-top: 1.2rem;
   margin-top: 2.2rem;
   font-family: var(--display);
-  font-size: 2rem;
+  font-size: 1.5rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--green);
@@ -127,18 +134,21 @@ a {
 .VPDoc h3,
 .VPDoc h4 {
   color: var(--green-bright);
-  font-family: var(--display);
-  font-size: 1.6rem;
-  letter-spacing: 0.08em;
+  font-family: var(--sans);
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .vp-doc p,
 .vp-doc li,
 .VPDoc p,
 .VPDoc li {
-  color: var(--text);
-  line-height: 1.75;
-  font-size: 1rem;
+  color: #c9eacb;
+  line-height: 1.7;
+  font-family: var(--sans);
+  font-size: 0.88rem;
+  letter-spacing: 0.01em;
 }
 
 .vp-doc strong,
@@ -161,7 +171,7 @@ a {
   background: linear-gradient(180deg, rgba(8, 18, 11, 0.98), rgba(5, 11, 7, 0.98)) !important;
   border: 1px solid var(--border-strong) !important;
   border-radius: 0 !important;
-  box-shadow: 0 0 28px rgba(114, 255, 140, 0.08), inset 0 0 36px rgba(114, 255, 140, 0.04) !important;
+  box-shadow: 0 0 28px rgba(114, 255, 140, 0.08), inset -24px 0 24px -20px rgba(114, 255, 140, 0.15), inset 0 0 36px rgba(114, 255, 140, 0.04) !important;
 }
 
 .vp-doc div[class*='language-']::before,
@@ -209,6 +219,8 @@ a {
   border-collapse: collapse;
   border: 1px solid var(--border-strong);
   background: rgba(6, 15, 9, 0.86);
+  display: block;
+  overflow-x: auto;
 }
 
 .vp-doc th,
@@ -219,11 +231,16 @@ a {
   padding: 12px 14px;
 }
 
+.vp-doc td,
+.VPDoc td {
+  white-space: nowrap;
+}
+
 .vp-doc th,
 .VPDoc th {
   color: var(--green-bright);
   font-family: var(--display);
-  font-size: 1.5rem;
+  font-size: 1.15rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   background: rgba(114, 255, 140, 0.08);
@@ -270,6 +287,13 @@ a {
   background: transparent !important;
 }
 
+/* Reset built-in layout spacing since we use our custom grid wrapper */
+.VPContent,
+.VPContent.has-sidebar {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
 .VPDoc .container {
   max-width: 100% !important;
 }
@@ -277,12 +301,12 @@ a {
 .VPDoc.has-aside .content-container,
 .VPDoc .content-container,
 .VPContent .content-container {
-  max-width: 860px !important;
+  max-width: var(--content-width) !important;
 }
 
 .VPDoc .content,
 .VPContent .content {
-  padding: 40px 28px 72px !important;
+  padding: 20px 28px 64px !important;
 }
 
 .VPDocOutlineDropdown,
@@ -293,7 +317,8 @@ a {
 }
 
 .VPDocAside {
-  padding-top: 36px !important;
+  padding-top: 0 !important;
+  margin-top: -16px;
 }
 
 .VPDocAsideOutline {
@@ -302,15 +327,16 @@ a {
 
 .VPDocAsideOutline .outline-title {
   color: var(--text-dim) !important;
-  font-family: var(--display) !important;
-  font-size: 1.4rem !important;
-  letter-spacing: 0.12em !important;
+  font-family: var(--mono) !important;
+  font-size: 0.78rem !important;
+  letter-spacing: 0.16em !important;
   text-transform: uppercase !important;
+  margin-top: 0 !important;
 }
 
 .VPDocAsideOutline .outline-link {
   color: var(--text-dim) !important;
-  font-family: var(--mono) !important;
+  font-family: var(--sans) !important;
 }
 
 .VPDocAsideOutline .outline-link:hover,
@@ -385,14 +411,14 @@ a {
   47%, 99% { opacity: 0; }
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1100px) {
   :root {
-    --nav-height: 96px;
+    --nav-height: 116px;
   }
 
   .VPDoc .content,
   .VPContent .content {
-    padding: 28px 18px 56px !important;
+    padding: 18px 24px 56px !important;
   }
 
   .VPDocAside {
@@ -400,18 +426,34 @@ a {
   }
 }
 
+@media (max-width: 960px) {
+  :root {
+    --nav-height: 102px;
+  }
+
+  .VPDoc .content,
+  .VPContent .content {
+    padding-top: 16px !important;
+  }
+}
+
 @media (max-width: 640px) {
   :root {
-    --nav-height: 88px;
+    --nav-height: 96px;
   }
 
   .vp-doc h1,
   .VPDoc h1 {
-    font-size: 2.2rem;
+    font-size: 1.7rem;
   }
 
   .vp-doc h2,
   .VPDoc h2 {
-    font-size: 1.7rem;
+    font-size: 1.3rem;
+  }
+
+  .VPDoc .content,
+  .VPContent .content {
+    padding: 16px 24px 48px !important;
   }
 }

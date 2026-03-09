@@ -1,6 +1,8 @@
 # Skills
 
-Skills let you package project-specific instructions outside the core app so ProtoAgent can follow local conventions without hardcoding them.
+Skills are how you give ProtoAgent project-specific instructions without hardcoding those instructions into the app itself.
+
+If you want the agent to follow your code style, your release process, your package-manager preference, or some internal project conventions, this is the mechanism.
 
 ## Skill format
 
@@ -37,7 +39,7 @@ Current validation rules:
 
 ## Discovery locations
 
-ProtoAgent scans these roots for skill directories.
+ProtoAgent scans a few user-level and project-level roots for skills.
 
 Project roots:
 
@@ -50,7 +52,7 @@ User roots:
 - `~/.protoagent/skills/`
 - `~/.config/protoagent/skills/`
 
-If a project skill and user skill share the same name, the later project-level version wins.
+If a project skill and a user skill share the same name, the project-level version wins.
 
 ## How activation works
 
@@ -61,19 +63,19 @@ Instead it:
 1. discovers and validates skills
 2. adds a catalog of available skills to the system prompt
 3. registers the `activate_skill` tool if at least one skill exists
-4. lets the model load the full skill only when needed
+4. lets the model load the full skill only when it actually needs it
 
-That keeps the base prompt smaller while still exposing skills to the model.
+That is the whole design in one sentence: keep the base prompt smaller, but still let the model load the detailed instructions on demand.
 
 ## Skill resources
 
-ProtoAgent can list bundled files under these directories inside a skill folder:
+ProtoAgent can also list bundled files under these directories inside a skill folder:
 
 - `scripts/`
 - `references/`
 - `assets/`
 
-The skills system also adds discovered skill directories to the readable path allowlist, so file tools can access those bundled resources safely.
+The skills system also adds discovered skill directories to the allowed path roots, so those bundled files can be accessed through the normal file tools.
 
 ## Supported frontmatter fields
 
@@ -86,7 +88,7 @@ The current loader understands:
 - `metadata`
 - `allowed-tools`
 
-`allowed-tools` is parsed into metadata, but it is not currently enforced as a permission boundary.
+`allowed-tools` is parsed into the dedicated `allowedTools` field, but it is not currently enforced as a permission boundary.
 
 ## What activation returns
 

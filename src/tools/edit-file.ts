@@ -1,11 +1,16 @@
 /**
  * edit_file tool — Find-and-replace in an existing file. Requires approval.
+ *
+ * Uses a fuzzy match cascade of 5 strategies to find the old_string,
+ * tolerating minor whitespace discrepancies from the model.
+ * Returns a unified diff on success so the model can verify its edit.
  */
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
+import { assertReadBefore, recordRead } from '../utils/file-time.js';
 
 export const editFileTool = {
   type: 'function' as const,
@@ -31,6 +36,258 @@ export const editFileTool = {
   },
 };
 
+// ─── Fuzzy Match Strategies ───
+
+interface MatchStrategy {
+  name: string;
+  /** Given file content and the model's oldString, return the actual substring in content to replace, or null. */
+  findMatch(content: string, oldString: string): string | null;
+}
+
+/** Strategy 1: Exact verbatim match (current behavior). */
+const exactReplacer: MatchStrategy = {
+  name: 'exact',
+  findMatch(content, oldString) {
+    return content.includes(oldString) ? oldString : null;
+  },
+};
+
+/** Strategy 2: Per-line .trim() comparison — uses file's actual indentation. */
+const lineTrimmedReplacer: MatchStrategy = {
+  name: 'line-trimmed',
+  findMatch(content, oldString) {
+    const searchLines = oldString.split('\n').map(l => l.trim());
+    const contentLines = content.split('\n');
+
+    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+      let match = true;
+      for (let j = 0; j < searchLines.length; j++) {
+        if (contentLines[i + j].trim() !== searchLines[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        // Return the actual lines from the file content
+        return contentLines.slice(i, i + searchLines.length).join('\n');
+      }
+    }
+    return null;
+  },
+};
+
+/** Strategy 3: Strip common leading indent from both before comparing. */
+const indentFlexReplacer: MatchStrategy = {
+  name: 'indent-flexible',
+  findMatch(content, oldString) {
+    const oldLines = oldString.split('\n');
+    const commonIndent = getCommonIndent(oldLines);
+    if (commonIndent === 0) return null;
+
+    const stripped = oldLines.map(l => l.slice(commonIndent)).join('\n');
+    const contentLines = content.split('\n');
+
+    for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+      const fileSlice = contentLines.slice(i, i + oldLines.length);
+      const fileCommonIndent = getCommonIndent(fileSlice);
+      const fileStripped = fileSlice.map(l => l.slice(fileCommonIndent)).join('\n');
+
+      if (fileStripped === stripped) {
+        return fileSlice.join('\n');
+      }
+    }
+    return null;
+  },
+};
+
+/** Strategy 4: Collapse all whitespace runs to single space before comparing. */
+const whitespaceNormReplacer: MatchStrategy = {
+  name: 'whitespace-normalized',
+  findMatch(content, oldString) {
+    const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+    const target = normalize(oldString);
+    if (!target) return null;
+
+    const contentLines = content.split('\n');
+    const oldLineCount = oldString.split('\n').length;
+
+    // Slide a window of oldLineCount lines across the file
+    for (let i = 0; i <= contentLines.length - oldLineCount; i++) {
+      const window = contentLines.slice(i, i + oldLineCount).join('\n');
+      if (normalize(window) === target) {
+        return window;
+      }
+    }
+    return null;
+  },
+};
+
+/** Strategy 5: .trim() the entire oldString before searching. */
+const trimmedBoundaryReplacer: MatchStrategy = {
+  name: 'trimmed-boundary',
+  findMatch(content, oldString) {
+    const trimmed = oldString.trim();
+    if (trimmed === oldString) return null; // no change from exact
+    return content.includes(trimmed) ? trimmed : null;
+  },
+};
+
+const STRATEGIES: MatchStrategy[] = [
+  exactReplacer,
+  lineTrimmedReplacer,
+  indentFlexReplacer,
+  whitespaceNormReplacer,
+  trimmedBoundaryReplacer,
+];
+
+function getCommonIndent(lines: string[]): number {
+  let min = Infinity;
+  for (const line of lines) {
+    if (line.trim().length === 0) continue; // skip blank lines
+    const indent = line.length - line.trimStart().length;
+    min = Math.min(min, indent);
+  }
+  return min === Infinity ? 0 : min;
+}
+
+/**
+ * Count non-overlapping occurrences of `needle` in `haystack`.
+ */
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let idx = 0;
+  while ((idx = haystack.indexOf(needle, idx)) !== -1) {
+    count++;
+    idx += needle.length;
+  }
+  return count;
+}
+
+/**
+ * Try each strategy in order. Return the actual substring to replace,
+ * the strategy name used, and how many occurrences exist.
+ * Only accepts strategies that find exactly one match (unambiguous).
+ */
+function findWithCascade(
+  content: string,
+  oldString: string,
+  expectedReplacements: number,
+): { actual: string; strategy: string; count: number } | null {
+  for (const strategy of STRATEGIES) {
+    const actual = strategy.findMatch(content, oldString);
+    if (!actual) continue;
+
+    const count = countOccurrences(content, actual);
+    if (count === expectedReplacements) {
+      return { actual, strategy: strategy.name, count };
+    }
+    // If count doesn't match expected, skip this strategy
+  }
+  return null;
+}
+
+// ─── Unified Diff ───
+
+function computeUnifiedDiff(oldContent: string, newContent: string, filePath: string): string {
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+
+  // Find changed regions
+  const hunks: Array<{ oldStart: number; oldLines: string[]; newStart: number; newLines: string[] }> = [];
+  let i = 0;
+  let j = 0;
+
+  while (i < oldLines.length || j < newLines.length) {
+    // Skip matching lines
+    if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
+      i++;
+      j++;
+      continue;
+    }
+
+    // Found a difference — collect the changed region
+    const oldStart = i;
+    const newStart = j;
+    const hunkOld: string[] = [];
+    const hunkNew: string[] = [];
+
+    // Collect differing lines
+    while (i < oldLines.length && j < newLines.length && oldLines[i] !== newLines[j]) {
+      hunkOld.push(oldLines[i]);
+      hunkNew.push(newLines[j]);
+      i++;
+      j++;
+    }
+
+    // Handle remaining lines in either side
+    while (i < oldLines.length && (j >= newLines.length || oldLines[i] !== newLines[j])) {
+      hunkOld.push(oldLines[i]);
+      i++;
+    }
+    while (j < newLines.length && (i >= oldLines.length || oldLines[i] !== newLines[j])) {
+      hunkNew.push(newLines[j]);
+      j++;
+    }
+
+    hunks.push({ oldStart, oldLines: hunkOld, newStart, newLines: hunkNew });
+  }
+
+  if (hunks.length === 0) return '';
+
+  // Build unified diff output with 2 lines of context
+  const CONTEXT = 2;
+  const diffLines: string[] = [
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+  ];
+
+  let totalChanged = 0;
+  for (const hunk of hunks) {
+    totalChanged += hunk.oldLines.length + hunk.newLines.length;
+    if (totalChanged > 50) {
+      // Add what we have so far, then truncate
+      break;
+    }
+
+    const ctxBefore = Math.max(0, hunk.oldStart - CONTEXT);
+    const ctxAfterOld = Math.min(oldLines.length, hunk.oldStart + hunk.oldLines.length + CONTEXT);
+    const ctxAfterNew = Math.min(newLines.length, hunk.newStart + hunk.newLines.length + CONTEXT);
+
+    const oldHunkSize = (hunk.oldStart - ctxBefore) + hunk.oldLines.length + (ctxAfterOld - hunk.oldStart - hunk.oldLines.length);
+    const newHunkSize = (hunk.newStart - ctxBefore) + hunk.newLines.length + (ctxAfterNew - hunk.newStart - hunk.newLines.length);
+
+    diffLines.push(`@@ -${ctxBefore + 1},${oldHunkSize} +${ctxBefore + 1},${newHunkSize} @@`);
+
+    // Context before
+    for (let k = ctxBefore; k < hunk.oldStart; k++) {
+      diffLines.push(` ${oldLines[k]}`);
+    }
+
+    // Removed lines
+    for (const line of hunk.oldLines) {
+      diffLines.push(`-${line}`);
+    }
+
+    // Added lines
+    for (const line of hunk.newLines) {
+      diffLines.push(`+${line}`);
+    }
+
+    // Context after
+    for (let k = hunk.oldStart + hunk.oldLines.length; k < ctxAfterOld; k++) {
+      diffLines.push(` ${oldLines[k]}`);
+    }
+  }
+
+  if (totalChanged > 50) {
+    diffLines.push('... (truncated)');
+  }
+
+  return diffLines.join('\n');
+}
+
+// ─── Main editFile function ───
+
 export async function editFile(
   filePath: string,
   oldString: string,
@@ -43,32 +300,40 @@ export async function editFile(
   }
 
   const validated = await validatePath(filePath);
+
+  // Staleness guard: must have read file before editing
+  if (sessionId) {
+    assertReadBefore(sessionId, validated);
+  }
+
   const content = await fs.readFile(validated, 'utf8');
 
-  // Count occurrences
-  let count = 0;
-  let idx = 0;
-  while ((idx = content.indexOf(oldString, idx)) !== -1) {
-    count++;
-    idx += oldString.length;
+  // Use fuzzy match cascade
+  const match = findWithCascade(content, oldString, expectedReplacements);
+
+  if (!match) {
+    // Check if we found it with wrong count
+    for (const strategy of STRATEGIES) {
+      const actual = strategy.findMatch(content, oldString);
+      if (actual) {
+        const count = countOccurrences(content, actual);
+        return `Error: found ${count} occurrence(s) of old_string (via ${strategy.name} match), but expected ${expectedReplacements}. Be more specific or set expected_replacements=${count}.`;
+      }
+    }
+    return `Error: old_string not found in ${filePath}. Strategies exhausted (exact, line-trimmed, indent-flexible, whitespace-normalized, trimmed-boundary). Re-read the file and try again.`;
   }
 
-  if (count === 0) {
-    return `Error: old_string not found in ${filePath}. Make sure you read the file first and use the exact text.`;
-  }
-
-  if (count !== expectedReplacements) {
-    return `Error: found ${count} occurrence(s) of old_string, but expected ${expectedReplacements}. Be more specific or set expected_replacements=${count}.`;
-  }
+  const { actual, strategy, count } = match;
 
   // Request approval
   const oldPreview = oldString.length > 200 ? oldString.slice(0, 200) + '...' : oldString;
   const newPreview = newString.length > 200 ? newString.slice(0, 200) + '...' : newString;
+  const strategyNote = strategy !== 'exact' ? ` [matched via ${strategy}]` : '';
 
   const approved = await requestApproval({
     id: `edit-${Date.now()}`,
     type: 'file_edit',
-    description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})`,
+    description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})${strategyNote}`,
     detail: `Replace:\n${oldPreview}\n\nWith:\n${newPreview}`,
     sessionId,
     sessionScopeKey: `file_edit:${validated}`,
@@ -78,8 +343,8 @@ export async function editFile(
     return `Operation cancelled: edit to ${filePath} was rejected by user.`;
   }
 
-  // Perform replacement
-  const newContent = content.split(oldString).join(newString);
+  // Perform replacement using the actual matched string (not the model's version)
+  const newContent = content.split(actual).join(newString);
   const directory = path.dirname(validated);
   const tempPath = path.join(directory, `.protoagent-edit-${process.pid}-${Date.now()}-${path.basename(validated)}`);
   try {
@@ -89,5 +354,19 @@ export async function editFile(
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
   }
 
-  return `Successfully edited ${filePath}: ${count} replacement(s) made.`;
+  // Re-read file after write (captures any formatter changes)
+  // Also record the read so subsequent edits don't fail the mtime check
+  const finalContent = await fs.readFile(validated, 'utf8');
+  if (sessionId) {
+    recordRead(sessionId, validated);
+  }
+
+  // Compute and return unified diff
+  const diff = computeUnifiedDiff(content, finalContent, filePath);
+  const header = `Successfully edited ${filePath}: ${count} replacement(s) made.`;
+
+  if (diff) {
+    return `${header}\n${diff}`;
+  }
+  return header;
 }

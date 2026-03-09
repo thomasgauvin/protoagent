@@ -2,7 +2,7 @@
 
 This page is the docs-site companion to the root `SPEC.md`.
 
-If you are reading the repo directly, `SPEC.md` is the fuller source of truth. This page mirrors its structure in a shorter form.
+If you are reading the repo directly, `SPEC.md` is the fuller source of truth. This page keeps the same shape, but trims it down to the parts you usually want when you are trying to understand how ProtoAgent works right now.
 
 For the companion runtime/module walkthrough, see `/reference/architecture` or the root `ARCHITECTURE.md`.
 
@@ -50,7 +50,6 @@ Current slash commands:
 
 - `/clear`
 - `/collapse`
-- `/config`
 - `/expand`
 - `/help`
 - `/quit`
@@ -63,30 +62,43 @@ Keyboard shortcuts:
 
 ## 4. Configuration System
 
-Config is stored in the ProtoAgent data directory and contains:
+ProtoAgent uses two configuration layers:
+
+- persisted user selection in `config.json`
+- extensibility and runtime overrides in `protoagent.jsonc`
+
+`config.json` stores:
 
 - provider
 - model
 - optional API key
 
+`protoagent.jsonc` is loaded from project and user config locations, merged with built-in defaults, and may define:
+
+- provider additions or overrides
+- model metadata overrides
+- request default parameters
+- MCP server configuration
+
+Environment variables remain higher priority than file-based transport and auth config.
+
 The current implementation supports:
 
 - inline first-run setup
 - `protoagent configure`
-- in-app `/config`
 - provider environment-variable fallback
 - legacy config compatibility
+- JSONC-based runtime provider and MCP extension
 
 ## 5. Provider and Model Support
 
-Current providers in `src/providers.ts`:
+Built-in providers ship in `src/providers.ts`, but the active runtime registry is the merged result of:
 
-- OpenAI
-- Anthropic Claude
-- Google Gemini
-- Cerebras
+- built-in providers
+- user `protoagent.jsonc`
+- project `protoagent.jsonc`
 
-Each model entry includes context-window and pricing metadata.
+Providers may be added or overridden by ID. Each model entry includes context-window and pricing metadata and may also define per-model request defaults.
 
 ## 6. Agentic Loop
 
@@ -121,7 +133,7 @@ Dynamic tools can also be registered by MCP and the skills system. `sub_agent` i
 
 Current rules include:
 
-- file access limited to the working directory plus activated skill roots
+- file access limited to the working directory plus allowed skill roots
 - symlink-aware validation
 - parent-directory checks for non-existent files
 
@@ -160,7 +172,7 @@ ProtoAgent supports:
 - stdio MCP servers
 - HTTP / Streamable HTTP MCP servers
 
-Remote tools are discovered and registered dynamically at startup.
+MCP server config is sourced from the merged `protoagent.jsonc` runtime config. Remote tools are discovered and registered dynamically at startup.
 
 ## 14. Web Fetching
 
@@ -184,7 +196,7 @@ The current UI includes:
 - consolidated tool rendering
 - formatted assistant output
 - inline approvals
-- inline setup and config flows
+- inline setup flow
 - usage display
 - visible log file path
 

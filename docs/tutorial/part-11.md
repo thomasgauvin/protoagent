@@ -1,43 +1,97 @@
-# Part 11: Polish & UI
+# Part 11: MCP Integration
 
-The last layer is the one that makes ProtoAgent usable for longer sessions rather than only technically functional.
+MCP is what turns ProtoAgent from "a useful local coding agent" into "an agent that can grow beyond its built-in tool set."
 
-## Current implementation highlights
+If you have used tools like filesystem servers, GitHub tools, or browser automation through an agent, you have already seen the value of this pattern.
 
-Most of this work lives in:
+By the end, your project should match `protoagent-tutorial-again-part-11`.
 
-- `src/App.tsx`
-- `src/components/CollapsibleBox.tsx`
-- `src/components/ConsolidatedToolMessage.tsx`
-- `src/components/FormattedMessage.tsx`
-- `src/components/Table.tsx`
-- `src/utils/logger.ts`
-- `src/utils/format-message.tsx`
+## What you are building in this part
 
-## What the current UI does
+Starting from Part 10, you are focusing on the MCP layer inside the late staged runtime:
 
-- groups tool calls with their following tool results
-- collapses long content and supports `/expand` and `/collapse`
-- renders simple markdown-style formatting, tables, and fenced code blocks
-- shows inline approval prompts with selectable options
-- displays usage and accumulated cost
-- exposes inline setup and mid-session config flows
+- MCP config loading
+- MCP server connection setup
+- remote tool discovery
+- dynamic tool registration for MCP tools
+- App initialization that loads MCP before the first useful turn
 
-## Logging
+This is the stage where built-ins stop being the only way ProtoAgent can grow.
 
-Earlier versions described a stderr logger. The current implementation is file-backed instead.
+## Starting point
 
-ProtoAgent now:
+Copy your Part 10 project and continue from there.
 
-- initializes a log file under the ProtoAgent data directory
-- supports `ERROR`, `WARN`, `INFO`, `DEBUG`, and `TRACE`
-- keeps a small in-memory recent-log buffer for UI use
-- shows the active log file path in the interface
+Your target snapshot is:
 
-## TODO behavior
+- `protoagent-tutorial-again-part-11`
 
-TODOs are no longer throwaway scratch state only. In the current app they are stored per session and persisted with session saves.
+## Files to create or change
+
+This stage mainly touches:
+
+- `src/utils/mcp.ts`
+- `src/tools/index.ts`
+- `src/agentic-loop.ts` for dynamic handler execution
+- `src/App.tsx` to initialize MCP on startup
+
+This recreated checkpoint is cumulative, but it is clean enough to treat Part 11 as the MCP stage: Part 10 gives you sessions, and Part 11 layers in external tool servers on top.
+
+## Step 1: Add MCP config loading
+
+The runtime should look for merged runtime config and read MCP servers from:
+
+- `.protoagent/protoagent.jsonc` under `mcp.servers`
+
+That config becomes the declaration of which external tool servers ProtoAgent should try to connect to.
+
+## Step 2: Connect to MCP servers
+
+The staged checkpoint uses a lightweight line-oriented JSON-RPC client over stdio. It is simpler than the final app, but the important behavior is the same:
+
+- connect to each configured server
+- discover its tools
+- wrap those remote tools in local tool definitions
+
+## Step 3: Register remote tools dynamically
+
+This is the core design decision.
+
+MCP tools should end up looking like regular tools to the model, typically with names like:
+
+- `mcp_<server>_<tool>`
+
+That namespacing avoids collisions and keeps the runtime surface predictable.
+
+In this stage, the MCP loader imports the dynamic tool registration helpers from `src/tools/index.ts` and wires each discovered remote tool into the normal tool dispatch path.
+
+## Verification
+
+Run the app with a simple MCP config present:
+
+```bash
+npm run dev
+```
+
+If it worked, you should see:
+
+- the runtime attempting to connect to the configured server during startup
+- discovered tools added to the available tool set
+- the model able to call those tools like any other tool
+
+## Resulting snapshot
+
+At the end of this part, your project should match:
+
+- `protoagent-tutorial-again-part-11`
+
+## Pitfalls
+
+- assuming one bad MCP server should crash the whole app
+- registering remote tools without namespacing them
+- treating MCP results as if they already match the local tool-result format
+- forgetting to connect tool discovery back into the main registry
 
 ## Core takeaway
 
-Polish is not just cosmetics. In ProtoAgent it includes readability, recoverability, visibility, and enough structure that a long tool-heavy session stays understandable.
+MCP is the bridge between ProtoAgent and external tool ecosystems. This is the checkpoint where your staged rebuild stops being limited to built-ins and starts accepting tools from outside the app.

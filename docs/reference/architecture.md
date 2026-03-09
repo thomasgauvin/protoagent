@@ -2,9 +2,9 @@
 
 This page is the docs-site companion to the root `ARCHITECTURE.md`.
 
-If you are reading the repo directly, `ARCHITECTURE.md` is the fuller source of truth. This page mirrors its structure in a shorter form.
+If you are reading the repo directly, `ARCHITECTURE.md` is the fuller source of truth. This page is the shorter walkthrough for when you mostly want to understand how the pieces fit together.
 
-For the companion feature-and-behavior reference, see `/reference/spec` or the root `SPEC.md`.
+For the companion behavior reference, see `/reference/spec` or the root `SPEC.md`.
 
 ## 1. High-level Structure
 
@@ -18,7 +18,7 @@ protoagent CLI
         -> Special sub-agent execution path
 ```
 
-At runtime, the user interacts with the Ink app, while the agent loop performs model/tool orchestration and emits events back to the UI.
+At runtime, the user interacts with the Ink app, while the agent loop handles model/tool orchestration and emits events back to the UI.
 
 ## 2. Module Map
 
@@ -97,13 +97,13 @@ Approved shell commands are not sandboxed.
 
 ## 8. Skills Architecture
 
-The skills system discovers validated `SKILL.md` directories, may register `activate_skill`, and extends allowed file roots to activated skill directories.
+The skills system discovers validated `SKILL.md` directories, may register `activate_skill`, and extends allowed file roots to skill directories.
 
-Because skill initialization happens during system-prompt generation, it has runtime side effects on both tool registration and file-access roots.
+Because skill initialization happens during system-prompt generation, it has runtime side effects on both tool registration and path-access roots.
 
 ## 9. MCP Architecture
 
-`src/mcp.ts` reads `.protoagent/mcp.json`, connects stdio or HTTP MCP servers, discovers their tools, and registers them dynamically.
+`src/mcp.ts` reads merged `protoagent.jsonc` runtime config, connects stdio or HTTP MCP servers, discovers their tools, and registers them dynamically.
 
 ## 10. Sub-Agent Architecture
 
@@ -128,7 +128,7 @@ The UI also includes collapsible message boxes, grouped tool rendering, formatte
 
 ## 13. Important Implementation Nuances
 
-Important caveats to keep in mind:
+These are the details that are easy to miss if you only skim the file tree:
 
 - `App.tsx` is not just presentation
 - the system prompt is regenerated repeatedly

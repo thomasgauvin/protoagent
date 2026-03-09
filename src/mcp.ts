@@ -4,7 +4,7 @@
  * Uses the official @modelcontextprotocol/sdk to connect to MCP servers
  * over both stdio (spawned processes) and HTTP transports.
  *
- * Configuration in `.protoagent/mcp.json`:
+ * Configuration in `protoagent.jsonc` under `mcp.servers`:
  * {
  *   "servers": {
  *     "my-stdio-server": {
@@ -24,34 +24,17 @@
  * HTTP servers connect to a running server via HTTP POST/GET with SSE streaming.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { loadRuntimeConfig, getRuntimeConfig, type RuntimeMcpServerConfig } from './runtime-config.js';
 import { logger } from './utils/logger.js';
 import { registerDynamicTool, registerDynamicHandler } from './tools/index.js';
 
 // ─── MCP Server Configuration ───
 
-interface StdioServerConfig {
-  type: 'stdio';
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
-
-interface HttpServerConfig {
-  type: 'http';
-  url: string;
-}
-
-type McpServerConfig = StdioServerConfig | HttpServerConfig;
-
-interface McpConfig {
-  servers: Record<string, McpServerConfig>;
-}
+type StdioServerConfig = Extract<RuntimeMcpServerConfig, { type: 'stdio' }>;
+type HttpServerConfig = Extract<RuntimeMcpServerConfig, { type: 'http' }>;
 
 // ─── MCP Server Connection Manager ───
 
@@ -73,7 +56,11 @@ async function connectStdioServer(
   const transport = new StdioClientTransport({
     command: config.command,
     args: config.args || [],
-    env: config.env || {},
+    env: {
+      ...process.env,
+      ...(config.env || {}),
+    } as Record<string, string>,
+    cwd: config.cwd,
   });
 
   const client = new Client(
@@ -102,7 +89,9 @@ async function connectHttpServer(
   serverName: string,
   config: HttpServerConfig
 ): Promise<McpConnection> {
-  const transport = new StreamableHTTPClientTransport(new URL(config.url));
+  const transport = new StreamableHTTPClientTransport(new URL(config.url), {
+    requestInit: config.headers ? { headers: config.headers } : undefined,
+  });
 
   const client = new Client(
     {
@@ -145,10 +134,10 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
         },
       });
 
-      registerDynamicHandler(toolName, async (args) => {
+      registerDynamicHandler(toolName, async (args: unknown) => {
         const result = await conn.client.callTool({
           name: tool.name,
-          arguments: args,
+          arguments: (args && typeof args === 'object' ? args : {}) as Record<string, unknown>,
         });
 
         // MCP tool results are arrays of content blocks
@@ -174,22 +163,19 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
  * Registers their tools in the dynamic tool registry.
  */
 export async function initializeMcp(): Promise<void> {
-  const configPath = path.join(process.cwd(), '.protoagent', 'mcp.json');
+  await loadRuntimeConfig();
+  const servers = getRuntimeConfig().mcp?.servers || {};
 
-  let config: McpConfig;
-  try {
-    const content = await fs.readFile(configPath, 'utf8');
-    config = JSON.parse(content) as McpConfig;
-  } catch {
-    // No MCP config — that's fine, most projects won't have one
-    return;
-  }
+  if (Object.keys(servers).length === 0) return;
 
-  if (!config.servers || Object.keys(config.servers).length === 0) return;
+  logger.info('Loading MCP servers from merged runtime config');
 
-  logger.info(`Loading MCP servers from ${configPath}`);
+  for (const [name, serverConfig] of Object.entries(servers)) {
+    if (serverConfig.enabled === false) {
+      logger.debug(`Skipping disabled MCP server: ${name}`);
+      continue;
+    }
 
-  for (const [name, serverConfig] of Object.entries(config.servers)) {
     try {
       let conn: McpConnection;
 

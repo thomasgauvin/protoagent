@@ -29,7 +29,7 @@ CLI (Commander)
 | Area | Files | Responsibility |
 |---|---|---|
 | CLI | `src/cli.tsx` | Parses flags, starts the main app, or launches `configure` |
-| UI | `src/App.tsx`, `src/components/*` | Renders the conversation, approvals, config dialog, collapsible output, formatted messages |
+| UI | `src/App.tsx`, `src/components/*` | Renders the conversation, approvals, collapsible output, formatted messages |
 | Loop | `src/agentic-loop.ts` | Runs the streaming tool-use loop and retry logic |
 | Config | `src/config.tsx`, `src/providers.ts` | Stores config, loads providers/models, resolves API keys |
 | Tools | `src/tools/*` | Built-in tool schemas and handlers |
@@ -57,7 +57,6 @@ Inside the TUI, the current app supports:
 
 - `/clear`
 - `/collapse`
-- `/config`
 - `/expand`
 - `/help`
 - `/quit`
@@ -67,12 +66,19 @@ The UI also supports aborting an in-flight completion with `Esc`.
 
 ## 4. Configuration System
 
-ProtoAgent stores config at:
+ProtoAgent uses two configuration layers:
+
+- persisted user selection in `config.json`
+- extensibility and runtime overrides in `protoagent.jsonc`
+
+### Persisted session config
+
+ProtoAgent stores user selection at:
 
 - macOS/Linux: `~/.local/share/protoagent/config.json`
 - Windows: `%USERPROFILE%/AppData/Local/protoagent/config.json`
 
-### Stored fields
+Stored fields:
 
 ```json
 {
@@ -82,33 +88,187 @@ ProtoAgent stores config at:
 }
 ```
 
-### Current behavior
+This file remains intentionally small. It stores the selected provider, selected model, and an optional explicit API key.
 
-- If no config exists, the main app shows an inline first-run setup flow.
+### Unified extensibility config
+
+ProtoAgent also reads `protoagent.jsonc` from these locations:
+
+- `<process.cwd()>/.protoagent/protoagent.jsonc`
+- `~/.protoagent/protoagent.jsonc`
+- `~/.config/protoagent/protoagent.jsonc`
+
+All files are optional. If multiple files are present, they are merged in this order:
+
+1. built-in defaults from source
+2. `~/.config/protoagent/protoagent.jsonc`
+3. `~/.protoagent/protoagent.jsonc`
+4. `<process.cwd()>/.protoagent/protoagent.jsonc`
+
+Later entries win on conflict.
+
+### Top-level shape
+
+```jsonc
+{
+  "providers": {
+    "openai": {
+      "name": "OpenAI",
+      "apiKeyEnvVar": "OPENAI_API_KEY",
+      "models": {
+        "gpt-5.2": {
+          "name": "GPT-5.2",
+          "contextWindow": 200000,
+          "inputPricePerMillion": 6.0,
+          "outputPricePerMillion": 24.0
+        }
+      }
+    },
+    "cf-openai": {
+      "name": "OpenAI via CF Gateway",
+      "baseURL": "https://opencode.cloudflare.dev/openai/",
+      "apiKey": "none",
+      "headers": {
+        "cf-access-token": "${CF_ACCESS_TOKEN}",
+        "X-Requested-With": "xmlhttprequest"
+      },
+      "defaultParams": {
+        "store": false
+      },
+      "models": {
+        "gpt-4o": {
+          "name": "GPT-4o",
+          "contextWindow": 128000,
+          "inputPricePerMillion": 2.5,
+          "outputPricePerMillion": 10.0
+        }
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      }
+    }
+  }
+}
+```
+
+### Provider rules
+
+- `providers` may define entirely new providers or override built-in providers by ID.
+- Provider IDs must be unique after merge.
+- Provider `models` are keyed by model ID and merge by key.
+- Project config overrides user config for both provider metadata and model metadata.
+- JSONC comments are allowed in source files but are ignored at runtime.
+
+### Environment interpolation
+
+Any string value in `protoagent.jsonc` may include `${VAR_NAME}` placeholders.
+
+- interpolation happens at load time
+- missing variables resolve to an empty string
+- missing variables log a warning
+- empty header values are dropped after interpolation
+
+### Runtime precedence
+
+Environment variables remain first-class runtime overrides and take precedence over file config.
+
+Resolution order:
+
+- API key:
+  1. `config.apiKey`
+  2. explicit environment override for the active provider
+  3. `PROTOAGENT_API_KEY`
+  4. `provider.apiKey`
+  5. `process.env[provider.apiKeyEnvVar]`
+  6. `'none'` when the provider uses header-based auth and no bearer token is required
+  7. otherwise throw
+- base URL:
+  1. `PROTOAGENT_BASE_URL`
+  2. `provider.baseURL`
+  3. built-in default
+- headers:
+  1. `PROTOAGENT_CUSTOM_HEADERS`
+  2. `provider.headers`
+  3. built-in default headers
+
+### Request parameter defaults
+
+Providers and models may declare request defaults:
+
+- provider-level `defaultParams`
+- model-level `defaultParams`
+
+Model defaults override provider defaults.
+
+These defaults may tune request behavior such as:
+
+- `temperature`
+- `top_p`
+- `max_tokens`
+- `store`
+- `parallel_tool_calls`
+
+Reserved request fields must not be overridden by config:
+
+- `model`
+- `messages`
+- `tools`
+- `tool_choice`
+- `stream`
+- `stream_options`
+
+ProtoAgent should validate these keys and warn or reject invalid config rather than silently changing core agent behavior.
+
+### Interactive setup
+
+- If no `config.json` exists, the main app shows an inline first-run setup flow.
 - `protoagent configure` launches the standalone wizard.
-- `/config` opens an in-app config dialog during a session.
-- On Unix-like systems, config directories and files are permission-hardened.
-- `readConfig()` also accepts a legacy `credentials` object shape and migrates it at read time.
-- API keys can come from config or from the provider's environment variable.
+- Interactive setup uses the merged provider registry from built-ins plus `protoagent.jsonc`.
+- Providers that already resolve auth from env vars or header-based config should not require a placeholder API key prompt.
+
+### Migration stance
+
+- `.protoagent/providers.json` and `.protoagent/mcp.json` are replaced by `.protoagent/protoagent.jsonc`.
+- Backwards-compatible env vars remain supported during development.
+- Since ProtoAgent is still in development, file-format cleanup and provider cleanup can be done without preserving old config shapes long term.
 
 ## 5. Provider and Model Support
 
 ProtoAgent uses the OpenAI SDK directly.
 
-Current provider catalog in `src/providers.ts`:
+Built-in providers ship in source, but the runtime provider registry is the merged result of:
 
-- **OpenAI**
-- **Anthropic Claude** via configured base URL
-- **Google Gemini** via the OpenAI-compatible endpoint
-- **Cerebras**
+- built-in providers
+- user `protoagent.jsonc`
+- project `protoagent.jsonc`
 
-Each model entry includes:
+Each provider may declare:
+
+- provider ID
+- human-readable provider name
+- optional OpenAI-compatible `baseURL`
+- optional `apiKey`
+- optional `apiKeyEnvVar`
+- optional default headers
+- optional request `defaultParams`
+- one or more models
+
+Each model entry may declare:
 
 - model ID
 - human-readable name
 - context window
 - per-million input pricing
 - per-million output pricing
+- model-level `defaultParams`
+
+The model picker and all provider lookups operate on this merged runtime registry rather than a hardcoded provider list alone.
 
 ## 6. Agentic Loop
 
@@ -300,7 +460,7 @@ Current validation also supports:
 
 ## 13. MCP Support
 
-ProtoAgent reads `.protoagent/mcp.json` and supports:
+ProtoAgent reads MCP configuration from the merged `protoagent.jsonc` runtime config and supports:
 
 - **stdio** MCP servers
 - **HTTP / Streamable HTTP** MCP servers
@@ -311,6 +471,34 @@ ProtoAgent reads `.protoagent/mcp.json` and supports:
 - discovered MCP tools are registered dynamically as namespaced tools
 - tool results are normalized into text output when possible
 - connections are closed on cleanup
+
+Recommended MCP config shape:
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "my-stdio-server": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@my/mcp-server"]
+      },
+      "my-http-server": {
+        "type": "http",
+        "url": "http://localhost:3000/mcp"
+      }
+    }
+  }
+}
+```
+
+Future-compatible server fields may include:
+
+- `enabled`
+- `cwd`
+- `env`
+- `headers`
+- `timeoutMs`
 
 OAuth is not implemented.
 
@@ -361,7 +549,6 @@ The Ink UI in `src/App.tsx` currently provides:
 - table-friendly rendering helpers
 - inline approval prompts
 - inline first-run setup
-- inline config dialog
 - session-aware quit flow that shows a resume command
 - usage and cost display
 - recent log capture for UI display

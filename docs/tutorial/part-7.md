@@ -1,43 +1,105 @@
-# Part 7: System Prompt
+# Part 7: System Prompt & Runtime Policy
 
-The system prompt tells ProtoAgent what it is, what project it is in, what tools exist, and how it should behave.
+The system prompt is where ProtoAgent stops being "a model with tools" and becomes "this specific coding agent with this specific workflow."
 
-## Current implementation
+That matters more than it sounds.
 
-Prompt generation lives in `src/system-prompt.ts`.
+By the end, your project should match `protoagent-tutorial-again-part-7`.
 
-The prompt currently includes:
+## What you are building in this part
 
-- working directory and project name
-- a filtered directory tree
-- auto-generated tool descriptions from the tool schemas
-- a skills catalog when skills are available
-- workflow and output-format guidance
+Starting from Part 6, you are moving runtime instructions out of `App.tsx` and into a dedicated prompt builder.
 
-## Directory tree
+This stage adds:
 
-The tree builder caps depth and entry count so the prompt stays readable:
+- `src/system-prompt.ts`
+- directory-tree generation
+- tool-description generation from the registry
+- a stronger workflow policy for the model
 
-- max depth: 3
-- max entries per directory: 20
-- excludes noise like `node_modules`, `.git`, `dist`, and log files
+## Starting point
 
-## Tool descriptions
+Copy your Part 6 project and continue from there.
 
-The prompt reads tool metadata from `getAllTools()`, so built-in tools and dynamic tools share one source of truth.
+Your target snapshot is:
 
-## Skills in the prompt
+- `protoagent-tutorial-again-part-7`
 
-The current implementation does not eagerly inject every skill body. Instead it:
+## Files to create or change
 
-1. discovers skills
-2. builds a catalog section
-3. registers `activate_skill`
-4. lets the model load a full skill only when needed
+This stage mainly touches:
 
-## One subtle mismatch
+- `src/system-prompt.ts`
+- `src/App.tsx`
+- `src/tools/index.ts` indirectly through prompt generation
 
-Some wording inside the prompt is broader than the runtime behavior, especially around auto-approved shell commands. The runtime implementation in `src/tools/bash.ts` is the real source of truth.
+## Step 1: Create `src/system-prompt.ts`
+
+The staged snapshot introduces a dedicated prompt generator that:
+
+- finds the current working directory and project name
+- builds a filtered directory tree
+- reads the currently registered tools
+- turns tool schemas into readable tool descriptions
+
+That means the prompt is no longer a static string. It becomes a runtime reflection of the actual environment the model is working in.
+
+## Step 2: Add a filtered directory tree
+
+This part introduces a tree builder with a few practical constraints:
+
+- cap depth
+- cap entries per directory
+- exclude noise like `node_modules`, `.git`, and build output
+
+That is one of those small choices that saves a lot of prompt budget later.
+
+## Step 3: Generate tool descriptions from the registry
+
+Instead of hand-writing tool descriptions again in the prompt, the stage snapshot reads them from `getAllTools()`.
+
+That keeps the model prompt and the actual tool payload aligned.
+
+## Step 4: Move `App.tsx` to use the generated system prompt
+
+This is the main App-side change.
+
+Instead of defining the system prompt inline, the app should call `generateSystemPrompt()` and use that result as the top system message.
+
+That is the same architectural direction the current main app still uses.
+
+## Verification
+
+Run the app:
+
+```bash
+npm run dev
+```
+
+Then ask something that should cause the model to explore the repo, like:
+
+```text
+Explain the structure of this project.
+```
+
+If it worked, you should see:
+
+- the model using file tools more deliberately
+- answers that reflect the actual project structure
+- less generic behavior than the previous stage
+
+## Resulting snapshot
+
+At the end of this part, your project should match:
+
+- `protoagent-tutorial-again-part-7`
+
+## Pitfalls
+
+- generating a directory tree that is too large and wastes context
+- hardcoding tool descriptions instead of reading the tool registry
+- forgetting to update the top system message after adding the prompt generator
+- making the prompt say the runtime can do more than the tools actually support
 
 ## Core takeaway
 

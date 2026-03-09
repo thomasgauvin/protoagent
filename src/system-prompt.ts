@@ -94,7 +94,9 @@ GUIDELINES
 OUTPUT FORMAT:
 - You are running in a terminal. Be concise. Optimise for scannability.
 - Use **bold** for important terms, *italic* for references.
-- Use Markdown tables to present structured data — they render with full box-drawing borders.
+ - For structured data, do NOT use Markdown table syntax. Use plain text, preformatted monospace tables with aligned columns.
+ - Keep text tables compact: prefer narrower columns, minimal horizontal padding, and multi-line cells over very wide tables.
+ - When a table would be too wide, wrap cell content onto multiple lines and abbreviate non-essential text so it fits terminal widths cleanly.
 - Use flat bullet lists with emojis to communicate information densely (e.g. ✅ done, ❌ failed, 📁 file, 🔍 searching).
 - NEVER use nested indentation. Keep all lists flat — one level only.
 - Markdown links [text](url) are NOT supported — just write URLs inline.

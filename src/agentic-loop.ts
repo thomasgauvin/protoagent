@@ -20,7 +20,7 @@
 import type OpenAI from 'openai';
 import { getAllTools, handleToolCall } from './tools/index.js';
 import { generateSystemPrompt } from './system-prompt.js';
-import { subAgentTool, runSubAgent } from './sub-agent.js';
+import { subAgentTool, runSubAgent, type SubAgentProgressHandler } from './sub-agent.js';
 import {
   estimateTokens,
   estimateConversationTokens,
@@ -44,7 +44,7 @@ export interface ToolCallEvent {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done';
+  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done';
   content?: string;
   toolCall?: ToolCallEvent;
   usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
@@ -61,6 +61,7 @@ export interface AgenticLoopOptions {
   pricing?: ModelPricing;
   abortSignal?: AbortSignal;
   sessionId?: string;
+  requestDefaults?: Record<string, unknown>;
 }
 
 function emitAbortAndFinish(onEvent: AgentEventHandler): void {
@@ -295,6 +296,7 @@ export async function runAgenticLoop(
   const pricing = options.pricing;
   const abortSignal = options.abortSignal;
   const sessionId = options.sessionId;
+  const requestDefaults = options.requestDefaults || {};
 
   // Note: userInput is passed for context/logging but user message should already be in messages array
   // (added by the caller in handleSubmit for immediate UI display)
@@ -330,7 +332,9 @@ export async function runAgenticLoop(
           model,
           updatedMessages,
           pricing.contextWindow,
-          contextInfo.currentTokens
+          contextInfo.currentTokens,
+          requestDefaults,
+          sessionId
         );
         // Replace messages in-place
         updatedMessages.length = 0;
@@ -376,14 +380,15 @@ export async function runAgenticLoop(
         }
       }
 
-       const stream = await client.chat.completions.create({
-        model,
-        messages: updatedMessages,
-        tools: allTools,
-        tool_choice: 'auto',
-        stream: true,
-        stream_options: { include_usage: true },
-      }, {
+        const stream = await client.chat.completions.create({
+         ...requestDefaults,
+         model,
+         messages: updatedMessages,
+         tools: allTools,
+         tool_choice: 'auto',
+         stream: true,
+         stream_options: { include_usage: true },
+       }, {
         signal: abortSignal,
       });
 
@@ -450,20 +455,19 @@ export async function runAgenticLoop(
         }
       }
 
-      // Emit usage info
-      if (pricing) {
+      // Emit usage info — always emit, even without pricing (use estimates)
+      {
         const inputTokens = actualUsage?.prompt_tokens ?? estimateConversationTokens(updatedMessages);
         const outputTokens = actualUsage?.completion_tokens ?? estimateTokens(assistantMessage.content || '');
-        const usageInfo = createUsageInfo(inputTokens, outputTokens, pricing);
-        const contextInfo = getContextInfo(updatedMessages, pricing);
+        const cost = pricing
+          ? createUsageInfo(inputTokens, outputTokens, pricing).estimatedCost
+          : 0;
+        const contextPercent = pricing
+          ? getContextInfo(updatedMessages, pricing).utilizationPercentage
+          : 0;
         onEvent({
           type: 'usage',
-          usage: {
-            inputTokens,
-            outputTokens,
-            cost: usageInfo.estimatedCost,
-            contextPercent: contextInfo.utilizationPercentage,
-          },
+          usage: { inputTokens, outputTokens, cost, contextPercent },
         });
       }
 
@@ -494,6 +498,13 @@ export async function runAgenticLoop(
         updatedMessages.push(assistantMessage);
 
         for (const toolCall of assistantMessage.tool_calls) {
+          // Check abort between tool calls
+          if (abortSignal?.aborted) {
+            logger.debug('Agentic loop aborted between tool calls');
+            emitAbortAndFinish(onEvent);
+            return updatedMessages;
+          }
+
           const { name, arguments: argsStr } = toolCall.function;
 
           onEvent({
@@ -507,11 +518,24 @@ export async function runAgenticLoop(
 
             // Handle sub-agent tool specially
             if (name === 'sub_agent') {
+              const subProgress: SubAgentProgressHandler = (evt) => {
+                onEvent({
+                  type: 'tool_call',
+                  toolCall: {
+                    id: toolCall.id,
+                    name: `sub_agent → ${evt.tool}`,
+                    args: '',
+                    status: evt.status === 'running' ? 'running' : 'done',
+                  },
+                });
+              };
               result = await runSubAgent(
                 client,
                 model,
                 args.task,
-                args.max_iterations
+                args.max_iterations,
+                requestDefaults,
+                subProgress,
               );
             } else {
               result = await handleToolCall(name, args, { sessionId });
@@ -549,6 +573,10 @@ export async function runAgenticLoop(
             });
           }
         }
+
+        // Signal UI that this iteration's tool calls are all done,
+        // so it can flush completed messages to static output.
+        onEvent({ type: 'iteration_done' });
 
         // Continue loop — let the LLM process tool results
         continue;

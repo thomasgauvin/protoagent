@@ -40,6 +40,8 @@ export const subAgentTool = {
   },
 };
 
+export type SubAgentProgressHandler = (event: { tool: string; status: 'running' | 'done' | 'error'; iteration: number }) => void;
+
 /**
  * Run a sub-agent with its own isolated conversation.
  * Returns the sub-agent's final text response.
@@ -48,7 +50,9 @@ export async function runSubAgent(
   client: OpenAI,
   model: string,
   task: string,
-  maxIterations = 30
+  maxIterations = 30,
+  requestDefaults: Record<string, unknown> = {},
+  onProgress?: SubAgentProgressHandler,
 ): Promise<string> {
   const op = logger.startOperation('sub-agent');
   const subAgentSessionId = `sub-agent-${crypto.randomUUID()}`;
@@ -70,6 +74,7 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
   try {
     for (let i = 0; i < maxIterations; i++) {
       const response = await client.chat.completions.create({
+        ...requestDefaults,
         model,
         messages,
         tools: getAllTools(),
@@ -86,6 +91,7 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
         for (const toolCall of message.tool_calls) {
           const { name, arguments: argsStr } = (toolCall as any).function;
           logger.debug(`Sub-agent tool call: ${name}`);
+          onProgress?.({ tool: name, status: 'running', iteration: i });
 
           try {
             const args = JSON.parse(argsStr);
@@ -95,6 +101,7 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
               tool_call_id: toolCall.id,
               content: result,
             } as any);
+            onProgress?.({ tool: name, status: 'done', iteration: i });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             messages.push({
@@ -102,6 +109,7 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
               tool_call_id: toolCall.id,
               content: `Error: ${msg}`,
             } as any);
+            onProgress?.({ tool: name, status: 'error', iteration: i });
           }
         }
         continue;

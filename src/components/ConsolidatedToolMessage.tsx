@@ -7,7 +7,6 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import { Table } from './Table.js';
 import { FormattedMessage } from './FormattedMessage.js';
 
 export interface ConsolidatedToolMessageProps {
@@ -26,33 +25,20 @@ export const ConsolidatedToolMessage: React.FC<ConsolidatedToolMessageProps> = (
   const containsTodoTool = toolCalls.some((toolCall) => toolCall.name === 'todo_read' || toolCall.name === 'todo_write');
   const titleColor = containsTodoTool ? 'green' : 'white';
   const isExpanded = expanded || containsTodoTool;
-  
+
   if (isExpanded) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor="white">
-        <Box paddingX={1}>
-          <Text color={titleColor} bold>▼ {title}</Text>
-        </Box>
-        <Box flexDirection="column" marginLeft={2} paddingRight={1}>
+      <Box flexDirection="column">
+        <Text color={titleColor} bold>▼ {title}</Text>
+        <Box flexDirection="column" marginLeft={1}>
           {toolCalls.map((toolCall, idx) => {
             const result = toolResults.get(toolCall.id);
             if (!result) return null;
-            
-            // Try to see if it's JSON that could be a table
-            let isJsonTable = false;
-            try {
-              const parsed = JSON.parse(result.content);
-              isJsonTable = typeof parsed === 'object' && parsed !== null;
-            } catch (e) {}
 
             return (
               <Box key={idx} flexDirection="column">
                 <Text color="cyan" bold>[{result.name}]:</Text>
-                {isJsonTable ? (
-                  <Table data={result.content} />
-                ) : (
-                  <FormattedMessage content={result.content} />
-                )}
+                <FormattedMessage content={result.content} />
               </Box>
             );
           })}
@@ -79,13 +65,11 @@ export const ConsolidatedToolMessage: React.FC<ConsolidatedToolMessageProps> = (
     : compactPreview;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={titleColor || 'white'}>
-      <Box paddingX={1}>
-        <Text color={titleColor} dimColor bold>
-          ▶ {title}
-        </Text>
-      </Box>
-      <Box marginLeft={2} paddingRight={1}>
+    <Box flexDirection="column">
+      <Text color={titleColor} dimColor bold>
+        ▶ {title}
+      </Text>
+      <Box marginLeft={1}>
         <Text dimColor>{preview}</Text>
       </Box>
     </Box>

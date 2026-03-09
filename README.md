@@ -30,7 +30,6 @@ protoagent configure
 ## Interactive Commands
 
 - `/help` — Show available slash commands
-- `/config` — Change the saved provider, model, or API key
 - `/clear` — Start a fresh conversation in a new session
 - `/collapse` — Collapse long system and tool output
 - `/expand` — Expand collapsed messages
@@ -56,8 +55,6 @@ Full guides and tutorials live in `docs/`:
 - `docs/guide/getting-started.md`
 - `docs/guide/configuration.md`
 - `docs/guide/tools.md`
-- `docs/guide/webfetch.md`
-- `docs/guide/approvals.md`
 - `docs/guide/sessions.md`
 - `docs/guide/skills.md`
 - `docs/guide/sub-agents.md`
@@ -80,7 +77,7 @@ Top-level technical references:
 The codebase is organized so each part is easy to trace:
 
 - `src/cli.tsx` — CLI flags and the `configure` subcommand
-- `src/App.tsx` — Ink app shell, runtime orchestration, slash commands, approvals, config dialog, session display
+- `src/App.tsx` — Ink app shell, runtime orchestration, slash commands, approvals, session display
 - `src/agentic-loop.ts` — Streaming tool-use loop and error handling
 - `src/tools/` — Built-in tools such as file I/O, shell, todo tracking, and `webfetch`
 - `src/config.tsx` — Config persistence and setup wizard
