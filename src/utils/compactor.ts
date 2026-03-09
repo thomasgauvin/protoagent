@@ -62,7 +62,7 @@ async function compactConversation(
   client: OpenAI,
   model: string,
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-  _requestDefaults: Record<string, unknown>,
+  requestDefaults: Record<string, unknown>,
   sessionId?: string
 ): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
   // Separate system message, history to compress, and recent messages
@@ -94,6 +94,7 @@ async function compactConversation(
   ];
 
   const response = await client.chat.completions.create({
+    ...requestDefaults,
     model,
     messages: compressionMessages,
     max_tokens: 2000,

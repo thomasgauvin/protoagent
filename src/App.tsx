@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Box, Text, Static, useApp, useInput, useStdout } from 'ink';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { TextInput, Select, PasswordInput } from '@inkjs/ui';
 import BigText from 'ink-big-text';
 import { OpenAI } from 'openai';
@@ -63,7 +63,7 @@ function renderMessageList(
     const msgAny = msg as any;
     const isToolCall = msg.role === 'assistant' && msgAny.tool_calls && msgAny.tool_calls.length > 0;
     const displayContent = 'content' in msg && typeof msg.content === 'string' ? msg.content : null;
-    const normalizedContent = normalizeMessageSpacing(displayContent || '', msg.role === 'tool' ? 'tool' : 'assistant');
+    const normalizedContent = normalizeMessageSpacing(displayContent || '');
     const isFirstSystemMessage = msg.role === 'system' && !allMessages.slice(0, index).some((message) => message.role === 'system');
     const previousMessage = index > 0 ? allMessages[index - 1] : null;
     const followsToolMessage = previousMessage?.role === 'tool';
@@ -135,7 +135,7 @@ function renderMessageList(
           const nextMsg = messagesToRender[nextLocalIndex] as any;
           if (nextMsg.role === 'tool' && nextMsg.tool_call_id === toolCall.id) {
             toolResults.set(toolCall.id, {
-              content: normalizeMessageSpacing(nextMsg.content || '', 'tool'),
+              content: normalizeMessageSpacing(nextMsg.content || ''),
               name: nextMsg.name || toolCall.name,
             });
             skippedIndices.add(nextLocalIndex);
@@ -182,7 +182,7 @@ function renderMessageList(
   return rendered;
 }
 
-function normalizeMessageSpacing(message: string, _role: 'assistant' | 'tool'): string {
+function normalizeMessageSpacing(message: string): string {
   const normalized = message.replace(/\r\n/g, '\n');
   const lines = normalized.split('\n');
 
@@ -445,11 +445,6 @@ export const App: React.FC<AppProps> = ({
   const [needsSetup, setNeedsSetup] = useState(false);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
 
-  // Static output — completed turns flushed to stdout via <Static>, never re-rendered
-  const [staticItems, setStaticItems] = useState<Array<{ key: string; nodes: React.ReactNode[] }>>([]);
-  // Track how many messages have already been flushed to static (prevents double-rendering)
-  const flushedUpToRef = useRef<number>(0);
-
   // Input reset key — incremented on submit to force TextInput remount and clear
   const [inputResetKey, setInputResetKey] = useState(0);
   const [inputWidthKey, setInputWidthKey] = useState(stdout?.columns ?? 80);
@@ -499,29 +494,8 @@ export const App: React.FC<AppProps> = ({
   // Abort controller for cancelling the current completion
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Lock the live-start boundary at the beginning of each completion to prevent jumps
-  const liveStartRef = useRef<number>(0);
-
   // Debounce timer for text_delta renders (~50ms batching)
   const textFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Track expandedMessages in a ref so async callbacks can read the latest value
-  const expandedMessagesRef = useRef(expandedMessages);
-  expandedMessagesRef.current = expandedMessages;
-
-  // ─── Header rendering helper (for static flush) ───
-
-  const renderHeader = useCallback((loadedConfig: Config): React.ReactNode[] => {
-    const provider = getProvider(loadedConfig.provider);
-    return [
-      <BigText key="logo" text="ProtoAgent" font="tiny" colors={["#09A469"]} />,
-      <Text key="model" dimColor>
-        Model: {provider?.name || loadedConfig.provider} / {loadedConfig.model}
-        {dangerouslyAcceptAll && <Text color="red"> (auto-approve all)</Text>}
-      </Text>,
-      <Text key="spacer"> </Text>,
-    ];
-  }, [dangerouslyAcceptAll]);
 
   // ─── Post-config initialization (reused after inline setup) ───
 
@@ -546,17 +520,6 @@ export const App: React.FC<AppProps> = ({
         setTodosForSession(loadedSession.id, loadedSession.todos);
         setSession(loadedSession);
         setCompletionMessages(loadedSession.completionMessages);
-        // Flush header + restored session messages to static output
-        const headerNodes = renderHeader(loadedConfig);
-        const msgNodes = renderMessageList(
-          loadedSession.completionMessages,
-          loadedSession.completionMessages,
-          new Set(),
-          0,
-          false,
-        );
-        flushedUpToRef.current = loadedSession.completionMessages.length;
-        setStaticItems([{ key: 'session-restore', nodes: [...headerNodes, ...msgNodes] }]);
       } else {
         setError(`Session "${sessionId}" not found. Starting a new session.`);
       }
@@ -571,18 +534,6 @@ export const App: React.FC<AppProps> = ({
       clearTodos(newSession.id);
       newSession.completionMessages = initialCompletionMessages;
       setSession(newSession);
-
-      // Flush header + system prompt to static output
-      const headerNodes = renderHeader(loadedConfig);
-        const msgNodes = renderMessageList(
-          initialCompletionMessages,
-          initialCompletionMessages,
-          new Set(),
-          0,
-          false,
-        );
-      flushedUpToRef.current = initialCompletionMessages.length;
-      setStaticItems([{ key: 'init', nodes: [...headerNodes, ...msgNodes] }]);
     }
 
     setNeedsSetup(false);
@@ -706,9 +657,6 @@ export const App: React.FC<AppProps> = ({
         // Re-initialize messages with just the system prompt
         initializeMessages().then((msgs) => {
           setCompletionMessages(msgs);
-          setStaticItems([]); // Clear static output
-          flushedUpToRef.current = 0;
-          liveStartRef.current = 0;
           setHelpMessage(null);
           setLastUsage(null);
           setTotalCost(0);
@@ -738,21 +686,21 @@ export const App: React.FC<AppProps> = ({
       default:
         return false;
     }
-  }, [exit, session, completionMessages]);
+  }, [config, exit, session, completionMessages]);
 
   // ─── Submit handler ───
 
   const handleSubmit = useCallback(async (value: string) => {
     const trimmed = value.trim();
-      if (!trimmed || loading || !clientRef.current || !config) return;
+    if (!trimmed || loading || !clientRef.current || !config) return;
 
-      // Handle slash commands
-      if (trimmed.startsWith('/')) {
-        const handled = await handleSlashCommand(trimmed);
-        if (handled) {
-          setInputText('');
-          setInputResetKey((prev) => prev + 1);
-          return;
+    // Handle slash commands
+    if (trimmed.startsWith('/')) {
+      const handled = await handleSlashCommand(trimmed);
+      if (handled) {
+        setInputText('');
+        setInputResetKey((prev) => prev + 1);
+        return;
       }
     }
 
@@ -765,11 +713,7 @@ export const App: React.FC<AppProps> = ({
 
     // Add user message to completion messages IMMEDIATELY for real-time UI display
     const userMessage: Message = { role: 'user', content: trimmed };
-    setCompletionMessages((prev) => {
-      // Lock the live-start boundary to where flushed content ends
-      liveStartRef.current = flushedUpToRef.current;
-      return [...prev, userMessage];
-    });
+    setCompletionMessages((prev) => [...prev, userMessage]);
 
     // Reset assistant message tracker
     assistantMessageRef.current = null;
@@ -932,28 +876,6 @@ export const App: React.FC<AppProps> = ({
               }
               break;
             case 'iteration_done':
-              // Flush completed iteration to static output so the live area stays small.
-              // This is the key optimization: previous tool call groups become static
-              // and never re-render when new tool results arrive.
-              setCompletionMessages((current) => {
-                const unflushed = current.slice(flushedUpToRef.current);
-                if (unflushed.length > 0) {
-                  const nodes = renderMessageList(
-                    unflushed,
-                    current,
-                    expandedMessagesRef.current,
-                    flushedUpToRef.current,
-                    false,
-                  );
-                  if (nodes.length > 0) {
-                    setStaticItems((prev) => [...prev, { key: `iter-${Date.now()}`, nodes }]);
-                  }
-                }
-                flushedUpToRef.current = current.length;
-                liveStartRef.current = current.length;
-                return current;
-              });
-              // Reset assistant message tracker for next iteration
               assistantMessageRef.current = null;
               break;
             case 'done':
@@ -988,20 +910,6 @@ export const App: React.FC<AppProps> = ({
     } catch (err: any) {
       setError(`Error: ${err.message}`);
     } finally {
-      // Flush only NEW messages (since last flush) to static output
-      setCompletionMessages((current) => {
-        const unflushed = current.slice(flushedUpToRef.current);
-        if (unflushed.length > 0) {
-          const nodes = renderMessageList(unflushed, current, new Set(), flushedUpToRef.current, false);
-          if (nodes.length > 0) {
-            setStaticItems((prev) => [...prev, { key: `turn-${Date.now()}`, nodes }]);
-          }
-        }
-        flushedUpToRef.current = current.length;
-        return current;
-      });
-      liveStartRef.current = Infinity; // nothing is "live" anymore
-      setExpandedMessages(new Set());
       setLoading(false);
     }
   }, [loading, config, completionMessages, session, handleSlashCommand, expandLatestMessage]);
@@ -1020,24 +928,34 @@ export const App: React.FC<AppProps> = ({
 
   // ─── Render ───
 
-  // Only render messages from the current live turn in the active area.
-  // Memoized so spinner ticks (spinnerFrame) don't recompute the message list.
-  const liveStartIndex = loading ? liveStartRef.current : completionMessages.length;
-  const liveMessageNodes = useMemo(() => {
-    const liveMessages = completionMessages.slice(liveStartIndex);
-    return renderMessageList(liveMessages, completionMessages, expandedMessages, liveStartIndex, loading);
-  }, [completionMessages, expandedMessages, liveStartIndex, loading]);
+  const providerInfo = config ? getProvider(config.provider) : null;
+  const liveStartIndex = loading
+    ? (typeof assistantMessageRef.current?.index === 'number'
+        ? assistantMessageRef.current.index
+        : Math.max(completionMessages.length - 1, 0))
+    : completionMessages.length;
+  const archivedMessages = completionMessages.slice(0, liveStartIndex);
+  const liveMessages = completionMessages.slice(liveStartIndex);
+  const archivedMessageNodes = useMemo(
+    () => renderMessageList(archivedMessages, completionMessages, expandedMessages),
+    [archivedMessages, completionMessages, expandedMessages]
+  );
+  const liveMessageNodes = useMemo(
+    () => renderMessageList(liveMessages, completionMessages, expandedMessages, liveStartIndex, loading),
+    [liveMessages, completionMessages, expandedMessages, liveStartIndex, loading]
+  );
 
   return (
     <Box flexDirection="column" height="100%">
-      {/* Static output — completed turns, written to stdout once, never re-rendered */}
-      <Static items={staticItems}>
-        {(item) => (
-          <Box key={item.key} flexDirection="column">
-            {item.nodes}
-          </Box>
-        )}
-      </Static>
+      <BigText text="ProtoAgent" font="tiny" colors={["#09A469"]} />
+      {config && (
+        <Text dimColor>
+          Model: {providerInfo?.name || config.provider} / {config.model}
+          {dangerouslyAcceptAll && <Text color="red"> (auto-approve all)</Text>}
+          {session && <Text dimColor> | Session: {session.id.slice(0, 8)}</Text>}
+        </Text>
+      )}
+      {logFilePath && <Text dimColor>Debug logs: {logFilePath}</Text>}
 
       {error && <Text color="red">{error}</Text>}
       {helpMessage && (
@@ -1052,7 +970,7 @@ export const App: React.FC<AppProps> = ({
       )}
       {!initialized && !error && !needsSetup && <Text>Initializing...</Text>}
 
-       {/* Inline setup wizard */}
+      {/* Inline setup wizard */}
       {needsSetup && (
         <InlineSetup
           onComplete={(newConfig) => {
@@ -1063,8 +981,8 @@ export const App: React.FC<AppProps> = ({
         />
       )}
 
-        {/* Live messages — only the current streaming turn, re-rendered on updates */}
-       <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={1}>
+        {archivedMessageNodes}
         {liveMessageNodes}
 
         {threadErrors.map((threadError) => (
@@ -1072,13 +990,10 @@ export const App: React.FC<AppProps> = ({
             <Text color="red">Error: {threadError.message}</Text>
           </Box>
         ))}
-
-
-        {/* Loading indicator - show only if loading and no assistant response yet */}
+        {/* Loading indicator — only before the first assistant response */}
         {loading && completionMessages.length > 0 && (
           (() => {
             const lastMsg = completionMessages[completionMessages.length - 1];
-            // Show "Thinking..." only if the last message is a user message (no assistant response yet)
             return lastMsg.role === 'user' ? <Text dimColor>Thinking...</Text> : null;
           })()
         )}
@@ -1098,7 +1013,7 @@ export const App: React.FC<AppProps> = ({
       {/* Usage bar */}
       <UsageDisplay usage={lastUsage ?? null} totalCost={totalCost} />
 
-       {/* Command filter (show available commands when typing /) */}
+      {/* Command filter */}
       {initialized && !pendingApproval && inputText.startsWith('/') && (
         <CommandFilter inputText={inputText} />
       )}
@@ -1114,7 +1029,7 @@ export const App: React.FC<AppProps> = ({
       )}
 
       {/* Input */}
-       {initialized && !pendingApproval && (
+      {initialized && !pendingApproval && (
         <Box key={`input-shell-${inputWidthKey}`} borderStyle="round" borderColor="green" paddingX={1} flexDirection="column">
           <Box flexDirection="row">
             <Box width={2} flexShrink={0}>
@@ -1133,7 +1048,7 @@ export const App: React.FC<AppProps> = ({
         </Box>
       )}
 
-       {/* Resume session command (shown when quitting) */}
+      {/* Resume session command */}
       {quittingSession && (
         <Box flexDirection="column" marginTop={1} paddingX={1} marginBottom={1}>
           <Text dimColor>Session saved. Resume with:</Text>
