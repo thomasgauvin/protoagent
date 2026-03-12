@@ -1,82 +1,65 @@
 # Part 1: Scaffolding
 
-Part 1 is still the structural foundation: a Node CLI entrypoint, Commander for argument parsing, and Ink for the terminal UI.
+By the end of this part you will have a working terminal app: a Commander-based CLI that launches an Ink TUI with a message area and a text input. No AI yet — just the interactive shell that every later feature will grow inside.
 
-The difference now is that we are treating it as a real rebuild checkpoint.
+## What you are building
 
-By the end of this part, you should have a minimal interactive terminal app that matches `protoagent-tutorial-again-part-1`.
-
-## What you are building in this part
-
-You are building the smallest useful shell of ProtoAgent:
-
-- a TypeScript CLI package
-- a compiled `dist/cli.js` entrypoint
-- a Commander-based command shell
-- an Ink app with a message area and input box
-
-No AI yet. No tools yet. Just the terminal shell the rest of the project will grow inside.
-
-## Starting point
-
-Start from a fresh directory.
-
-If you want to compare your result at the end, the target snapshot is:
-
-- `protoagent-tutorial-again-part-1`
+- A TypeScript CLI package (`package.json` with ESM, build scripts)
+- A compiled `dist/cli.js` entrypoint
+- A Commander-based command parser
+- An Ink React app with a title, message list, and input box
 
 ## Files to create
 
-Create these files first:
+| File | Purpose |
+|------|---------|
+| `package.json` | Node package, scripts, dependencies |
+| `tsconfig.json` | TypeScript compiler config |
+| `src/cli.tsx` | CLI entrypoint — parses args, renders the Ink app |
+| `src/App.tsx` | Main UI component — message list + input |
 
-- `package.json`
-- `tsconfig.json`
-- `src/cli.tsx`
-- `src/App.tsx`
-
-## Step 1: Create `package.json`
-
-Use a small Node + TypeScript CLI package with ESM enabled.
-
-Key things to include:
-
-- `"type": "module"`
-- `"bin": "dist/cli.js"`
-- a `build` script that runs `tsc`
-- a `dev` script that runs `tsx src/cli.tsx`
-- Ink, Commander, React, and TypeScript dependencies
-
-At this stage, the snapshot uses these package scripts:
+## Step 1: `package.json`
 
 ```json
 {
+  "name": "protoagent",
+  "version": "0.0.1",
+  "description": "A simple coding agent CLI.",
+  "bin": "dist/cli.js",
+  "type": "module",
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.tsx",
     "build:watch": "tsc --watch"
-  }
-}
-```
-
-And these runtime dependencies:
-
-```json
-{
+  },
+  "files": [
+    "dist"
+  ],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
-    "commander": "^14.0.3",
+    "commander": "^14.0.1",
     "ink": "^6.7.0",
     "ink-big-text": "^2.0.0",
     "react": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.15",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
   }
 }
 ```
 
-## Step 2: Create `tsconfig.json`
+Key points:
+- `"type": "module"` enables ESM imports throughout the project
+- `"bin": "dist/cli.js"` makes the compiled CLI the executable entrypoint
+- `tsx` runs TypeScript directly for development (`npm run dev`)
+- `tsc` compiles to `dist/` for production (`npm run build`)
 
-Keep the compiler setup simple and aligned with the staged snapshot.
-
-The stage uses:
+## Step 2: `tsconfig.json`
 
 ```json
 {
@@ -84,7 +67,7 @@ The stage uses:
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "jsx": "react",
+    "jsx": "react-jsx",
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
@@ -97,69 +80,122 @@ The stage uses:
 }
 ```
 
-Later parts evolve this setup, but this is enough for the first stage.
+The `"jsx": "react-jsx"` setting tells TypeScript to transform JSX without requiring explicit React imports. This is the modern approach supported in React 17+.
 
-## Step 3: Create `src/cli.tsx`
+## Step 3: `src/cli.tsx`
 
-This file does three things:
+This file does three things: reads the package version, creates the Commander program, and renders the Ink app.
 
-1. reads the package version from `package.json`
-2. creates the Commander program
-3. renders the Ink app
+```tsx
+#!/usr/bin/env node
+import process from 'node:process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import React from 'react';
+import { render } from 'ink';
+import { Command } from 'commander';
+import { App } from './App.js';
 
-The stage-1 CLI is intentionally tiny. It does not have subcommands yet. It just parses the base program and renders `App`.
+// Read version from package.json relative to the compiled file location
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const packageJson: { version: string } = JSON.parse(
+  readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
+);
 
-Critical details to keep:
+const program = new Command();
 
-- use a `#!/usr/bin/env node` shebang
-- read `package.json` relative to the built file location
-- import `App` from `./App.js`
-- call `render(<App options={options} />)`
+program
+  .description('ProtoAgent — a simple, hackable coding agent CLI')
+  .version(packageJson.version)
+  .parse(process.argv);
 
-That last part is what gives you the clean split between CLI entrypoint and interactive UI.
+const options = program.opts();
 
-## Step 4: Create `src/App.tsx`
+render(<App options={options} />);
+```
 
-This first version of `App` is mostly a terminal shell.
+Note the import path: `./App.js`, not `./App.tsx`. When TypeScript compiles, `.tsx` files become `.js` files in `dist/`, so all imports must reference the compiled extension.
 
-It keeps:
+## Step 4: `src/App.tsx`
 
-- an array of submitted messages
-- an `inputKey` so the input resets after submit
-- a `handleSubmit()` function that appends the latest message
+The first version of `App` is just a terminal chat shell — no AI, no tools. It keeps an array of messages and an input box. When you submit text, it appears in the message area.
 
-It renders:
+```tsx
+import React, { useState } from 'react';
+import { Box, Text, useApp, useInput } from 'ink';
+import { TextInput } from '@inkjs/ui';
+import BigText from 'ink-big-text';
 
-- a `BigText` title
-- a short intro
-- the message list
-- an input box at the bottom
+export interface AppProps {
+  options?: Record<string, any>;
+}
 
-You do not need to overthink this part. The point is to establish the TUI layout that every later feature will build on.
+export const App: React.FC<AppProps> = () => {
+  const { exit } = useApp();
+  const [messages, setMessages] = useState<string[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [inputKey, setInputKey] = useState(0);
 
-The snapshot version uses a single-column `Box` with:
+  const handleSubmit = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
 
-- a scroll-like content area on top
-- a bordered input area on the bottom
+    setMessages((prev) => [...prev, trimmed]);
+    setInputText('');
+    setInputKey((prev) => prev + 1);
+  };
 
-## What changed since the earliest version
+  useInput((_input, key) => {
+    if (key.ctrl && _input === 'c') {
+      exit();
+    }
+  });
 
-The original scaffold really was just a chat-shaped terminal app. The current full app is much richer:
+  return (
+    <Box flexDirection="column" height="100%">
+      {/* Header */}
+      <BigText text="ProtoAgent" font="tiny" colors={["#09A469"]} />
+      <Text dimColor italic>A simple, hackable coding agent CLI.</Text>
+      <Text> </Text>
 
-- the UI is session-aware
-- slash commands are built in
-- config can be edited inline or mid-session
-- approvals are rendered inline in the same TUI
-- the app can resume previous sessions by ID
+      {/* Message area */}
+      <Box flexDirection="column" flexGrow={1}>
+        {messages.map((msg, i) => (
+          <Text key={i}>
+            <Text color="green" bold>{'> '}</Text>
+            <Text>{msg}</Text>
+          </Text>
+        ))}
+      </Box>
 
-But none of that changes the basic split you are establishing here.
+      {/* Input */}
+      <Box borderStyle="round" borderColor="green" paddingX={1}>
+        <Text color="green" bold>{'> '}</Text>
+        <TextInput
+          key={inputKey}
+          defaultValue={inputText}
+          onChange={setInputText}
+          placeholder="Type your message..."
+          onSubmit={handleSubmit}
+        />
+      </Box>
+    </Box>
+  );
+};
+```
+
+The `inputKey` trick forces the `TextInput` to remount and clear its internal state after each submit. Without it, the input field would keep the old text.
 
 ## Verification
 
-Install dependencies and build the project:
+Install dependencies and build:
 
 ```bash
-npm install && npm run build && node dist/cli.js --help
+npm install
+npm run build
+node dist/cli.js --help
 ```
 
 Then launch the dev version:
@@ -168,31 +204,23 @@ Then launch the dev version:
 npm run dev
 ```
 
-If it worked, you should see:
+You should see:
+- The **ProtoAgent** title rendered in large text
+- A text input at the bottom
+- Submitted messages appear in the message area
+- `Ctrl-C` exits the app
 
-- the `ProtoAgent` title rendered in the terminal
-- a text input prompt at the bottom
-- submitted messages appear in the message area
+## Snapshot
 
-## Resulting snapshot
-
-At the end of this part, your project should match:
-
-- `protoagent-tutorial-again-part-1`
+Your project should match `protoagent-tutorial-again-part-1`.
 
 ## Pitfalls
 
-- forgetting `"type": "module"` and then fighting ESM import issues
-- using the wrong JSX setting and getting Ink/React build errors
-- importing `./App.tsx` instead of `./App.js` from built code
-- reading `package.json` from the wrong relative path after compilation
+- Forgetting `"type": "module"` causes ESM import failures
+- Using `"jsx": "react-jsx"` instead of `"jsx": "react"` breaks Ink rendering
+- Importing `./App.tsx` instead of `./App.js` from compiled code fails at runtime
+- Reading `package.json` from the wrong relative path after compilation
 
-## Core takeaway
+## What comes next
 
-Even in the current codebase, the architecture still starts with the same simple split:
-
-1. parse CLI arguments
-2. decide which Ink component to render
-3. keep the app stateful and interactive inside `App.tsx`
-
-That separation makes every later feature easier to layer on.
+Part 2 adds the OpenAI SDK and streaming — the first time the app actually talks to an AI model. Everything you build after this point grows inside the shell you just created.

@@ -77,6 +77,24 @@ test('approval and bash security controls', async (t) => {
     assert.match(result, /Command cancelled by user/);
   });
 
+  await t.test('bash abort signal stops a running command', async () => {
+    setApprovalHandler(async () => 'approve_once');
+
+    const controller = new AbortController();
+    const commandPromise = runBash(
+      'node -e "setTimeout(() => console.log(\'done\'), 10000)"',
+      15_000,
+      'session-a',
+      controller.signal,
+    );
+
+    setTimeout(() => controller.abort(), 100);
+
+    const result = await commandPromise;
+
+    assert.match(result, /Command aborted by user/);
+  });
+
   clearApprovalHandler();
   clearSessionApprovals();
   setDangerouslyAcceptAll(false);

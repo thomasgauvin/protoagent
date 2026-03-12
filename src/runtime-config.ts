@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse, printParseErrorCode } from 'jsonc-parser';
@@ -65,13 +66,30 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfigFile = {
 
 let runtimeConfigCache: RuntimeConfigFile | null = null;
 
-function getRuntimeConfigPaths(): string[] {
+function getProjectRuntimeConfigPath(): string {
+  return path.join(process.cwd(), '.protoagent', 'protoagent.jsonc');
+}
+
+function getUserRuntimeConfigPath(): string {
   const homeDir = os.homedir();
-  return [
-    path.join(homeDir, '.config', 'protoagent', 'protoagent.jsonc'),
-    path.join(homeDir, '.protoagent', 'protoagent.jsonc'),
-    path.join(process.cwd(), '.protoagent', 'protoagent.jsonc'),
-  ];
+  if (process.platform === 'win32') {
+    return path.join(homeDir, 'AppData', 'Local', 'protoagent', 'protoagent.jsonc');
+  }
+  return path.join(homeDir, '.config', 'protoagent', 'protoagent.jsonc');
+}
+
+export function getActiveRuntimeConfigPath(): string | null {
+  const projectPath = getProjectRuntimeConfigPath();
+  if (existsSync(projectPath)) {
+    return projectPath;
+  }
+
+  const userPath = getUserRuntimeConfigPath();
+  if (existsSync(userPath)) {
+    return userPath;
+  }
+
+  return null;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -233,17 +251,19 @@ export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeCon
     return runtimeConfigCache;
   }
 
-  let merged = DEFAULT_RUNTIME_CONFIG;
+  const configPath = getActiveRuntimeConfigPath();
+  let loaded = DEFAULT_RUNTIME_CONFIG;
 
-  for (const configPath of getRuntimeConfigPaths()) {
+  if (configPath) {
     const fileConfig = await readRuntimeConfigFile(configPath);
-    if (!fileConfig) continue;
-    logger.debug(`Loaded runtime config`, { path: configPath });
-    merged = mergeRuntimeConfig(merged, fileConfig);
+    if (fileConfig) {
+      logger.debug('Loaded runtime config', { path: configPath });
+      loaded = mergeRuntimeConfig(DEFAULT_RUNTIME_CONFIG, fileConfig);
+    }
   }
 
-  runtimeConfigCache = merged;
-  return merged;
+  runtimeConfigCache = loaded;
+  return loaded;
 }
 
 export function getRuntimeConfig(): RuntimeConfigFile {

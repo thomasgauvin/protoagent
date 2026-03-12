@@ -33,18 +33,15 @@ Current validation rules:
 
 - the file must start with YAML frontmatter
 - `name` is required
-- `description` is required
-- the skill name must be lowercase kebab-case
+- `description` is required (1-1024 characters)
+- the skill name must be lowercase kebab-case (`/^[a-z0-9]+(?:-[a-z0-9]+)*$/`)
+- the skill name must be 1-64 characters
 - the skill directory name must match the skill name exactly
+- `compatibility`, when provided, must be 1-500 characters
 
 ## Discovery locations
 
-ProtoAgent scans a few user-level and project-level roots for skills.
-
-Project roots:
-
-- `.agents/skills/`
-- `.protoagent/skills/`
+ProtoAgent scans five roots for skills: three user-level and two project-level.
 
 User roots:
 
@@ -52,7 +49,12 @@ User roots:
 - `~/.protoagent/skills/`
 - `~/.config/protoagent/skills/`
 
-If a project skill and a user skill share the same name, the project-level version wins.
+Project roots:
+
+- `<cwd>/.agents/skills/`
+- `<cwd>/.protoagent/skills/`
+
+Roots are scanned in the order listed above. If a project skill and a user skill share the same name, the last one discovered wins (project roots are scanned after user roots, so project-level skills take precedence).
 
 ## How activation works
 
@@ -60,22 +62,22 @@ ProtoAgent does not inject every skill body into the prompt up front.
 
 Instead it:
 
-1. discovers and validates skills
-2. adds a catalog of available skills to the system prompt
+1. discovers and validates skills from all 5 roots
+2. adds a catalog of available skills to the system prompt (name, description, location)
 3. registers the `activate_skill` tool if at least one skill exists
-4. lets the model load the full skill only when it actually needs it
+4. lets the model load the full skill body only when it actually needs it
 
 That is the whole design in one sentence: keep the base prompt smaller, but still let the model load the detailed instructions on demand.
 
 ## Skill resources
 
-ProtoAgent can also list bundled files under these directories inside a skill folder:
+Skills can also bundle files under these directories inside the skill folder:
 
 - `scripts/`
 - `references/`
 - `assets/`
 
-The skills system also adds discovered skill directories to the allowed path roots, so those bundled files can be accessed through the normal file tools.
+The skills system walks these directories (up to 200 files) and lists them in the activation output. It also adds discovered skill directories to the allowed path roots, so those bundled files can be accessed through the normal file tools.
 
 ## Supported frontmatter fields
 
@@ -88,15 +90,15 @@ The current loader understands:
 - `metadata`
 - `allowed-tools`
 
-`allowed-tools` is parsed into the dedicated `allowedTools` field, but it is not currently enforced as a permission boundary.
+`allowed-tools` is parsed into the dedicated `allowedTools` field (split on whitespace), but it is not currently enforced as a permission boundary.
 
 ## What activation returns
 
 `activate_skill` returns a `<skill_content ...>` block that includes:
 
-- the skill body
-- the skill directory
-- guidance about resolving relative paths
-- an optional `<skill_resources>` listing
+- the skill body (the markdown content after the frontmatter)
+- the skill directory path
+- guidance about resolving relative paths against the skill directory
+- a `<skill_resources>` listing of bundled files (or an empty `<skill_resources />` tag)
 
 The compaction system also preserves activated skill payloads when summarizing long conversations.

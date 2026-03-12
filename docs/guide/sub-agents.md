@@ -8,10 +8,10 @@ Sub-agents move that work into an isolated child run.
 
 ## How it works
 
-1. the main agent calls `sub_agent`
-2. ProtoAgent creates a fresh child conversation with a new system prompt
+1. the main agent calls `sub_agent` with a `task` description
+2. ProtoAgent creates a fresh child conversation with a new system prompt (the normal system prompt plus a sub-agent mode suffix)
 3. the child uses the normal tool stack in that isolated context
-4. only the child's final answer comes back to the parent
+4. only the child's final text answer comes back to the parent
 
 This is useful for repo exploration, focused research, and independent subtasks.
 
@@ -19,9 +19,10 @@ This is useful for repo exploration, focused research, and independent subtasks.
 
 - `max_iterations` defaults to `30`
 - child runs use the normal tool registry from `getAllTools()`
-- `sub_agent` is not re-exposed recursively inside the child
-- child TODOs are ephemeral and cleared afterward
+- `sub_agent` is not re-exposed recursively inside the child (the child cannot spawn its own sub-agents)
+- child TODOs use an ephemeral session ID (`sub-agent-<uuid>`) and are cleared afterward
 - child history is not persisted as a normal user-facing session
+- the parent receives a progress callback for each tool call in the child (`running`, `done`, `error` status per iteration)
 
 ## Approvals
 

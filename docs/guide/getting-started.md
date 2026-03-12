@@ -50,18 +50,18 @@ Some good first prompts:
 
 Inside the app, you can use:
 
-- `/help`
-- `/clear`
-- `/collapse`
-- `/expand`
-- `/quit` or `/exit`
+- `/help` — show available slash commands
+- `/clear` — clear conversation and start a fresh session
+- `/collapse` — collapse all long messages
+- `/expand` — expand all collapsed messages
+- `/quit` — save the session and exit (also accepts `/exit`)
 
 Useful shortcuts:
 
 - `Esc` aborts the current in-flight completion
 - `Ctrl-C` exits immediately
 
-One small but important detail: `/quit` and `/exit` save the current session first and print the exact resume command.
+One small but important detail: `/quit` (and `/exit`) saves the current session first and prints the exact resume command.
 
 ## CLI flags
 

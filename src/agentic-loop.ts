@@ -538,7 +538,7 @@ export async function runAgenticLoop(
                 subProgress,
               );
             } else {
-              result = await handleToolCall(name, args, { sessionId });
+              result = await handleToolCall(name, args, { sessionId, abortSignal });
             }
 
             logger.debug('Tool result', {

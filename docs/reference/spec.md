@@ -21,7 +21,7 @@ CLI (Commander)
   -> Ink TUI
      -> Agentic Loop
         -> OpenAI SDK client
-        -> Built-in tools
+        -> Built-in tools (9 static)
         -> Dynamic tools from skills and MCP
         -> Special sub-agent tool
 ```
@@ -35,6 +35,8 @@ Main implementation areas live in:
 - `src/sessions.ts`
 - `src/skills.ts`
 - `src/mcp.ts`
+- `src/sub-agent.ts`
+- `src/runtime-config.ts`
 
 ## 3. CLI and Interaction Model
 
@@ -43,8 +45,9 @@ Current entry points and flags:
 - `protoagent`
 - `protoagent configure`
 - `--dangerously-accept-all`
-- `--log-level <level>`
+- `--log-level <level>` (default: `INFO`)
 - `--session <id>`
+- `--version`
 
 Current slash commands:
 
@@ -53,7 +56,7 @@ Current slash commands:
 - `/expand`
 - `/help`
 - `/quit`
-- `/exit`
+- `/exit` (alias for `/quit`)
 
 Keyboard shortcuts:
 
@@ -62,18 +65,16 @@ Keyboard shortcuts:
 
 ## 4. Configuration System
 
-ProtoAgent uses two configuration layers:
+ProtoAgent uses a single configuration file: `protoagent.jsonc`.
 
-- persisted user selection in `config.json`
-- extensibility and runtime overrides in `protoagent.jsonc`
+Active config lookup is:
 
-`config.json` stores:
+1. `<cwd>/.protoagent/protoagent.jsonc` if it exists
+2. otherwise the shared user config at `~/.config/protoagent/protoagent.jsonc` on macOS/Linux or `%USERPROFILE%/AppData/Local/protoagent/protoagent.jsonc` on Windows
 
-- provider
-- model
-- optional API key
+The first provider entry in the file is treated as the active provider, and the first model entry inside that provider is treated as the active model.
 
-`protoagent.jsonc` is loaded from project and user config locations, merged with built-in defaults, and may define:
+`protoagent.jsonc` may define:
 
 - provider additions or overrides
 - model metadata overrides
@@ -87,36 +88,41 @@ The current implementation supports:
 - inline first-run setup
 - `protoagent configure`
 - provider environment-variable fallback
-- legacy config compatibility
 - JSONC-based runtime provider and MCP extension
+- environment variable interpolation with `${VAR}` syntax
 
 ## 5. Provider and Model Support
 
-Built-in providers ship in `src/providers.ts`, but the active runtime registry is the merged result of:
+Built-in providers ship in `src/providers.ts`:
 
-- built-in providers
-- user `protoagent.jsonc`
-- project `protoagent.jsonc`
+| Provider | Models |
+|---|---|
+| **OpenAI** | GPT-5.2, GPT-5 Mini, GPT-4.1 |
+| **Anthropic Claude** | Claude Opus 4.6, Claude Sonnet 4.6, Claude Haiku 4.5 |
+| **Google Gemini** | Gemini 3 Flash (Preview), Gemini 3 Pro (Preview), Gemini 2.5 Flash, Gemini 2.5 Pro |
+| **Cerebras** | Llama 4 Scout 17B |
 
-Providers may be added or overridden by ID. Each model entry includes context-window and pricing metadata and may also define per-model request defaults.
+The active runtime registry is the result of built-in providers plus the active `protoagent.jsonc` file.
+
+Providers may be added or overridden by ID. Each model entry includes context-window and pricing metadata and may also define per-model request defaults. Reserved request fields are stripped from config defaults.
 
 ## 6. Agentic Loop
 
 The loop in `src/agentic-loop.ts`:
 
 1. refreshes the system prompt
-2. compacts history if needed
+2. compacts history if needed (at 90% context utilization)
 3. sends messages and tools to the model
 4. streams assistant text and tool calls
 5. executes tools and appends results
-6. retries selected transient failures
+6. retries selected transient failures (400, 429, 5xx)
 7. returns when the model emits plain assistant text
 
-It also repairs malformed streamed tool payloads from providers before retrying.
+It also sanitizes malformed streamed tool names and JSON payloads before retrying. Sub-agent calls are routed through the loop rather than the normal tool registry.
 
 ## 7. Tool System
 
-Current built-ins:
+Current built-ins (9 tools):
 
 - `read_file`
 - `write_file`
@@ -124,10 +130,15 @@ Current built-ins:
 - `list_directory`
 - `search_files`
 - `bash`
-- `todo_read` / `todo_write`
+- `todo_read`
+- `todo_write`
 - `webfetch`
 
-Dynamic tools can also be registered by MCP and the skills system. `sub_agent` is exposed specially by the loop.
+Dynamic tools:
+
+- `activate_skill` — registered when skills are discovered
+- `sub_agent` — exposed specially by the loop
+- `mcp_<server>_<tool>` — registered from MCP servers
 
 ## 8. File and Path Safety
 
@@ -136,47 +147,57 @@ Current rules include:
 - file access limited to the working directory plus allowed skill roots
 - symlink-aware validation
 - parent-directory checks for non-existent files
+- staleness guard requiring read-before-edit (tracked per session via file-time)
 
 ## 9. Approval Model
 
-ProtoAgent currently uses approval categories for:
+ProtoAgent uses three approval categories:
 
 - `file_write`
 - `file_edit`
 - `shell_command`
 
-Writes, edits, and non-safe shell commands require approval unless auto-approved. Some shell patterns are always blocked.
+Approval can be granted:
+
+- per-operation (one-time)
+- per-type for the session
+- globally via `--dangerously-accept-all`
+
+Hard-blocked shell patterns are always denied, even with `--dangerously-accept-all`. If no approval handler is registered, operations fail closed (rejected).
 
 ## 10. Session Persistence
+
+Sessions are stored at `~/.local/share/protoagent/sessions/` as JSON files named by UUID.
 
 Sessions persist:
 
 - completion messages
 - provider/model metadata
+- timestamps and title
 - TODO state
 
 They are resumed with `--session <id>`.
 
 ## 11. Cost Tracking and Compaction
 
-ProtoAgent estimates token usage and cost, tracks context utilization, and compacts old conversation state at high context usage while preserving protected skill payloads.
+ProtoAgent estimates token usage (~4 chars/token heuristic), calculates cost from provider pricing metadata, tracks context utilization percentage, and compacts old conversation state at 90% context usage. Compaction preserves protected skill payloads and recent messages (last 5 kept verbatim).
 
 ## 12. Skills
 
-Skills are validated local directories containing `SKILL.md` with YAML frontmatter. They are discovered from project and user roots and activated on demand via `activate_skill`.
+Skills are validated local directories containing `SKILL.md` with YAML frontmatter. They are discovered from 5 roots (3 user, 2 project) and activated on demand via `activate_skill`. Skill directories are added as allowed path roots for file access.
 
 ## 13. MCP Support
 
 ProtoAgent supports:
 
-- stdio MCP servers
-- HTTP / Streamable HTTP MCP servers
+- stdio MCP servers (spawned as child processes via `StdioClientTransport`)
+- HTTP / Streamable HTTP MCP servers (via `StreamableHTTPClientTransport`)
 
-MCP server config is sourced from the merged `protoagent.jsonc` runtime config. Remote tools are discovered and registered dynamically at startup.
+MCP server config is sourced from the active `protoagent.jsonc` runtime config. Remote tools are discovered via `listTools()` and registered dynamically at startup with names like `mcp_<server>_<tool>`.
 
 ## 14. Web Fetching
 
-`webfetch` supports:
+`webfetch` supports output formats:
 
 - `text`
 - `markdown`
@@ -186,7 +207,7 @@ with URL, timeout, redirect, MIME, and size limits enforced in `src/tools/webfet
 
 ## 15. Sub-agents
 
-`sub_agent` creates isolated child runs with their own message history and system prompt. Children use the normal tool stack but do not recursively expose `sub_agent`.
+`sub_agent` creates isolated child runs with their own message history and system prompt. Children use the normal tool stack but do not recursively expose `sub_agent`. Default iteration limit is 30. Child TODOs are ephemeral and cleared on completion.
 
 ## 16. Terminal UI
 
@@ -194,15 +215,18 @@ The current UI includes:
 
 - collapsible long messages
 - consolidated tool rendering
-- formatted assistant output
+- formatted assistant output with markdown
 - inline approvals
-- inline setup flow
-- usage display
+- inline first-run setup flow
+- usage display (tokens, cost, context percentage)
 - visible log file path
+- debounced text input
+- spinner during processing
+- terminal resize handling
 
 ## 17. Logging
 
-Logging is file-backed and supports:
+Logging is file-backed and supports levels:
 
 - `ERROR`
 - `WARN`
@@ -215,7 +239,6 @@ Logging is file-backed and supports:
 Intentional omissions include:
 
 - sandboxing
-- advanced edit fallback strategies
 - skill permission enforcement
 - MCP OAuth
 - session branching

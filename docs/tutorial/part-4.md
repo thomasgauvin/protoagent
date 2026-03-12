@@ -1,207 +1,733 @@
 # Part 4: The Agentic Loop
 
-This is the core pattern that makes ProtoAgent an agent instead of a chatbot.
+This is where ProtoAgent becomes an agent instead of a chatbot. Up to Part 3, the app could stream text from a model. Now you add the tool-use loop: the model can request tools, the runtime executes them, and the model continues reasoning with the results.
 
-Up to Part 3, the app could send prompts and stream text, but it still only had one move: ask the model for text. In this part, you give the runtime a loop that can let the model request tools, consume tool results, and continue reasoning.
+Your target snapshot is `protoagent-tutorial-again-part-4`.
 
-By the end, your project should match `protoagent-tutorial-again-part-4`.
+## What you are building
 
-## What you are building in this part
-
-Starting from Part 3, you are adding:
-
-- a reusable `runAgenticLoop()` function
-- tool definitions and tool handlers
-- a minimal tool registry
-- event-based communication from the loop back to the UI
-- one real built-in tool: `read_file`
-
-This is the moment ProtoAgent starts acting like an agent runtime.
-
-## Starting point
-
-Copy your Part 3 result and build on top of it.
-
-The target snapshot is:
-
-- `protoagent-tutorial-again-part-4`
+- A reusable `runAgenticLoop()` function that implements the standard tool-use cycle
+- A tool registry with definitions and handlers
+- Event-based communication from the loop to the UI
+- One real built-in tool: `read_file`
 
 ## Files to create or change
 
-This part introduces the new runtime pieces:
+| File | Action |
+|------|--------|
+| `src/agentic-loop.ts` | **Create** — the core agentic loop |
+| `src/tools/index.ts` | **Create** — tool registry and dispatcher |
+| `src/tools/read-file.ts` | **Create** — first tool: read files |
+| `src/App.tsx` | **Modify** — switch from direct streaming to the agentic loop |
 
-- `src/agentic-loop.ts`
-- `src/tools/index.ts`
-- `src/tools/read-file.ts`
-- `src/App.tsx`
+## Step 1: Create `src/tools/read-file.ts`
 
-## Step 1: Create `src/agentic-loop.ts`
+The first tool. It reads files with line numbers, supports offset/limit for large files, and validates that paths stay within the working directory.
 
-This file is the heart of the stage.
+```typescript
+import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import readline from 'node:readline';
+import path from 'node:path';
 
-It defines:
+export const readFileTool = {
+  type: 'function' as const,
+  function: {
+    name: 'read_file',
+    description: 'Read the contents of a file. Returns the file content with line numbers. Use offset and limit to read specific sections of large files.',
+    parameters: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Path to the file to read (relative to working directory).' },
+        offset: { type: 'number', description: 'Line number to start reading from (0-based). Defaults to 0.' },
+        limit: { type: 'number', description: 'Maximum number of lines to read. Defaults to 2000.' },
+      },
+      required: ['file_path'],
+    },
+  },
+};
 
-- `Message`
-- `ToolCallEvent`
-- `AgentEvent`
-- `AgentEventHandler`
-- `AgenticLoopOptions`
-- `ToolDefinition`
+export async function readFile(filePath: string, offset = 0, limit = 2000): Promise<string> {
+  // Resolve path relative to cwd and check it stays within the project
+  const cwd = process.cwd();
+  const resolved = path.resolve(cwd, filePath);
+  if (!resolved.startsWith(cwd)) {
+    throw new Error(`Path "${filePath}" is outside the working directory.`);
+  }
 
-It also owns a simple in-memory tool registry through:
+  // Check file exists
+  try {
+    await fs.stat(resolved);
+  } catch {
+    return `File not found: '${filePath}'`;
+  }
 
-- `registerTool()`
-- `registerStaticHandler()`
-- `getAllTools()`
-- `setStaticTools()`
-- `getHandler()`
+  const start = Math.max(0, offset);
+  const maxLines = Math.max(0, limit);
+  const lines: string[] = [];
+  let totalLines = 0;
 
-That registry is deliberately basic in this stage. The important thing is that the loop can ask for the current tool definitions and dispatch a tool call by name.
+  const stream = createReadStream(resolved, { encoding: 'utf8' });
+  const lineReader = readline.createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
 
-## Step 2: Implement `runAgenticLoop()`
+  try {
+    for await (const line of lineReader) {
+      if (totalLines >= start && lines.length < maxLines) {
+        lines.push(line);
+      }
+      totalLines++;
+    }
+  } finally {
+    lineReader.close();
+    stream.destroy();
+  }
 
-The stage snapshot follows this flow:
+  const end = Math.min(totalLines, start + lines.length);
 
-1. start with the current message history plus the new user message
-2. call the model with the current messages and tools
-3. stream both text and tool call fragments
-4. reassemble streamed tool calls by index
-5. if the model requested tools, execute them and append tool results
-6. if the model returned text, emit `done` and return the updated messages
+  // Add line numbers (1-based) and truncate long lines
+  const numbered = lines.map((line, i) => {
+    const lineNum = String(start + i + 1).padStart(5, ' ');
+    const truncated = line.length > 2000 ? line.slice(0, 2000) + '... (truncated)' : line;
+    return `${lineNum} | ${truncated}`;
+  });
 
-That streamed reassembly step is the first real "agent runtime" detail in the tutorial. Tool calls do not always arrive as one clean complete object. You have to accumulate them.
+  const rangeLabel = lines.length === 0
+    ? 'none'
+    : `${Math.min(start + 1, totalLines)}-${end}`;
+  const header = `File: ${filePath} (${totalLines} lines total, showing ${rangeLabel})`;
+  return `${header}\n${numbered.join('\n')}`;
+}
+```
 
-## Step 3: Add event emission instead of UI logic in the loop
+## Step 2: Create `src/tools/index.ts`
 
-This is one of the most important design decisions in the whole project.
+The tool registry collects all tool definitions and provides a dispatcher. At this stage there's only one tool, but the pattern scales to many.
 
-The loop should not render anything directly. Instead it emits events:
+```typescript
+import { readFileTool, readFile } from './read-file.js';
 
-- `text_delta`
-- `tool_call`
-- `tool_result`
-- `error`
-- `done`
+export interface ToolCallContext {
+  sessionId?: string;
+}
 
-That keeps `src/agentic-loop.ts` responsible for runtime orchestration and `src/App.tsx` responsible for presentation.
+// All tool definitions — passed to the LLM
+export const tools = [
+  readFileTool,
+];
 
-Even in the current main app, that separation is still the right shape.
+export function getAllTools() {
+  return [...tools];
+}
 
-## Step 4: Create the first tool in `src/tools/read-file.ts`
+/**
+ * Dispatch a tool call to the appropriate handler.
+ */
+export async function handleToolCall(toolName: string, args: any, context: ToolCallContext = {}): Promise<string> {
+  try {
+    switch (toolName) {
+      case 'read_file':
+        return await readFile(args.file_path, args.offset, args.limit);
+      default:
+        return `Error: Unknown tool "${toolName}"`;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `Error executing ${toolName}: ${msg}`;
+  }
+}
+```
 
-To make the loop tangible, this stage adds one real built-in tool: `read_file`.
+## Step 3: Create `src/agentic-loop.ts`
 
-The stage snapshot defines:
+This is the heart of the agent runtime. The loop:
 
-- a `readFileTool` schema object
-- a `readFile()` implementation
+1. Sends the conversation to the LLM with tool definitions
+2. If the response contains `tool_calls`: executes each tool, appends results, loops back to step 1
+3. If the response is plain text: returns it to the caller
 
-This first version already does a few useful things:
+The loop communicates with the UI through events, never rendering directly.
 
-- resolves the path against the working directory
-- blocks access outside the working directory
-- reads the file content
-- applies `offset` and `limit`
-- returns line-numbered output
+```typescript
+import type OpenAI from 'openai';
+import { getAllTools, handleToolCall } from './tools/index.js';
 
-It is intentionally minimal, but it is enough to prove the full model -> tool -> result -> model loop.
+// ─── Types ───
 
-## Step 5: Register the tool in `src/tools/index.ts`
+export type Message = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
-This stage's `src/tools/index.ts` is tiny on purpose.
+export interface ToolCallEvent {
+  id: string;
+  name: string;
+  args: string;
+  status: 'running' | 'done' | 'error';
+  result?: string;
+}
 
-It:
+export interface AgentEvent {
+  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done';
+  content?: string;
+  toolCall?: ToolCallEvent;
+  usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
+  error?: string;
+  transient?: boolean;
+}
 
-- exports a `tools` array containing `readFileTool`
-- calls `registerStaticHandler('read_file', ...)`
+export type AgentEventHandler = (event: AgentEvent) => void;
 
-That is all you need for the first end-to-end tool-enabled loop.
+export interface AgenticLoopOptions {
+  maxIterations?: number;
+  abortSignal?: AbortSignal;
+  sessionId?: string;
+}
 
-## Step 6: Update `src/App.tsx` to use the agentic loop
+/**
+ * Run the agentic loop: send messages to the model, execute any tool calls,
+ * and continue until the model returns plain text.
+ */
+export async function runAgenticLoop(
+  client: OpenAI,
+  model: string,
+  messages: Message[],
+  userInput: string,
+  onEvent: AgentEventHandler,
+  options: AgenticLoopOptions = {}
+): Promise<Message[]> {
+  const maxIterations = options.maxIterations ?? 100;
+  const abortSignal = options.abortSignal;
+  const sessionId = options.sessionId;
 
-This is where the UI wiring changes in an important way.
+  const updatedMessages: Message[] = [...messages];
+  let iterationCount = 0;
 
-In the previous part, `App.tsx` talked to the model directly. Now it should:
+  while (iterationCount < maxIterations) {
+    if (abortSignal?.aborted) {
+      onEvent({ type: 'done' });
+      return updatedMessages;
+    }
 
-1. initialize the client as before
-2. call `setStaticTools(tools)` after startup
-3. keep a `messagesRef` for the authoritative message history
-4. call `runAgenticLoop()` instead of making a direct completion request
-5. react to loop events to update live UI state
+    iterationCount++;
 
-The stage snapshot introduces:
+    try {
+      const allTools = getAllTools();
 
-- `currentResponse`
-- `toolCalls`
-- `messagesRef`
+      const stream = await client.chat.completions.create({
+        model,
+        messages: updatedMessages,
+        tools: allTools,
+        tool_choice: 'auto',
+        stream: true,
+      }, {
+        signal: abortSignal,
+      });
 
-That lets the UI show in-flight text and tool activity without mixing that temporary display state into the authoritative stored message history.
+      // Accumulate the streamed response
+      const assistantMessage: any = {
+        role: 'assistant',
+        content: '',
+        tool_calls: [],
+      };
+      let streamedContent = '';
+      let hasToolCalls = false;
 
-## Step 7: Render tool activity in the UI
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
 
-The stage UI does not try to be fancy yet.
+        // Stream text content
+        if (delta?.content) {
+          streamedContent += delta.content;
+          assistantMessage.content = streamedContent;
+          if (!hasToolCalls) {
+            onEvent({ type: 'text_delta', content: delta.content });
+          }
+        }
 
-It just shows:
+        // Accumulate tool calls by index
+        if (delta?.tool_calls) {
+          hasToolCalls = true;
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index || 0;
+            if (!assistantMessage.tool_calls[idx]) {
+              assistantMessage.tool_calls[idx] = {
+                id: '',
+                type: 'function',
+                function: { name: '', arguments: '' },
+              };
+            }
+            if (tc.id) assistantMessage.tool_calls[idx].id = tc.id;
+            if (tc.function?.name) {
+              assistantMessage.tool_calls[idx].function.name += tc.function.name;
+            }
+            if (tc.function?.arguments) {
+              assistantMessage.tool_calls[idx].function.arguments += tc.function.arguments;
+            }
+          }
+        }
+      }
 
-- streamed assistant text
-- a list of tool calls and their statuses
-- a small preview of tool results
+      // Handle tool calls
+      if (assistantMessage.tool_calls.length > 0) {
+        assistantMessage.tool_calls = assistantMessage.tool_calls.filter(Boolean);
+        updatedMessages.push(assistantMessage);
 
-That is enough to make the loop visible.
+        for (const toolCall of assistantMessage.tool_calls) {
+          if (abortSignal?.aborted) {
+            onEvent({ type: 'done' });
+            return updatedMessages;
+          }
 
-## What the current source does later
+          const { name, arguments: argsStr } = toolCall.function;
 
-The current implementation adds a lot more on top of this:
+          onEvent({
+            type: 'tool_call',
+            toolCall: { id: toolCall.id, name, args: argsStr, status: 'running' },
+          });
 
-- a cleaner tool registry
-- many more tools
-- compaction and usage tracking
-- retries and richer error handling
-- special handling for sub-agents
-- abort behavior
+          try {
+            const args = JSON.parse(argsStr);
+            const result = await handleToolCall(name, args, { sessionId });
 
-But the basic loop never really changes. The model asks for tools, the runtime executes them, and the model continues until it can answer directly.
+            updatedMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: result,
+            } as any);
+
+            onEvent({
+              type: 'tool_result',
+              toolCall: { id: toolCall.id, name, args: argsStr, status: 'done', result },
+            });
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            updatedMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: `Error: ${errMsg}`,
+            } as any);
+
+            onEvent({
+              type: 'tool_result',
+              toolCall: { id: toolCall.id, name, args: argsStr, status: 'error', result: errMsg },
+            });
+          }
+        }
+
+        // Continue loop — let the model process tool results
+        continue;
+      }
+
+      // Plain text response — done
+      if (assistantMessage.content) {
+        updatedMessages.push({
+          role: 'assistant',
+          content: assistantMessage.content,
+        } as Message);
+      }
+
+      onEvent({ type: 'done' });
+      return updatedMessages;
+
+    } catch (apiError: any) {
+      if (abortSignal?.aborted) {
+        onEvent({ type: 'done' });
+        return updatedMessages;
+      }
+
+      const errMsg = apiError?.message || 'Unknown API error';
+
+      // Retry on rate limit
+      if (apiError?.status === 429) {
+        onEvent({ type: 'error', error: 'Rate limited. Retrying...', transient: true });
+        await new Promise((r) => setTimeout(r, 5000));
+        continue;
+      }
+
+      // Retry on server errors
+      if (apiError?.status >= 500) {
+        onEvent({ type: 'error', error: 'Server error. Retrying...', transient: true });
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+
+      // Non-retryable error
+      onEvent({ type: 'error', error: errMsg });
+      onEvent({ type: 'done' });
+      return updatedMessages;
+    }
+  }
+
+  onEvent({ type: 'error', error: 'Maximum iteration limit reached.' });
+  onEvent({ type: 'done' });
+  return updatedMessages;
+}
+
+/**
+ * Initialize the conversation with a system prompt.
+ */
+export async function initializeMessages(): Promise<Message[]> {
+  return [{
+    role: 'system',
+    content: 'You are ProtoAgent, a helpful AI coding assistant. You have access to tools that let you read files in the current project. Use the read_file tool to examine code when the user asks about files.',
+  } as Message];
+}
+```
+
+The key detail in the streaming loop: tool calls arrive as fragments indexed by `tc.index`. You have to accumulate the `id`, `name`, and `arguments` separately for each index position. Only after the stream ends do you have the complete tool call objects.
+
+## Step 4: Rewrite `src/App.tsx`
+
+Replace the direct OpenAI streaming with the agentic loop. The UI now reacts to events from the loop.
+
+```tsx
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Box, Text, useApp, useInput } from 'ink';
+import { TextInput, Select, PasswordInput } from '@inkjs/ui';
+import BigText from 'ink-big-text';
+import { OpenAI } from 'openai';
+import { readConfig, writeConfig, resolveApiKey, type Config } from './config.js';
+import { getAllProviders, getProvider } from './providers.js';
+import {
+  runAgenticLoop,
+  initializeMessages,
+  type Message,
+  type AgentEvent,
+} from './agentic-loop.js';
+
+function buildClient(config: Config): OpenAI {
+  const provider = getProvider(config.provider);
+  const apiKey = resolveApiKey(config);
+
+  if (!apiKey) {
+    const providerName = provider?.name || config.provider;
+    const envVar = provider?.apiKeyEnvVar;
+    throw new Error(
+      envVar
+        ? `Missing API key for ${providerName}. Set it in config or export ${envVar}.`
+        : `Missing API key for ${providerName}.`
+    );
+  }
+
+  const clientOptions: ConstructorParameters<typeof OpenAI>[0] = { apiKey };
+  const baseURL = provider?.baseURL;
+  if (baseURL) clientOptions.baseURL = baseURL;
+  if (provider?.headers && Object.keys(provider.headers).length > 0) {
+    clientOptions.defaultHeaders = provider.headers;
+  }
+
+  return new OpenAI(clientOptions);
+}
+
+/** Inline setup wizard */
+const InlineSetup: React.FC<{ onComplete: (config: Config) => void }> = ({ onComplete }) => {
+  const [setupStep, setSetupStep] = useState<'provider' | 'api_key'>('provider');
+  const [selectedProviderId, setSelectedProviderId] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState('');
+
+  const providerItems = getAllProviders().flatMap((provider) =>
+    provider.models.map((model) => ({
+      label: `${provider.name} - ${model.name}`,
+      value: `${provider.id}:::${model.id}`,
+    })),
+  );
+
+  if (setupStep === 'provider') {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="yellow" bold>First-time setup</Text>
+        <Text dimColor>Select a provider and model:</Text>
+        <Box marginTop={1}>
+          <Select
+            options={providerItems}
+            onChange={(value: string) => {
+              const [providerId, modelId] = value.split(':::');
+              setSelectedProviderId(providerId);
+              setSelectedModelId(modelId);
+              setSetupStep('api_key');
+            }}
+          />
+        </Box>
+      </Box>
+    );
+  }
+
+  const provider = getProvider(selectedProviderId);
+  const hasResolvedAuth = Boolean(resolveApiKey({ provider: selectedProviderId, apiKey: undefined }));
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color="yellow" bold>First-time setup</Text>
+      <Text dimColor>Selected: {provider?.name} / {selectedModelId}</Text>
+      <Text>{hasResolvedAuth ? 'Optional API key:' : 'Enter your API key:'}</Text>
+      <PasswordInput
+        placeholder={hasResolvedAuth ? 'Press enter to keep resolved auth' : `Paste your ${provider?.apiKeyEnvVar || 'API'} key`}
+        onSubmit={(value) => {
+          if (value.trim().length === 0 && !hasResolvedAuth) return;
+          const newConfig: Config = {
+            provider: selectedProviderId,
+            model: selectedModelId,
+            ...(value.trim().length > 0 ? { apiKey: value.trim() } : {}),
+          };
+          writeConfig(newConfig);
+          onComplete(newConfig);
+        }}
+      />
+    </Box>
+  );
+};
+
+export const App: React.FC = () => {
+  const { exit } = useApp();
+
+  // Core state
+  const [config, setConfig] = useState<Config | null>(null);
+  const [completionMessages, setCompletionMessages] = useState<Message[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [inputKey, setInputKey] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [initialized, setInitialized] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
+
+  // Refs
+  const clientRef = useRef<OpenAI | null>(null);
+  const assistantMessageRef = useRef<{ message: any; index: number } | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const initializeWithConfig = useCallback(async (loadedConfig: Config) => {
+    setConfig(loadedConfig);
+    clientRef.current = buildClient(loadedConfig);
+
+    const initialMessages = await initializeMessages();
+    setCompletionMessages(initialMessages);
+    setNeedsSetup(false);
+    setInitialized(true);
+  }, []);
+
+  useEffect(() => {
+    const loadedConfig = readConfig();
+    if (!loadedConfig) {
+      setNeedsSetup(true);
+      return;
+    }
+    initializeWithConfig(loadedConfig);
+  }, [initializeWithConfig]);
+
+  const handleSubmit = useCallback(async (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed || loading || !clientRef.current || !config) return;
+
+    setInputText('');
+    setInputKey((prev) => prev + 1);
+    setLoading(true);
+    setError(null);
+
+    // Add user message immediately for UI display
+    const userMessage: Message = { role: 'user', content: trimmed };
+    setCompletionMessages((prev) => [...prev, userMessage]);
+
+    assistantMessageRef.current = null;
+    abortControllerRef.current = new AbortController();
+
+    try {
+      const updatedMessages = await runAgenticLoop(
+        clientRef.current,
+        config.model,
+        [...completionMessages, userMessage],
+        trimmed,
+        (event: AgentEvent) => {
+          switch (event.type) {
+            case 'text_delta':
+              if (!assistantMessageRef.current) {
+                const msg = { role: 'assistant', content: event.content || '' } as Message;
+                setCompletionMessages((prev) => {
+                  assistantMessageRef.current = { message: msg, index: prev.length };
+                  return [...prev, msg];
+                });
+              } else {
+                assistantMessageRef.current.message.content += event.content || '';
+                setCompletionMessages((prev) => {
+                  const updated = [...prev];
+                  updated[assistantMessageRef.current!.index] = { ...assistantMessageRef.current!.message };
+                  return updated;
+                });
+              }
+              break;
+            case 'tool_call':
+              if (event.toolCall) {
+                const toolCall = event.toolCall;
+                const existingRef = assistantMessageRef.current;
+                const assistantMsg = existingRef?.message
+                  ? { ...existingRef.message, tool_calls: [...(existingRef.message.tool_calls || [])] }
+                  : { role: 'assistant', content: '', tool_calls: [] as any[] };
+
+                const tc = {
+                  id: toolCall.id,
+                  type: 'function',
+                  function: { name: toolCall.name, arguments: toolCall.args },
+                };
+
+                const idx = assistantMsg.tool_calls.findIndex((t: any) => t.id === toolCall.id);
+                if (idx === -1) assistantMsg.tool_calls.push(tc);
+                else assistantMsg.tool_calls[idx] = tc;
+
+                setCompletionMessages((prev) => {
+                  const nextIndex = existingRef?.index ?? prev.length;
+                  assistantMessageRef.current = { message: assistantMsg, index: nextIndex };
+                  if (existingRef) {
+                    const updated = [...prev];
+                    updated[existingRef.index] = assistantMsg;
+                    return updated;
+                  }
+                  return [...prev, assistantMsg as Message];
+                });
+              }
+              break;
+            case 'tool_result':
+              if (event.toolCall) {
+                setCompletionMessages((prev) => [
+                  ...prev,
+                  {
+                    role: 'tool',
+                    tool_call_id: event.toolCall!.id,
+                    content: event.toolCall!.result || '',
+                  } as any,
+                ]);
+                // Reset for next assistant message
+                assistantMessageRef.current = null;
+              }
+              break;
+            case 'error':
+              if (event.error) setError(event.error);
+              break;
+            case 'done':
+              break;
+          }
+        },
+        { abortSignal: abortControllerRef.current.signal }
+      );
+
+      setCompletionMessages(updatedMessages);
+    } catch (err: any) {
+      setError(`Error: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [loading, config, completionMessages]);
+
+  useInput((_input, key) => {
+    if (key.ctrl && _input === 'c') exit();
+    if (key.escape && loading && abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  });
+
+  // Render messages
+  const visibleMessages = completionMessages.filter((msg) => msg.role !== 'system');
+  const providerInfo = config ? getProvider(config.provider) : null;
+
+  return (
+    <Box flexDirection="column" height="100%">
+      <BigText text="ProtoAgent" font="tiny" colors={["#09A469"]} />
+      {config && (
+        <Text dimColor>Model: {providerInfo?.name || config.provider} / {config.model}</Text>
+      )}
+      {error && <Text color="red">{error}</Text>}
+      {!initialized && !error && !needsSetup && <Text>Initializing...</Text>}
+      {needsSetup && <InlineSetup onComplete={initializeWithConfig} />}
+
+      <Box flexDirection="column" flexGrow={1}>
+        {visibleMessages.map((msg, i) => {
+          const msgAny = msg as any;
+          const content = typeof msgAny.content === 'string' ? msgAny.content : '';
+          const isToolCall = msg.role === 'assistant' && msgAny.tool_calls?.length > 0;
+
+          if (msg.role === 'user') {
+            return (
+              <Text key={i}>
+                <Text color="green" bold>{'> '}</Text>
+                <Text>{content}</Text>
+              </Text>
+            );
+          }
+
+          if (isToolCall) {
+            return (
+              <Box key={i} flexDirection="column">
+                {content && <Text>{content}</Text>}
+                {msgAny.tool_calls.map((tc: any) => (
+                  <Text key={tc.id} dimColor>
+                    [tool: {tc.function?.name}]
+                  </Text>
+                ))}
+              </Box>
+            );
+          }
+
+          if (msg.role === 'tool') {
+            const preview = content.length > 100 ? content.slice(0, 100) + '...' : content;
+            return (
+              <Text key={i} dimColor>
+                → {preview}
+              </Text>
+            );
+          }
+
+          return <Text key={i}>{content}</Text>;
+        })}
+        {loading && completionMessages[completionMessages.length - 1]?.role === 'user' && (
+          <Text dimColor>Thinking...</Text>
+        )}
+      </Box>
+
+      {initialized && (
+        <Box borderStyle="round" borderColor="green" paddingX={1}>
+          <Text color="green" bold>{'> '}</Text>
+          <TextInput
+            key={inputKey}
+            defaultValue={inputText}
+            onChange={setInputText}
+            placeholder="Type your message..."
+            onSubmit={handleSubmit}
+          />
+        </Box>
+      )}
+    </Box>
+  );
+};
+```
 
 ## Verification
 
-Run the app and ask it to read a file in the current project.
+Run the app and ask it to read a file:
 
 ```bash
 npm run dev
 ```
 
-Then try a prompt like:
+Try:
 
-```text
+```
 Read src/App.tsx and tell me what it does.
 ```
 
-If it worked, you should see:
+You should see:
+- A `[tool: read_file]` indicator
+- A tool result preview
+- The assistant's analysis of the file contents
 
-- a tool call for `read_file`
-- a corresponding tool result
-- a final assistant answer that uses the file contents
+## Snapshot
 
-## Resulting snapshot
-
-At the end of this part, your project should match:
-
-- `protoagent-tutorial-again-part-4`
+Your project should match `protoagent-tutorial-again-part-4`.
 
 ## Pitfalls
 
-- appending the user message twice, once in `App.tsx` and again in the loop
-- forgetting to append tool results back into message history
-- trying to render directly from the loop instead of emitting events
-- not reassembling streamed tool call fragments by index
+- Appending the user message twice (once in the UI, once in the loop) — the loop receives the full history with the user message already included
+- Forgetting to append tool results to the message history — the model needs to see them
+- Not reassembling streamed tool call fragments by index — they arrive incrementally
+- Trying to render from inside the loop — use events instead
 
-## Core takeaway
+## What comes next
 
-The basic loop is still simple:
-
-1. let the model ask for tools
-2. execute the tools
-3. feed the results back in
-4. stop when the model can answer directly
-
-That pattern is the spine of the rest of the project.
+Part 5 adds the full file toolkit: write, edit, list, and search. These give the agent real power to inspect and modify code.

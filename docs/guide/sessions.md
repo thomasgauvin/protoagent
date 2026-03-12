@@ -11,7 +11,7 @@ It saves session state so you can stop in the middle of a task, come back later,
 
 Each session is stored as a JSON file named by UUID.
 
-On non-Windows platforms, ProtoAgent also hardens session directory and file permissions.
+On non-Windows platforms, ProtoAgent hardens session directory permissions to `0o700` and file permissions to `0o600`.
 
 ## What gets saved
 
@@ -21,7 +21,7 @@ Each session stores:
 - a generated title
 - creation and update timestamps
 - provider and model metadata
-- `completionMessages`
+- `completionMessages` (the full message history)
 - the session TODO list
 
 ## What does not get saved
@@ -44,7 +44,7 @@ When you quit from the UI with `/quit` or `/exit`, ProtoAgent saves the session 
 
 ## Session IDs
 
-Session IDs are validated as UUIDs. Invalid IDs are rejected before a session file path is built.
+Session IDs are validated as UUIDs using a strict regex pattern. Invalid IDs are rejected before a session file path is built.
 
 ## Starting fresh
 
@@ -54,4 +54,4 @@ That distinction matters. `/clear` is not just wiping visible messages. It is st
 
 ## Titles
 
-Session titles are currently generated with a simple heuristic: ProtoAgent takes the first user message and truncates it if needed.
+Session titles are currently generated with a simple heuristic: ProtoAgent takes the first user message and truncates it to 60 characters if needed.

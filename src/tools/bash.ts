@@ -130,7 +130,12 @@ async function isSafe(command: string): Promise<boolean> {
   return validateCommandPaths(tokens);
 }
 
-export async function runBash(command: string, timeoutMs = 30_000, sessionId?: string): Promise<string> {
+export async function runBash(
+  command: string,
+  timeoutMs = 30_000,
+  sessionId?: string,
+  abortSignal?: AbortSignal
+): Promise<string> {
   // Layer 1: hard block
   if (isDangerous(command)) {
     return `Error: Command blocked for safety. "${command}" contains a dangerous pattern that cannot be executed.`;
@@ -159,6 +164,7 @@ export async function runBash(command: string, timeoutMs = 30_000, sessionId?: s
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let aborted = false;
 
     const child = spawn(command, [], {
       shell: true,
@@ -170,14 +176,35 @@ export async function runBash(command: string, timeoutMs = 30_000, sessionId?: s
     child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
     child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const terminateChild = () => {
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 2000);
+    };
+
+    const onAbort = () => {
+      aborted = true;
+      terminateChild();
+    };
+
+    if (abortSignal?.aborted) {
+      onAbort();
+    } else {
+      abortSignal?.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminateChild();
     }, timeoutMs);
 
     child.on('close', (code) => {
       clearTimeout(timer);
+      abortSignal?.removeEventListener('abort', onAbort);
+
+      if (aborted) {
+        resolve(`Command aborted by user.\nPartial stdout:\n${stdout.slice(0, 5000)}\nPartial stderr:\n${stderr.slice(0, 2000)}`);
+        return;
+      }
 
       if (timedOut) {
         resolve(`Command timed out after ${timeoutMs / 1000}s.\nPartial stdout:\n${stdout.slice(0, 5000)}\nPartial stderr:\n${stderr.slice(0, 2000)}`);
@@ -199,6 +226,7 @@ export async function runBash(command: string, timeoutMs = 30_000, sessionId?: s
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      abortSignal?.removeEventListener('abort', onAbort);
       resolve(`Error executing command: ${err.message}`);
     });
   });

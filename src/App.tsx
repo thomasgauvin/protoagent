@@ -415,7 +415,7 @@ const InlineSetup: React.FC<{
             model: selectedModelId,
             ...(value.trim().length > 0 ? { apiKey: value.trim() } : {}),
           };
-          writeConfig(newConfig);
+          writeConfig(newConfig, 'project');
           onComplete(newConfig);
         }}
       />
@@ -599,8 +599,7 @@ export const App: React.FC<AppProps> = ({
 
       await loadRuntimeConfig();
 
-      // Load config — if none exists, show inline setup
-      const loadedConfig = readConfig();
+      const loadedConfig = readConfig('active');
       if (!loadedConfig) {
         setNeedsSetup(true);
         return;

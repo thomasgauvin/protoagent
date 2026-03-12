@@ -1,103 +1,212 @@
 # Part 12: Sub-agents
 
-Sub-agents solve a very specific problem: context pollution.
+Sub-agents solve context pollution. Sometimes the model needs to do noisy work — search a repo, read ten files, compare implementations — just to answer one question. Without sub-agents, all that intermediate work stays in the parent conversation forever. Sub-agents push it into an isolated child run that returns only a summary.
 
-Sometimes the model needs to do a bunch of noisy work just to answer one focused question. It might search a repo, read ten files, follow imports, and compare a few implementations. That is all useful work, but you usually do not want every intermediate step sitting in the parent conversation forever.
+## What you are building
 
-So ProtoAgent pushes that work into a child run.
+Starting from Part 11, you add:
 
-By the end, your project should match `protoagent-tutorial-again-part-12`.
+- `src/sub-agent.ts` — isolated child agent execution
+- Updated `src/agentic-loop.ts` — routes `sub_agent` tool calls to the child runner
+- Updated `src/App.tsx` — registers the sub-agent tool at startup
 
-## What you are building in this part
+## Step 1: Create `src/sub-agent.ts`
 
-Starting from Part 11, you are adding the first real sub-agent layer:
+The sub-agent gets its own message history, system prompt, and tool access. It runs autonomously for up to N iterations, then returns its final text response to the parent.
 
-- a `sub_agent` tool definition
-- a child-run execution path
-- isolated message history for child tasks
-- parent-side handling for child summaries
-- App startup wiring that makes the tool available to the model
+```typescript
+// src/sub-agent.ts
 
-This is the stage where the runtime becomes capable of doing noisy work off to the side instead of stuffing everything into the main conversation.
+import type OpenAI from 'openai';
+import crypto from 'node:crypto';
+import { handleToolCall, getAllTools } from './tools/index.js';
+import { generateSystemPrompt } from './system-prompt.js';
+import { logger } from './utils/logger.js';
+import { clearTodos } from './tools/todo.js';
 
-## Starting point
+export const subAgentTool = {
+  type: 'function' as const,
+  function: {
+    name: 'sub_agent',
+    description:
+      'Spawn an isolated sub-agent to handle a task without polluting the main conversation context. ' +
+      'Use this for independent subtasks like exploring a codebase, researching a question, or making changes to a separate area. ' +
+      'The sub-agent has access to the same tools but runs in its own conversation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'A detailed description of the task for the sub-agent to complete.',
+        },
+        max_iterations: {
+          type: 'number',
+          description: 'Maximum tool-call iterations for the sub-agent. Defaults to 30.',
+        },
+      },
+      required: ['task'],
+    },
+  },
+};
 
-Copy your Part 11 project and continue from there.
+export type SubAgentProgressHandler = (event: { tool: string; status: 'running' | 'done' | 'error'; iteration: number }) => void;
 
-Your target snapshot is:
+export async function runSubAgent(
+  client: OpenAI,
+  model: string,
+  task: string,
+  maxIterations = 30,
+  requestDefaults: Record<string, unknown> = {},
+  onProgress?: SubAgentProgressHandler,
+): Promise<string> {
+  const op = logger.startOperation('sub-agent');
+  const subAgentSessionId = `sub-agent-${crypto.randomUUID()}`;
 
-- `protoagent-tutorial-again-part-12`
+  const systemPrompt = await generateSystemPrompt();
+  const subSystemPrompt = `${systemPrompt}
 
-## Files to create or change
+## Sub-Agent Mode
 
-This stage mainly touches:
+You are running as a sub-agent. You were given a specific task by the parent agent.
+Complete the task thoroughly and return a clear, concise summary of what you did and found.
+Do NOT ask the user questions — work autonomously with the tools available.`;
 
-- `src/tools/sub-agent.ts`
-- `src/agentic-loop.ts`
-- `src/App.tsx`
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: subSystemPrompt },
+    { role: 'user', content: task },
+  ];
 
-This checkpoint is cumulative, so it still includes skills, sessions, MCP, compaction, and approvals from earlier parts. The new thing you are layering in here is delegation.
+  try {
+    for (let i = 0; i < maxIterations; i++) {
+      const response = await client.chat.completions.create({
+        ...requestDefaults,
+        model,
+        messages,
+        tools: getAllTools(),
+        tool_choice: 'auto',
+      });
 
-## Step 1: Define the `sub_agent` tool
+      const message = response.choices[0]?.message;
+      if (!message) break;
 
-The tool should let the model describe a focused child task and optionally set an iteration limit.
+      if (message.tool_calls && message.tool_calls.length > 0) {
+        messages.push(message as any);
 
-That tool is not just a normal tool wrapper around some utility function. It is the entrypoint into a whole child execution flow.
+        for (const toolCall of message.tool_calls) {
+          const { name, arguments: argsStr } = (toolCall as any).function;
+          logger.debug(`Sub-agent tool call: ${name}`);
+          onProgress?.({ tool: name, status: 'running', iteration: i });
 
-## Step 2: Create the child-run implementation
+          try {
+            const args = JSON.parse(argsStr);
+            const result = await handleToolCall(name, args, { sessionId: subAgentSessionId });
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: result,
+            } as any);
+            onProgress?.({ tool: name, status: 'done', iteration: i });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: `Error: ${msg}`,
+            } as any);
+            onProgress?.({ tool: name, status: 'error', iteration: i });
+          }
+        }
+        continue;
+      }
 
-The child run should get:
+      // Plain text response — we're done
+      return message.content || '(sub-agent completed with no response)';
+    }
 
-- a fresh system prompt
-- a fresh message history
-- access to the normal tool stack
-- its own iteration limit
+    return '(sub-agent reached iteration limit)';
+  } finally {
+    op.end();
+    clearTodos(subAgentSessionId);
+  }
+}
+```
 
-The important rule is that the child should return only its final summary back to the parent.
+## Step 2: Update `src/agentic-loop.ts`
 
-In `protoagent-tutorial-again-part-12`, the child path calls back into the same runtime pieces instead of creating a completely separate runner abstraction. That keeps the stage understandable even if it is not the final architecture yet.
+The agentic loop needs to detect `sub_agent` tool calls and route them to the child runner instead of the normal tool handler.
 
-## Step 3: Update the main loop to special-case `sub_agent`
+In your tool execution section, add special handling for `sub_agent`:
 
-The parent loop should detect when the model called `sub_agent` and route it through the child execution path instead of the normal tool handler path.
+```typescript
+import { subAgentTool, runSubAgent } from './sub-agent.js';
 
-That is what keeps the feature isolated rather than just another dynamic tool.
+// When processing tool calls, check for sub_agent:
+if (toolName === 'sub_agent') {
+  const result = await runSubAgent(
+    client,
+    model,
+    args.task,
+    args.max_iterations,
+    requestDefaults,
+  );
+  // Push the result as a tool message
+  messages.push({
+    role: 'tool',
+    tool_call_id: toolCall.id,
+    content: result,
+  } as any);
+} else {
+  // Normal tool handling
+  const result = await handleToolCall(toolName, args, { sessionId });
+  messages.push({
+    role: 'tool',
+    tool_call_id: toolCall.id,
+    content: result,
+  } as any);
+}
+```
 
-You also need to register the `sub_agent` tool during app startup so it is present in the tool list before the first completion begins.
+Also register the `sub_agent` tool in the tool list. You can do this by importing it and adding to the tools passed to the API:
+
+```typescript
+// The sub_agent tool needs to be in the tools list sent to the API.
+// Register it as a dynamic tool during initialization, or include it
+// directly in the getAllTools() call.
+```
+
+## Step 3: Register sub-agent at startup
+
+In `src/App.tsx`, register the sub-agent tool during initialization:
+
+```typescript
+import { subAgentTool } from './sub-agent.js';
+import { registerDynamicTool } from './tools/index.js';
+
+// In initializeWithConfig, after MCP initialization:
+registerDynamicTool(subAgentTool as any);
+```
 
 ## Verification
-
-Run the app:
 
 ```bash
 npm run dev
 ```
 
-Then prompt it with something that would benefit from delegation, like:
+Try a prompt that benefits from delegation:
 
 ```text
-Investigate how `protoagent.jsonc` and `config.json` are loaded and summarize the flow.
+Investigate how the config system works in this project and summarize the flow.
 ```
 
-If it worked, you should see:
-
-- a `sub_agent` tool call
-- child work happening in isolation
-- only the child summary surfaced back to the parent transcript
+You should see:
+- A `sub_agent` tool call in the parent conversation
+- The sub-agent working autonomously (visible in debug logs)
+- Only the summary returned to the parent transcript
 
 ## Resulting snapshot
 
-At the end of this part, your project should match:
-
-- `protoagent-tutorial-again-part-12`
-
-## Pitfalls
-
-- forgetting to register `sub_agent` in the runtime before the first turn
-- leaking child history into the parent transcript
-- treating the child like a plain function call instead of its own loop
-- forgetting to define a clear completion contract for the child result
+Your project should match `protoagent-tutorial-again-part-12`.
 
 ## Core takeaway
 
-Sub-agents are how ProtoAgent keeps the main thread cleaner without giving up the ability to do deep investigation.
+Sub-agents keep the main conversation clean by running noisy investigation work in an isolated context. The parent gets a focused summary instead of hundreds of intermediate tool calls polluting its history.

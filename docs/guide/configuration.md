@@ -2,47 +2,57 @@
 
 Configuration is what turns ProtoAgent from a generic CLI into a usable local coding tool.
 
-ProtoAgent now has two configuration layers:
+ProtoAgent uses a single runtime config file: `protoagent.jsonc`.
 
-- `config.json` for the selected provider, model, and optional explicit API key
-- `protoagent.jsonc` for provider definitions, provider overrides, MCP servers, headers, and request defaults
+It stores:
 
-## `config.json`
+- the active provider/model choice
+- optional explicit API keys
+- provider definitions and overrides
+- MCP servers
+- request defaults
 
-ProtoAgent stores the active selection at:
+## Active config location
 
-- **macOS/Linux**: `~/.local/share/protoagent/config.json`
-- **Windows**: `%USERPROFILE%/AppData/Local/protoagent/config.json`
+ProtoAgent does not merge user and project config files.
 
-Shape:
+Instead it uses exactly one active file:
 
-```json
-{
-  "provider": "openai",
-  "model": "gpt-5-mini",
-  "apiKey": "..."
-}
+1. `<process.cwd()>/.protoagent/protoagent.jsonc` if it exists
+2. otherwise the shared user config:
+   - macOS/Linux: `~/.config/protoagent/protoagent.jsonc`
+   - Windows: `%USERPROFILE%/AppData/Local/protoagent/protoagent.jsonc`
+
+On non-Windows platforms, ProtoAgent hardens directory permissions to `0o700` and file permissions to `0o600` when it creates config files.
+
+## `protoagent init`
+
+Use `protoagent init` when you want ProtoAgent to create a starter `protoagent.jsonc` for you.
+
+It offers two targets:
+
+- project-local: `<process.cwd()>/.protoagent/protoagent.jsonc`
+- shared user config: `~/.config/protoagent/protoagent.jsonc` on macOS/Linux, `%USERPROFILE%/AppData/Local/protoagent/protoagent.jsonc` on Windows
+
+After creating the file, ProtoAgent prints the exact path so you can open and edit it immediately. If the file already exists, it leaves it untouched and prints that existing path instead.
+
+For non-interactive usage, you can target the destination directly:
+
+```bash
+protoagent init --project
+protoagent init --user
+protoagent init --project --force
 ```
 
-On non-Windows platforms, ProtoAgent hardens directory and file permissions.
-
-ProtoAgent still supports:
-
-- inline first-run setup with `protoagent`
-- the standalone wizard with `protoagent configure`
-- legacy `credentials` compatibility at read time
+`--force` overwrites an existing target file with the starter template.
 
 ## `protoagent.jsonc`
 
-ProtoAgent loads `protoagent.jsonc` from:
+ProtoAgent reads exactly one active `protoagent.jsonc` file using the lookup rule above.
 
-- `<process.cwd()>/.protoagent/protoagent.jsonc`
-- `~/.protoagent/protoagent.jsonc`
-- `~/.config/protoagent/protoagent.jsonc`
+The first provider entry in the file is treated as the active provider, and the first model entry inside that provider is treated as the active model.
 
-All files are optional. They are merged with built-in defaults, and project config wins over user config.
-
-This file replaces separate provider and MCP extension files. It may define:
+This file may define:
 
 - custom providers
 - overrides to built-in providers
@@ -97,18 +107,35 @@ Any string in `protoagent.jsonc` may contain `${VAR_NAME}`.
 - unresolved variables log a warning
 - headers with empty values are dropped
 
-## Precedence rules
+Example:
 
-Environment variables are still allowed and take priority over file-based runtime config.
+```jsonc
+{
+  "providers": {
+    "openai": {
+      "apiKey": "${OPENAI_API_KEY}",
+      "models": {
+        "gpt-5-mini": {
+          "name": "GPT-5 Mini"
+        }
+      }
+    }
+  },
+  "mcp": {
+    "servers": {}
+  }
+}
+```
+
+## Precedence rules
 
 At runtime, ProtoAgent resolves the API key in this order:
 
-1. `config.apiKey`
-2. explicit env override for the active provider
+1. the selected provider's `apiKey` from `protoagent.jsonc`
+2. the selected provider's `apiKeyEnvVar` environment variable (e.g. `OPENAI_API_KEY`)
 3. `PROTOAGENT_API_KEY`
-4. `provider.apiKey`
-5. the selected provider's `apiKeyEnvVar`
-6. `'none'` for header-based providers that do not need a bearer token
+4. `PROTOAGENT_CUSTOM_HEADERS` environment variable (returns `'none'`)
+5. `provider.headers` with non-empty entries (returns `'none'` for header-based auth)
 
 Base URL precedence:
 
@@ -122,11 +149,18 @@ Header precedence:
 2. `provider.headers`
 3. built-in default headers
 
-## Provider and model definitions
+## Built-in providers and models
 
-Built-in providers still ship in source, but the runtime registry is the merged result of built-ins plus all loaded `protoagent.jsonc` files.
+The built-in provider catalog includes:
 
-That means `protoagent.jsonc` can:
+| Provider | Models |
+|---|---|
+| **OpenAI** | GPT-5.2 (200k), GPT-5 Mini (200k), GPT-4.1 (128k) |
+| **Anthropic Claude** | Claude Opus 4.6 (200k), Claude Sonnet 4.6 (200k), Claude Haiku 4.5 (200k) |
+| **Google Gemini** | Gemini 3 Flash Preview (1M), Gemini 3 Pro Preview (1M), Gemini 2.5 Flash (1M), Gemini 2.5 Pro (1M) |
+| **Cerebras** | Llama 4 Scout 17B (128k) |
+
+The runtime registry is the result of built-ins plus the active `protoagent.jsonc` file. That means `protoagent.jsonc` can:
 
 - add a new provider
 - override a built-in provider by ID
@@ -141,11 +175,11 @@ Each model may include:
 
 Providers may include provider-level `defaultParams` that apply to all models unless a model overrides them.
 
-Reserved request fields like `model`, `messages`, `tools`, `tool_choice`, `stream`, and `stream_options` should not be overridden by config.
+Reserved request fields (`model`, `messages`, `tools`, `tool_choice`, `stream`, `stream_options`) are stripped from config-defined defaults and logged as warnings.
 
 ## MCP configuration
 
-MCP server configuration now lives inside `protoagent.jsonc` under `mcp.servers`.
+MCP server configuration lives inside `protoagent.jsonc` under `mcp.servers`.
 
 ProtoAgent supports:
 

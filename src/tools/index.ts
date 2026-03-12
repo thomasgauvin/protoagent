@@ -22,6 +22,7 @@ export { setDangerouslyAcceptAll, setApprovalHandler, clearApprovalHandler } fro
 
 export interface ToolCallContext {
   sessionId?: string;
+  abortSignal?: AbortSignal;
 }
 
 // All tool definitions — passed to the LLM
@@ -96,7 +97,7 @@ export async function handleToolCall(toolName: string, args: any, context: ToolC
       case 'search_files':
         return await searchFiles(args.search_term, args.directory_path, args.case_sensitive, args.file_extensions);
       case 'bash':
-        return await runBash(args.command, args.timeout_ms, context.sessionId);
+        return await runBash(args.command, args.timeout_ms, context.sessionId, context.abortSignal);
       case 'todo_read':
         return readTodos(context.sessionId);
       case 'todo_write':

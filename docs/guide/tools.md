@@ -15,7 +15,7 @@ When the model calls a tool, ProtoAgent executes it, captures the result, and ad
 
 ## Built-in tools
 
-ProtoAgent currently ships with:
+ProtoAgent ships with 9 static tools:
 
 - `read_file`
 - `write_file`
@@ -27,7 +27,11 @@ ProtoAgent currently ships with:
 - `todo_write`
 - `webfetch`
 
-Dynamic tools can also be registered by MCP servers, and the skills system can register `activate_skill` when skills are available.
+Dynamic tools are registered at runtime:
+
+- `activate_skill` — registered when at least one valid skill is discovered
+- `sub_agent` — exposed by the agentic loop (not part of the normal tool registry)
+- `mcp_<server>_<tool>` — registered for each tool discovered from MCP servers
 
 ## File tools
 
@@ -35,7 +39,7 @@ Dynamic tools can also be registered by MCP servers, and the skills system can r
 
 This is the basic "show me what is in the file" tool. It returns line-numbered output and supports `offset` and `limit` so the model can inspect big files in chunks.
 
-One small detail that matters: the schema describes `offset` as 0-based, while the returned line numbers are still 1-based.
+It also records the read timestamp per session, which is used by the staleness guard in `edit_file`.
 
 ### `write_file`
 
@@ -45,9 +49,17 @@ There is also an important constraint in the current implementation: path valida
 
 ### `edit_file`
 
-This is the tool that makes the editing loop reliable. It performs exact-string find-and-replace, fails if the old string does not exist, and also fails if the actual occurrence count does not match `expected_replacements`.
+This is the tool that makes the editing loop reliable. It performs string find-and-replace with a 5-strategy fuzzy match cascade:
 
-Like `write_file`, it uses approval and an atomic temp-file swap.
+1. **exact** — verbatim string match
+2. **line-trimmed** — per-line `.trim()` comparison, using the file's actual indentation
+3. **indent-flexible** — strips common leading indent from both sides before comparing
+4. **whitespace-normalized** — collapses all whitespace runs to single space
+5. **trimmed-boundary** — trims the entire search string before matching
+
+The edit fails if the old string is not found by any strategy, or if the actual occurrence count does not match `expected_replacements` (defaults to 1).
+
+Like `write_file`, it requires approval and uses an atomic temp-file swap. It also returns a unified diff on success so the model can verify its edit.
 
 ### `list_directory`
 
@@ -55,7 +67,7 @@ Lists directory contents with `[DIR]` and `[FILE]` prefixes.
 
 ### `search_files`
 
-Recursively searches files using regular-expression semantics, not literal-text matching. It supports optional extension filters, defaults to case-sensitive search, skips common build/noise directories, and caps results at 100 matches.
+Recursively searches files using regular-expression semantics, not literal-text matching. It tries to use `ripgrep` if available and falls back to a built-in JavaScript implementation. It supports optional extension filters, defaults to case-sensitive search, skips common build/noise directories, and caps results at 100 matches.
 
 ## Shell tool
 
@@ -67,18 +79,20 @@ The `bash` tool uses a three-tier safety model:
 2. a narrow set of safe commands runs without approval
 3. everything else asks for approval
 
-The safe list is intentionally narrower than people usually expect. Current auto-approved commands include things like:
+The safe list is intentionally narrower than people usually expect. Current auto-approved commands include:
 
-- `pwd`
-- `whoami`
-- `date`
+- `pwd`, `whoami`, `date`
 - `git status`, `git log`, `git diff`, `git branch`, `git show`, `git remote`
 - `npm list`, `npm ls`, `yarn list`
-- version commands like `node --version`
+- version commands like `node --version`, `npm --version`, `python --version`, `python3 --version`
 
-Important detail: many common read-style commands such as `ls`, `cat`, `grep`, `rg`, `find`, `awk`, and `sed` are *not* auto-approved in the current implementation.
+Important detail: many common read-style commands such as `ls`, `cat`, `grep`, `rg`, `find`, `awk`, `sed`, `sort`, `uniq`, `cut`, `wc`, `tree`, `file`, `dir`, `echo`, and `which` are *not* auto-approved in the current implementation. They are listed in the `UNSAFE_BASH_TOKENS` set and always require approval.
 
-Hard-blocked patterns include commands such as `rm -rf /`, `sudo`, `dd if=`, `mkfs`, and `fdisk`.
+Commands with shell control operators (`;`, `&&`, `||`, `|`, `>`, `<`, `` ` ``, `$()`, `*`, `?`) also always require approval, even if the base command would normally be safe.
+
+Hard-blocked patterns include commands such as `rm -rf /`, `sudo`, `su `, `chmod 777`, `dd if=`, `mkfs`, `fdisk`, and `format c:`.
+
+The default timeout is 30 seconds. Long-running output is truncated at 50,000 characters.
 
 ## TODO tools
 
@@ -112,4 +126,10 @@ The skills system can also add discovered skill directories as extra allowed roo
 
 ## Approvals
 
-Writes, edits, and non-safe shell commands all flow through the approval system.
+Writes, edits, and non-safe shell commands all flow through the approval system. The three approval categories are:
+
+- `file_write`
+- `file_edit`
+- `shell_command`
+
+Approval can be granted per-operation (one-time), per-type for the session, or globally via `--dangerously-accept-all`. Hard-blocked shell patterns are still denied even with `--dangerously-accept-all`.

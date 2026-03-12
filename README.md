@@ -19,12 +19,40 @@ npm install -g protoagent
 protoagent
 ```
 
-On first run, ProtoAgent shows an inline setup flow where you pick a provider/model pair and enter an API key. Config is stored in `~/.local/share/protoagent/config.json` on macOS/Linux and `~/AppData/Local/protoagent/config.json` on Windows.
+On first run, ProtoAgent shows an inline setup flow where you pick a provider/model pair and enter an API key. ProtoAgent stores that selection in `protoagent.jsonc`.
+
+Runtime config lookup is simple:
+
+- if `<cwd>/.protoagent/protoagent.jsonc` exists, ProtoAgent uses it
+- otherwise it falls back to the shared user config at `~/.config/protoagent/protoagent.jsonc` on macOS/Linux and `~/AppData/Local/protoagent/protoagent.jsonc` on Windows
 
 You can also run the standalone wizard directly:
 
 ```bash
 protoagent configure
+```
+
+Or configure a specific target non-interactively:
+
+```bash
+protoagent configure --project --provider openai --model gpt-5-mini
+protoagent configure --user --provider anthropic --model claude-sonnet-4-6
+```
+
+To create a runtime config file for the current project or your shared user config, run:
+
+```bash
+protoagent init
+```
+
+`protoagent init` creates `protoagent.jsonc` in either `<cwd>/.protoagent/protoagent.jsonc` or your shared user config location and prints the exact path it used.
+
+For scripts or non-interactive setup, use:
+
+```bash
+protoagent init --project
+protoagent init --user
+protoagent init --project --force
 ```
 
 ## Interactive Commands
