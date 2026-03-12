@@ -1,12 +1,5 @@
-# ProtoAgent
-
-```
- ___      _       _   ___     _
-| _ \_ __(_) _ __| |_/ _ \  _| |
-|  _/| '__| || '__| __|  | || |
-|_|  |_|  |_||_|  |_|\___/  \, |
-                            |__/
-```
+# █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █
 
 A minimal, educational AI coding agent CLI written in TypeScript. It stays small enough to read in an afternoon, but it still has the core pieces you expect from a real coding agent: a streaming tool-use loop, approvals, sessions, MCP, skills, sub-agents, and cost tracking.
 
