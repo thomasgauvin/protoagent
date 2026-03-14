@@ -21,11 +21,11 @@ test('readFile reads only the requested line range', async () => {
   try {
     const result = await readFile('tests/tmp-read-file/fixture.txt', 2, 2);
 
-    assert.match(result, /5 lines total, showing 3-4/);
-    assert.match(result, /3 \| gamma/);
-    assert.match(result, /4 \| delta/);
-    assert.doesNotMatch(result, /1 \| alpha/);
-    assert.doesNotMatch(result, /5 \| epsilon/);
+    // readFile now returns raw content (no line numbers, no header)
+    assert.match(result, /gamma/);
+    assert.match(result, /delta/);
+    assert.doesNotMatch(result, /alpha/);
+    assert.doesNotMatch(result, /epsilon/);
   } finally {
     await fs.rm(fixtureDir, { recursive: true, force: true });
   }

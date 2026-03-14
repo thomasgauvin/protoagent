@@ -37,10 +37,28 @@ test('resolveApiKey falls back to PROTOAGENT_API_KEY when provider env is absent
 });
 
 test('loadRuntimeConfig tolerates missing config files', async () => {
-  const config = await loadRuntimeConfig(true);
+  const originalHome = process.env.HOME;
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'protoagent-load-test-'));
+  
+  try {
+    process.env.HOME = tempDir;
+    // Ensure we are in a directory without .protoagent/protoagent.jsonc
+    const cwd = fs.mkdtempSync(path.join(tempDir, 'cwd-'));
+    const originalCwd = process.cwd();
+    process.chdir(cwd);
 
-  assert.deepEqual(config.mcp?.servers || {}, {});
-  assert.deepEqual(config.providers || {}, {});
+    try {
+      const config = await loadRuntimeConfig(true);
+
+      assert.deepEqual(config.mcp?.servers || {}, {});
+      assert.deepEqual(config.providers || {}, {});
+    } finally {
+      process.chdir(originalCwd);
+    }
+  } finally {
+    process.env.HOME = originalHome;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('getActiveRuntimeConfigPath prefers project config over user config', () => {

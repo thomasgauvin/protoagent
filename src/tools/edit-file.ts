@@ -8,9 +8,9 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { validatePath } from '../utils/path-validation.js';
+import { validatePath, getWorkingDirectory } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
-import { assertReadBefore, recordRead } from '../utils/file-time.js';
+import { checkReadBefore, recordRead } from '../utils/file-time.js';
 
 export const editFileTool = {
   type: 'function' as const,
@@ -35,6 +35,47 @@ export const editFileTool = {
     },
   },
 };
+
+// ─── Path suggestion helper (mirrors read_file behaviour) ───
+
+async function findSimilarPaths(requestedPath: string): Promise<string[]> {
+  const cwd = getWorkingDirectory();
+  const segments = requestedPath.split('/').filter(Boolean);
+  const MAX_DEPTH = 6;
+  const MAX_ENTRIES = 200;
+  const MAX_SUGGESTIONS = 3;
+  const candidates: string[] = [];
+
+  async function walkSegments(dir: string, segIndex: number, currentPath: string): Promise<void> {
+    if (segIndex >= segments.length || segIndex >= MAX_DEPTH || candidates.length >= MAX_SUGGESTIONS) return;
+    const targetSegment = segments[segIndex].toLowerCase();
+    let entries: string[];
+    try {
+      entries = (await fs.readdir(dir, { withFileTypes: true })).slice(0, MAX_ENTRIES).map(e => e.name);
+    } catch {
+      return;
+    }
+    const isLastSegment = segIndex === segments.length - 1;
+    for (const entry of entries) {
+      if (candidates.length >= MAX_SUGGESTIONS) break;
+      const entryLower = entry.toLowerCase();
+      if (!entryLower.includes(targetSegment) && !targetSegment.includes(entryLower)) continue;
+      const entryPath = path.join(currentPath, entry);
+      const fullPath = path.join(dir, entry);
+      if (isLastSegment) {
+        try { await fs.stat(fullPath); candidates.push(entryPath); } catch { /* skip */ }
+      } else {
+        try {
+          const stat = await fs.stat(fullPath);
+          if (stat.isDirectory()) await walkSegments(fullPath, segIndex + 1, entryPath);
+        } catch { /* skip */ }
+      }
+    }
+  }
+
+  await walkSegments(cwd, 0, '');
+  return candidates;
+}
 
 // ─── Fuzzy Match Strategies ───
 
@@ -299,11 +340,25 @@ export async function editFile(
     return 'Error: old_string cannot be empty.';
   }
 
-  const validated = await validatePath(filePath);
+  let validated: string;
+  try {
+    validated = await validatePath(filePath);
+  } catch (err: any) {
+    if (err.message?.includes('does not exist') || err.code === 'ENOENT') {
+      const suggestions = await findSimilarPaths(filePath);
+      let msg = `File not found: '${filePath}'.`;
+      if (suggestions.length > 0) {
+        msg += ' Did you mean one of these?\n' + suggestions.map(s => `  ${s}`).join('\n');
+      }
+      return msg;
+    }
+    throw err;
+  }
 
   // Staleness guard: must have read file before editing
   if (sessionId) {
-    assertReadBefore(sessionId, validated);
+    const staleError = checkReadBefore(sessionId, validated);
+    if (staleError) return staleError;
   }
 
   const content = await fs.readFile(validated, 'utf8');
@@ -320,7 +375,73 @@ export async function editFile(
         return `Error: found ${count} occurrence(s) of old_string (via ${strategy.name} match), but expected ${expectedReplacements}. Be more specific or set expected_replacements=${count}.`;
       }
     }
-    return `Error: old_string not found in ${filePath}. Strategies exhausted (exact, line-trimmed, indent-flexible, whitespace-normalized, trimmed-boundary). Re-read the file and try again.`;
+
+    // Build a per-strategy diagnostic to help the model self-correct without
+    // requiring a full re-read. For each strategy, find the closest partial
+    // match and report ALL lines where it diverges (not just the first).
+    const searchLines = oldString.split('\n');
+    const contentLines = content.split('\n');
+    const diagnostics: string[] = [];
+
+    for (const strategy of STRATEGIES) {
+      // Find the window in the file that shares the most lines with oldString
+      let bestWindowStart = -1;
+      let bestMatchedLines = 0;
+
+      for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+        let matched = 0;
+        for (let j = 0; j < searchLines.length; j++) {
+          const fileLine = strategy.name === 'whitespace-normalized'
+            ? contentLines[i + j].replace(/\s+/g, ' ').trim()
+            : contentLines[i + j].trim();
+          const searchLine = strategy.name === 'whitespace-normalized'
+            ? searchLines[j].replace(/\s+/g, ' ').trim()
+            : searchLines[j].trim();
+          if (fileLine === searchLine) matched++;
+        }
+        if (matched > bestMatchedLines) {
+          bestMatchedLines = matched;
+          bestWindowStart = i;
+        }
+      }
+
+      if (bestWindowStart >= 0 && bestMatchedLines > 0 && bestMatchedLines < searchLines.length) {
+        // Collect all diverging lines, not just the first
+        const diffLines: string[] = [];
+        const MAX_DIFFS = 6;
+        for (let j = 0; j < searchLines.length && diffLines.length < MAX_DIFFS; j++) {
+          const fileLine = contentLines[bestWindowStart + j] ?? '(end of file)';
+          const searchLine = searchLines[j];
+          const fileNorm = strategy.name === 'whitespace-normalized'
+            ? fileLine.replace(/\s+/g, ' ').trim()
+            : fileLine.trim();
+          const searchNorm = strategy.name === 'whitespace-normalized'
+            ? searchLine.replace(/\s+/g, ' ').trim()
+            : searchLine.trim();
+          if (fileNorm !== searchNorm) {
+            diffLines.push(
+              `    line ${bestWindowStart + j + 1}:\n` +
+              `      yours: ${searchLine.trim().slice(0, 120)}\n` +
+              `      file:  ${fileLine.trim().slice(0, 120)}`
+            );
+          }
+        }
+        const truncNote = diffLines.length === MAX_DIFFS ? `\n    ... (more diffs not shown)` : '';
+        diagnostics.push(
+          `  ${strategy.name}: ${bestMatchedLines}/${searchLines.length} lines match, ${searchLines.length - bestMatchedLines} differ:\n` +
+          diffLines.join('\n') + truncNote
+        );
+      } else if (bestMatchedLines === 0) {
+        diagnostics.push(`  ${strategy.name}: no lines matched — old_string may be from a different file or heavily rewritten`);
+      } else {
+        diagnostics.push(`  ${strategy.name}: no partial match found`);
+      }
+    }
+
+    const hint = diagnostics.length > 0
+      ? '\nDiagnostics per strategy:\n' + diagnostics.join('\n')
+      : '';
+    return `Error: old_string not found in ${filePath}.${hint}\nDo NOT retry with a guess. Call read_file on ${filePath} first to get the exact current content, then construct old_string by copying verbatim from the file.`;
   }
 
   const { actual, strategy, count } = match;

@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
+import { recordRead } from '../utils/file-time.js';
 
 export const writeFileTool = {
   type: 'function' as const,
@@ -57,5 +58,12 @@ export async function writeFile(filePath: string, content: string, sessionId?: s
   }
 
   const lines = content.split('\n').length;
+
+  // Record the write as a read so a subsequent edit_file on this file doesn't
+  // immediately fail the staleness guard with "you must read first".
+  if (sessionId) {
+    recordRead(sessionId, validated);
+  }
+
   return `Successfully wrote ${lines} lines to ${filePath}`;
 }

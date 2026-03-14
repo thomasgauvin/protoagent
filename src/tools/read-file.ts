@@ -115,7 +115,6 @@ export async function readFile(filePath: string, offset = 0, limit = 2000, sessi
   const start = Math.max(0, offset);
   const maxLines = Math.max(0, limit);
   const lines: string[] = [];
-  let totalLines = 0;
 
   const stream = createReadStream(validated, { encoding: 'utf8' });
   const lineReader = readline.createInterface({
@@ -124,42 +123,27 @@ export async function readFile(filePath: string, offset = 0, limit = 2000, sessi
   });
 
   try {
+    let lineIndex = 0;
     for await (const line of lineReader) {
-      if (totalLines >= start && lines.length < maxLines) {
+      if (lineIndex >= start && lines.length < maxLines) {
         lines.push(line);
       }
-      totalLines++;
-    }
-
-    const stats = await fs.stat(validated);
-    if (stats.size === 0) {
-      totalLines = 0;
-    } else if (lines.length === 0 && totalLines === 0) {
-      totalLines = 1;
+      lineIndex++;
     }
   } finally {
     lineReader.close();
     stream.destroy();
   }
 
-  const end = Math.min(totalLines, start + lines.length);
-
-  // Add line numbers (1-based)
-  const numbered = lines.map((line, i) => {
-    const lineNum = String(start + i + 1).padStart(5, ' ');
-    // Truncate very long lines
-    const truncated = line.length > 2000 ? line.slice(0, 2000) + '... (truncated)' : line;
-    return `${lineNum} | ${truncated}`;
-  });
+  // Truncate very long individual lines but don't reformat content
+  const slice = lines.map(line =>
+    line.length > 2000 ? line.slice(0, 2000) + '... (truncated)' : line
+  );
 
   // Record successful read for staleness tracking
   if (sessionId) {
     recordRead(sessionId, validated);
   }
 
-  const rangeLabel = lines.length === 0
-    ? 'none'
-    : `${Math.min(start + 1, totalLines)}-${end}`;
-  const header = `File: ${filePath} (${totalLines} lines total, showing ${rangeLabel})`;
-  return `${header}\n${numbered.join('\n')}`;
+  return slice.join('\n')
 }

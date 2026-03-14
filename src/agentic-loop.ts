@@ -98,19 +98,19 @@ async function sleepWithAbort(delayMs: number, abortSignal?: AbortSignal): Promi
   });
 }
 
-function appendStreamingFragment(current: string, fragment: string): string {
+/** @internal exported for unit testing only */
+export function appendStreamingFragment(current: string, fragment: string): string {
   if (!fragment) return current;
   if (!current) return fragment;
+  // Some providers resend the full accumulated value instead of a delta.
+  // These two guards handle that case without corrupting normal incremental deltas.
   if (current === fragment) return current;
   if (fragment.startsWith(current)) return fragment;
 
-  const maxOverlap = Math.min(current.length, fragment.length);
-  for (let overlap = maxOverlap; overlap > 0; overlap--) {
-    if (current.endsWith(fragment.slice(0, overlap))) {
-      return current + fragment.slice(overlap);
-    }
-  }
-
+  // Normal case: incremental delta, just append.
+  // The previous partial-overlap loop was removed because it caused false-positive
+  // deduplication: short JSON tokens (e.g. `", "`) would coincidentally match the
+  // tail of `current`, silently stripping characters from valid argument payloads.
   return current + fragment;
 }
 
@@ -448,7 +448,7 @@ export async function runAgenticLoop(
           actualUsage = chunk.usage;
         }
 
-        // Stream text content
+        // Stream text content (and return to UI for immediate display via onEvent)
         if (delta?.content) {
           streamedContent += delta.content;
           assistantMessage.content = streamedContent;
@@ -457,7 +457,7 @@ export async function runAgenticLoop(
           }
         }
 
-        // Accumulate tool calls
+        // Accumulate tool calls across stream chunks
         if (delta?.tool_calls) {
           hasToolCalls = true;
           for (const tc of delta.tool_calls) {

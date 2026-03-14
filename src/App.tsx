@@ -105,15 +105,13 @@ type AddStaticFn = (text: string) => void;
 // <Static> component. Ink flushes new Static items within its own render
 // cycle, so there are no timing issues with write()/log-update.
 
-let _staticCounter = 0;
-function makeStaticId(): string {
-  return `s${++_staticCounter}`;
-}
+
 
 function printBanner(addStatic: AddStaticFn): void {
   const green = '\x1b[38;2;9;164;105m';
   const reset = '\x1b[0m';
   addStatic([
+    '',
     `${green}█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀${reset}`,
     `${green}█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █${reset}`,
     '',
@@ -122,12 +120,15 @@ function printBanner(addStatic: AddStaticFn): void {
 
 function printRuntimeHeader(addStatic: AddStaticFn, config: Config, session: Session | null, logFilePath: string | null, dangerouslyAcceptAll: boolean): void {
   const provider = getProvider(config.provider);
-  let line = `Model: ${provider?.name || config.provider} / ${config.model}`;
+  const grey = '\x1b[90m';
+  const reset = '\x1b[0m';
+  let line = `${grey}Model: ${provider?.name || config.provider} / ${config.model}`;
   if (dangerouslyAcceptAll) line += ' (auto-approve all)';
   if (session) line += ` | Session: ${session.id.slice(0, 8)}`;
+  line += reset;
   let text = `${line}\n`;
   if (logFilePath) {
-    text += `Debug logs: ${logFilePath}\n`;
+    text += `${grey}Debug logs: ${logFilePath}${reset}\n`;
   }
   text += '\n';
   addStatic(text);
@@ -198,6 +199,7 @@ const SLASH_COMMANDS = [
   { name: '/clear', description: 'Clear conversation and start fresh' },
   { name: '/help', description: 'Show all available commands' },
   { name: '/quit', description: 'Exit ProtoAgent' },
+  { name: '/exit', description: 'Alias for /quit' },
 ];
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -206,6 +208,7 @@ const HELP_TEXT = [
   '  /clear  - Clear conversation and start fresh',
   '  /help   - Show this help',
   '  /quit   - Exit ProtoAgent',
+  '  /exit   - Alias for /quit',
 ].join('\n');
 
 function buildClient(config: Config): OpenAI {
@@ -317,15 +320,23 @@ const UsageDisplay: React.FC<{
   if (!usage && totalCost === 0) return null;
 
   return (
-    <Box>
+    <Box marginTop={1}>
       {usage && (
-        <Text dimColor>
-          tokens: {usage.inputTokens}↓ {usage.outputTokens}↑ | ctx: {usage.contextPercent.toFixed(0)}%
-        </Text>
+        <Box>
+          <Box backgroundColor="#042f2e" paddingX={1}>
+            <Text color="grey">tokens: </Text>
+            <Text color="grey" bold>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
+          </Box>
+          <Box backgroundColor="#064e3b" paddingX={1}>
+            <Text color="grey">ctx: </Text>
+            <Text color="grey" bold>{usage.contextPercent.toFixed(0)}%</Text>
+          </Box>
+        </Box>
       )}
-      {totalCost > 0 && (
-        <Text dimColor> | cost: ${totalCost.toFixed(4)}</Text>
-      )}
+      <Box backgroundColor="#042f2e" paddingX={1}>
+        <Text color="grey">cost: </Text>
+        <Text color="grey" bold>${totalCost.toFixed(4)}</Text>
+      </Box>
     </Box>
   );
 };
@@ -410,11 +421,18 @@ export const App: React.FC<AppProps> = ({
   // ─── Static scrollback state ───
   // Each item appended here is rendered once by <Static> and permanently
   // flushed to the terminal scrollback by Ink, within its own render cycle.
-  // Using <Static> items is important to avoid re-rendering issues, which hijack 
-  // scrollback and copying when new AI message streams are coming in. 
+  // Using <Static> items is important to avoid re-rendering issues, which hijack
+  // scrollback and copying when new AI message streams are coming in.
+  //
+  // staticCounterRef keeps ID generation local to this component instance,
+  // making it immune to Strict Mode double-invoke, HMR counter drift, and
+  // collisions if multiple App instances ever coexist.
+  const staticCounterRef = useRef(0);
   const [staticItems, setStaticItems] = useState<StaticItem[]>([]);
   const addStatic = useCallback((text: string) => {
-    setStaticItems((prev) => [...prev, { id: makeStaticId(), text }]);
+    staticCounterRef.current += 1;
+    const id = `s${staticCounterRef.current}`;
+    setStaticItems((prev) => [...prev, { id, text }]);
   }, []);
 
   // Core state
@@ -765,6 +783,20 @@ export const App: React.FC<AppProps> = ({
                 const toolCall = event.toolCall;
                 setActiveTool(toolCall.name);
 
+                // If the model streamed some text before invoking this tool,
+                // flush it to <Static> now. Without this, streamingText is
+                // never cleared — the 'done' handler only flushes streaming_text
+                // when the turn ends with plain text, not with tool calls.
+                if (assistantMessageRef.current?.kind === 'streaming_text') {
+                  const precedingText = assistantMessageRef.current.message.content || '';
+                  if (precedingText) {
+                    addStatic(`${normalizeTranscriptText(precedingText)}\n\n`);
+                  }
+                  setIsStreaming(false);
+                  setStreamingText('');
+                  assistantMessageRef.current = null;
+                }
+
                 // Track the tool call in the ref WITHOUT triggering a render.
                 // The render will happen when tool_result arrives.
                 const existingRef = assistantMessageRef.current;
@@ -999,14 +1031,6 @@ export const App: React.FC<AppProps> = ({
         />
       )}
 
-      {/* Usage bar */}
-      <UsageDisplay usage={lastUsage ?? null} totalCost={totalCost} />
-
-      {/* Command filter */}
-      {initialized && !pendingApproval && inputText.startsWith('/') && (
-        <CommandFilter inputText={inputText} />
-      )}
-
       {/* Working indicator */}
       {initialized && !pendingApproval && loading && !isStreaming && (
         <Box>
@@ -1016,6 +1040,14 @@ export const App: React.FC<AppProps> = ({
           </Text>
         </Box>
       )}
+
+      {/* Command filter */}
+      {initialized && !pendingApproval && inputText.startsWith('/') && (
+        <CommandFilter inputText={inputText} />
+      )}
+
+      {/* Usage bar */}
+      <UsageDisplay usage={lastUsage ?? null} totalCost={totalCost} />
 
       {/* Input */}
       {initialized && !pendingApproval && (

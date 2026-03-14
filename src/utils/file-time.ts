@@ -17,39 +17,45 @@ export function recordRead(sessionId: string, absolutePath: string): void {
 }
 
 /**
- * Assert that a file was previously read and hasn't changed on disk since.
- * Throws if the file was never read or has been modified.
+ * Check that a file was previously read and hasn't changed on disk since.
+ * Returns an error string if the check fails, or null if all is well.
+ * Use this instead of assertReadBefore so staleness errors surface as normal
+ * tool return values rather than exceptions that get swallowed into a generic
+ * "Error executing edit_file: ..." message.
  */
-export function assertReadBefore(sessionId: string, absolutePath: string): void {
+export function checkReadBefore(sessionId: string, absolutePath: string): string | null {
   const key = `${sessionId}:${absolutePath}`;
   const lastRead = readTimes.get(key);
 
   if (!lastRead) {
-    throw new Error(
-      `You must read '${absolutePath}' before editing it. Call read_file first.`
-    );
+    return `You must read '${absolutePath}' before editing it. Call read_file first.`;
   }
 
   try {
     const mtime = fs.statSync(absolutePath).mtimeMs;
     if (mtime > lastRead + 100) {
-      // Clear stale entry so the error message stays accurate
+      // Clear stale entry so the error message stays accurate on retry
       readTimes.delete(key);
-      throw new Error(
-        `'${absolutePath}' has changed on disk since you last read it. Re-read it before editing.`
-      );
+      return `'${absolutePath}' has changed on disk since you last read it. Re-read it before editing.`;
     }
   } catch (err: any) {
     if (err.code === 'ENOENT') {
       readTimes.delete(key);
-      throw new Error(`'${absolutePath}' no longer exists on disk.`);
-    }
-    // Re-throw our own errors
-    if (err.message.includes('has changed on disk') || err.message.includes('must read')) {
-      throw err;
+      return `'${absolutePath}' no longer exists on disk.`;
     }
     // Ignore other stat errors — don't block edits on stat failures
   }
+
+  return null;
+}
+
+/**
+ * @deprecated Use checkReadBefore instead — it returns a string rather than
+ * throwing, so the error surfaces cleanly as a tool result.
+ */
+export function assertReadBefore(sessionId: string, absolutePath: string): void {
+  const err = checkReadBefore(sessionId, absolutePath);
+  if (err) throw new Error(err);
 }
 
 /**
