@@ -192,9 +192,11 @@ The loop emits these event types:
 - `text_delta`
 - `tool_call`
 - `tool_result`
+- `sub_agent_iteration` — progress from within a running sub-agent (tool name + status per iteration); distinct from `tool_call` so the UI shows it in the spinner only and does not pollute the parent's tool-call message history
 - `usage`
 - `error`
 - `done`
+- `iteration_done`
 
 `App` consumes these events to build live assistant messages, render tool output, show retries/errors, and update usage state.
 
@@ -349,10 +351,10 @@ Connections are stored in a process-level map and closed on shutdown.
 
 `src/sub-agent.ts` creates isolated child runs for focused work.
 
-### Child run behavior
+### Child run behaviour
 
 - generates a fresh system prompt
-- appends an extra “Sub-Agent Mode” instruction block
+- appends an extra "Sub-Agent Mode" instruction block
 - starts a new message history with that prompt plus the delegated task
 - reuses the same OpenAI client and model
 - uses `getAllTools()` for child tool access
@@ -361,6 +363,14 @@ Connections are stored in a process-level map and closed on shutdown.
 The child does not recursively expose `sub_agent`, so nested delegation is intentionally prevented by implementation shape.
 
 Because child runs use the same process-level tool handlers, file edits and non-safe shell commands can still trigger the normal approval mechanism.
+
+### Abort propagation
+
+The parent's `AbortSignal` is passed to `runSubAgent()`, to the child's `client.chat.completions.create()` call, and to each `handleToolCall()` invocation. Pressing Escape stops the child as soon as the in-flight request or tool call acknowledges the signal.
+
+### UI progress isolation
+
+Sub-agent tool steps are reported to the parent via `onProgress` callbacks, which the agentic loop converts to `sub_agent_iteration` events. The UI handles these by updating the spinner label (`Running sub_agent → bash...`) without adding them to the parent's `completionMessages` or `assistantMessageRef`. This keeps the parent conversation history clean.
 
 ## 11. Conversation Compaction and Cost Tracking
 
@@ -407,6 +417,17 @@ The output is a rebuilt message list with a synthetic summary system message.
 - `FormattedMessage` parses mixed text/table/code output
 - `Table` renders JSON or Markdown-table data with terminal-width-aware wrapping
 - `formatMessage()` applies simple Markdown-style bold/italic formatting
+- `LeftBar` renders a bold green `│` bar on the left side of callout content (tool calls, approvals, errors, code blocks)
+
+### LeftBar: why not Box borders
+
+The obvious way to draw a left-side visual indicator in Ink is `<Box borderStyle="single">`, but Box borders add lines on all four sides and contribute extra rows to Ink's managed output region. Because Ink erases by line count on every re-render, every extra row increases the chance of ghosting artifacts when the terminal is resized — stale lines are left behind if the new frame is shorter than the old one.
+
+`LeftBar` avoids this entirely. It is a plain flex row: a narrow `<Text>` column on the left that renders `│` repeated once per content row, and a `flexGrow` content column on the right. The height of the bar is derived by measuring the content box after each render with Ink's built-in `measureElement`, then setting the bar string to `Array(height).fill('│').join('\n')`. No Box border, no extra rows — the total line count of the component is exactly equal to the line count of its children.
+
+### Why stock Ink causes flickering and ghosting
+
+Ink renders a React tree to a string on every state change, then uses `log-update` to erase the previous output and write the new string. It tracks how many lines the last render produced and moves the cursor up by that many lines to overwrite. This strategy has a failure mode on terminal resize: Ink only erases the number of lines it thinks it owns. On terminal width *decreases* it clears the screen; on width *increases* it does not — it just re-renders at the new width using its stored (stale) line count. If the frame was previously taller at a narrower width and is now shorter at a wider width, old lines remain on screen below the new output (ghosting).
 
 ## 13. Important Implementation Nuances
 

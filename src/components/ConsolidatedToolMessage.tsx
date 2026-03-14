@@ -8,6 +8,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { FormattedMessage } from './FormattedMessage.js';
+import { LeftBar } from './LeftBar.js';
 
 export interface ConsolidatedToolMessageProps {
   toolCalls: Array<{ id: string; name: string }>;
@@ -23,27 +24,25 @@ export const ConsolidatedToolMessage: React.FC<ConsolidatedToolMessageProps> = (
   const toolNames = toolCalls.map((toolCall) => toolCall.name);
   const title = `Called: ${toolNames.join(', ')}`;
   const containsTodoTool = toolCalls.some((toolCall) => toolCall.name === 'todo_read' || toolCall.name === 'todo_write');
-  const titleColor = containsTodoTool ? 'green' : 'white';
+  const titleColor = containsTodoTool ? 'green' : 'cyan';
   const isExpanded = expanded || containsTodoTool;
 
   if (isExpanded) {
     return (
-      <Box flexDirection="column">
+      <LeftBar color={titleColor}>
         <Text color={titleColor} bold>▼ {title}</Text>
-        <Box flexDirection="column" marginLeft={1}>
-          {toolCalls.map((toolCall, idx) => {
-            const result = toolResults.get(toolCall.id);
-            if (!result) return null;
+        {toolCalls.map((toolCall, idx) => {
+          const result = toolResults.get(toolCall.id);
+          if (!result) return null;
 
-            return (
-              <Box key={idx} flexDirection="column">
-                <Text color="cyan" bold>[{result.name}]:</Text>
-                <FormattedMessage content={result.content} />
-              </Box>
-            );
-          })}
-        </Box>
-      </Box>
+          return (
+            <Box key={idx} flexDirection="column">
+              <Text color="cyan" bold>[{result.name}]:</Text>
+              <FormattedMessage content={result.content} />
+            </Box>
+          );
+        })}
+      </LeftBar>
     );
   }
 
@@ -65,13 +64,11 @@ export const ConsolidatedToolMessage: React.FC<ConsolidatedToolMessageProps> = (
     : compactPreview;
 
   return (
-    <Box flexDirection="column">
+    <LeftBar color="white">
       <Text color={titleColor} dimColor bold>
         ▶ {title}
       </Text>
-      <Box marginLeft={1}>
-        <Text dimColor>{preview}</Text>
-      </Box>
-    </Box>
+      <Text dimColor>{preview}</Text>
+    </LeftBar>
   );
 };

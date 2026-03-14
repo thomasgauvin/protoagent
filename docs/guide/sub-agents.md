@@ -24,6 +24,14 @@ This is useful for repo exploration, focused research, and independent subtasks.
 - child history is not persisted as a normal user-facing session
 - the parent receives a progress callback for each tool call in the child (`running`, `done`, `error` status per iteration)
 
+## Abort behaviour
+
+Pressing Escape aborts both the parent loop and any in-flight sub-agent. The abort signal is passed through to the sub-agent's API request and to each tool call it runs. When a sub-agent is interrupted, the spinner shows `sub_agent → <tool>` until the signal is acknowledged and the child stops.
+
+## UI progress display
+
+Sub-agent tool calls are reported as `sub_agent_iteration` events, which are distinct from the parent's own `tool_call` events. This keeps the parent's tool-call history clean — the sub-agent's intermediate steps only appear in the spinner (`Running sub_agent → bash...`) and are not added to the parent conversation as fake tool calls.
+
 ## Approvals
 
 Sub-agents share the same process-level tool handlers, so writes, edits, and non-safe shell commands can still surface the normal approval UI.

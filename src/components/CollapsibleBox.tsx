@@ -7,6 +7,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
+import { LeftBar } from './LeftBar.js';
 
 export interface CollapsibleBoxProps {
   title: string;
@@ -37,14 +38,12 @@ export const CollapsibleBox: React.FC<CollapsibleBoxProps> = ({
   // If content is short, always show it
   if (!isLong) {
     return (
-      <Box flexDirection="column" marginBottom={marginBottom}>
+      <LeftBar color={titleColor ?? 'white'} marginBottom={marginBottom}>
         <Text color={titleColor} dimColor={dimColor} bold>
           {title}
         </Text>
-        <Box marginLeft={1}>
-          <Text dimColor={dimColor}>{content}</Text>
-        </Box>
-      </Box>
+        <Text dimColor={dimColor}>{content}</Text>
+      </LeftBar>
     );
   }
 
@@ -62,14 +61,12 @@ export const CollapsibleBox: React.FC<CollapsibleBoxProps> = ({
   const hasMore = !expanded;
 
   return (
-    <Box flexDirection="column" marginBottom={marginBottom}>
+    <LeftBar color={titleColor ?? 'white'} marginBottom={marginBottom}>
       <Text color={titleColor} dimColor={dimColor} bold>
         {expanded ? '▼' : '▶'} {title}
       </Text>
-      <Box flexDirection="column" marginLeft={1}>
-        <Text dimColor={dimColor}>{preview}</Text>
-        {hasMore && <Text dimColor={true}>... (use /expand to see all)</Text>}
-      </Box>
-    </Box>
+      <Text dimColor={dimColor}>{preview}</Text>
+      {hasMore && <Text dimColor={true}>... (use /expand to see all)</Text>}
+    </LeftBar>
   );
 };

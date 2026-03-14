@@ -167,7 +167,7 @@ export interface ToolCallEvent {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done';
+  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done';
   content?: string;
   toolCall?: ToolCallEvent;
   usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
@@ -727,6 +727,7 @@ Your project should match `protoagent-tutorial-again-part-4`.
 - Forgetting to append tool results to the message history — the model needs to see them
 - Not reassembling streamed tool call fragments by index — they arrive incrementally
 - Trying to render from inside the loop — use events instead
+- Aborting mid-execution and leaving orphaned `tool_call_id`s — if the user presses Escape after the assistant message with tool calls has been appended but before all tool results are appended, the history will contain unmatched IDs that cause a 400 on the next turn. In the production loop this is solved by injecting stub `role: 'tool'` messages for any unresolved IDs before returning on abort.
 
 ## What comes next
 

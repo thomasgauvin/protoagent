@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { formatMessage } from '../utils/format-message.js';
+import { LeftBar } from './LeftBar.js';
 
 interface FormattedMessageProps {
   content: string;
@@ -188,17 +189,17 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
             );
           }
           return (
-            <Box key={index} marginY={1} paddingX={1} borderStyle="round" borderColor="gray">
+            <LeftBar key={index} color="gray" marginTop={1} marginBottom={1}>
               <Text>{renderPreformattedTable(block.content)}</Text>
-            </Box>
+            </LeftBar>
           );
         }
         
         if (block.type === 'code') {
            return (
-             <Box key={index} marginY={1} paddingX={1} borderStyle="round" borderColor="gray">
+             <LeftBar key={index} color="gray" marginTop={1} marginBottom={1}>
                <Text dimColor>{block.content}</Text>
-             </Box>
+             </LeftBar>
            );
         }
         

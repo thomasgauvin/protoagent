@@ -44,9 +44,13 @@ export interface ToolCallEvent {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done';
+  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done' | 'sub_agent_iteration';
   content?: string;
   toolCall?: ToolCallEvent;
+  /** Emitted while a sub-agent is executing — carries the child tool name and iteration status.
+   *  Distinct from `tool_call` so the UI can show it as a nested progress indicator
+   *  without adding it to the parent's tool-call message history. */
+  subAgentTool?: { tool: string; status: 'running' | 'done' | 'error'; iteration: number };
   usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
   error?: string;
   transient?: boolean;
@@ -178,6 +182,22 @@ function extractFirstCompleteJsonValue(value: string): string | null {
   return null;
 }
 
+/**
+ * Repair invalid JSON escape sequences in a string value.
+ *
+ * JSON only allows: \" \\ \/ \b \f \n \r \t \uXXXX
+ * Models sometimes emit \| \! \- etc. (e.g. grep regex args) which make
+ * JSON.parse throw, and Anthropic strict-validates tool_call arguments on
+ * every subsequent request, bricking the session permanently.
+ *
+ * We double the backslash for any \X where X is not a valid JSON escape char.
+ */
+function repairInvalidEscapes(value: string): string {
+  // Match a backslash followed by any character that is NOT a valid JSON escape
+  // Valid escapes: " \ / b f n r t u
+  return value.replace(/\\([^"\\\/bfnrtu])/g, '\\\\$1');
+}
+
 function normalizeJsonArguments(argumentsText: string): string {
   const trimmed = argumentsText.trim();
   if (!trimmed) return argumentsText;
@@ -206,6 +226,24 @@ function normalizeJsonArguments(argumentsText: string): string {
       return firstJsonValue;
     } catch {
       // Give up and return the original text below.
+    }
+  }
+
+  // Heuristic: repair invalid escape sequences (e.g. \| from grep regex args)
+  const repaired = repairInvalidEscapes(trimmed);
+  if (repaired !== trimmed) {
+    try {
+      JSON.parse(repaired);
+      return repaired;
+    } catch {
+      // Try repair + first-value extraction together
+      const repairedFirst = extractFirstCompleteJsonValue(repaired);
+      if (repairedFirst) {
+        try {
+          JSON.parse(repairedFirst);
+          return repairedFirst;
+        } catch { /* give up */ }
+      }
     }
   }
 
@@ -311,6 +349,7 @@ export async function runAgenticLoop(
 
   let iterationCount = 0;
   let repairRetryCount = 0;
+  let contextRetryCount = 0;
   const validToolNames = getValidToolNames();
 
   while (iterationCount < maxIterations) {
@@ -497,10 +536,28 @@ export async function runAgenticLoop(
 
         updatedMessages.push(assistantMessage);
 
+        // Track which tool_call_ids still need a tool result message.
+        // This set is used to inject stub responses on abort, preventing
+        // orphaned tool_call_ids from permanently bricking the session.
+        const pendingToolCallIds = new Set<string>(
+          assistantMessage.tool_calls.map((tc: any) => tc.id as string)
+        );
+
+        const injectStubsForPendingToolCalls = () => {
+          for (const id of pendingToolCallIds) {
+            updatedMessages.push({
+              role: 'tool',
+              tool_call_id: id,
+              content: 'Aborted by user.',
+            } as any);
+          }
+        };
+
         for (const toolCall of assistantMessage.tool_calls) {
           // Check abort between tool calls
           if (abortSignal?.aborted) {
             logger.debug('Agentic loop aborted between tool calls');
+            injectStubsForPendingToolCalls();
             emitAbortAndFinish(onEvent);
             return updatedMessages;
           }
@@ -520,13 +577,8 @@ export async function runAgenticLoop(
             if (name === 'sub_agent') {
               const subProgress: SubAgentProgressHandler = (evt) => {
                 onEvent({
-                  type: 'tool_call',
-                  toolCall: {
-                    id: toolCall.id,
-                    name: `sub_agent → ${evt.tool}`,
-                    args: '',
-                    status: evt.status === 'running' ? 'running' : 'done',
-                  },
+                  type: 'sub_agent_iteration',
+                  subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration },
                 });
               };
               result = await runSubAgent(
@@ -536,6 +588,7 @@ export async function runAgenticLoop(
                 args.max_iterations,
                 requestDefaults,
                 subProgress,
+                abortSignal,
               );
             } else {
               result = await handleToolCall(name, args, { sessionId, abortSignal });
@@ -553,6 +606,7 @@ export async function runAgenticLoop(
               tool_call_id: toolCall.id,
               content: result,
             } as any);
+            pendingToolCallIds.delete(toolCall.id);
 
             onEvent({
               type: 'tool_result',
@@ -566,6 +620,15 @@ export async function runAgenticLoop(
               tool_call_id: toolCall.id,
               content: `Error: ${errMsg}`,
             } as any);
+            pendingToolCallIds.delete(toolCall.id);
+
+            // If the tool was aborted, inject stubs for remaining pending calls and stop
+            if (abortSignal?.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message === 'Operation aborted'))) {
+              logger.debug('Agentic loop aborted during tool execution');
+              injectStubsForPendingToolCalls();
+              emitAbortAndFinish(onEvent);
+              return updatedMessages;
+            }
 
             onEvent({
               type: 'tool_result',
@@ -653,6 +716,56 @@ export async function runAgenticLoop(
           });
           continue;
         }
+      }
+
+      // Handle context-window-exceeded (prompt too long) — attempt forced compaction
+      // This fires when our token estimate was too low (e.g. base64 images from MCP tools)
+      // and the request actually hit the hard provider limit.
+      const isContextTooLong =
+        apiError?.status === 400 &&
+        typeof errMsg === 'string' &&
+        /prompt.{0,30}too long|context.{0,30}length|maximum.{0,30}token|tokens?.{0,10}exceed/i.test(errMsg);
+
+      if (isContextTooLong && contextRetryCount < 2) {
+        contextRetryCount++;
+        logger.warn(`Prompt too long (attempt ${contextRetryCount}); forcing compaction`, { errMsg });
+        onEvent({
+          type: 'error',
+          error: 'Prompt too long. Compacting conversation and retrying...',
+          transient: true,
+        });
+
+        if (pricing) {
+          // Use the normal LLM-based compaction path
+          try {
+            const compacted = await compactIfNeeded(
+              client, model, updatedMessages, pricing.contextWindow,
+              // Pass the context window itself as currentTokens to force compaction
+              pricing.contextWindow,
+              requestDefaults, sessionId
+            );
+            updatedMessages.length = 0;
+            updatedMessages.push(...compacted);
+          } catch (compactErr) {
+            logger.error(`Forced compaction failed: ${compactErr}`);
+            // Fall through to truncation fallback below
+          }
+        }
+
+        // Fallback: truncate any tool result messages whose content looks like
+        // base64 or is extremely large (e.g. MCP screenshot data)
+        const MAX_TOOL_RESULT_CHARS = 20_000;
+        for (let i = 0; i < updatedMessages.length; i++) {
+          const m = updatedMessages[i] as any;
+          if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > MAX_TOOL_RESULT_CHARS) {
+            updatedMessages[i] = {
+              ...m,
+              content: m.content.slice(0, MAX_TOOL_RESULT_CHARS) + '\n... (truncated — content was too large)',
+            };
+          }
+        }
+
+        continue;
       }
 
       // Retry on 429 (rate limit) with backoff

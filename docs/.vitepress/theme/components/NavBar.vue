@@ -43,7 +43,7 @@ watch(currentPath, () => {
       <a class="pa-nav-brand" href="/" aria-label="ProtoAgent home">
         <pre class="pa-nav-logo">█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
 █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █</pre>
-        <span class="pa-nav-sub">// LEARN BY BUILDING //</span>
+        <span class="pa-nav-sub">// BUILD-YOUR-OWN CODING AGENT //</span>
       </a>
 
       <button
@@ -144,7 +144,7 @@ watch(currentPath, () => {
   letter-spacing: 0;
   text-shadow: 0 0 10px var(--green-glow), 0 0 22px rgba(114, 255, 140, 0.2);
   max-width: 100%;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 .pa-nav-sub {

@@ -53,6 +53,7 @@ export async function runSubAgent(
   maxIterations = 30,
   requestDefaults: Record<string, unknown> = {},
   onProgress?: SubAgentProgressHandler,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const op = logger.startOperation('sub-agent');
   const subAgentSessionId = `sub-agent-${crypto.randomUUID()}`;
@@ -73,13 +74,18 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
 
   try {
     for (let i = 0; i < maxIterations; i++) {
+      // Check abort at the top of each iteration
+      if (abortSignal?.aborted) {
+        return '(sub-agent aborted)';
+      }
+
       const response = await client.chat.completions.create({
         ...requestDefaults,
         model,
         messages,
         tools: getAllTools(),
         tool_choice: 'auto',
-      });
+      }, { signal: abortSignal });
 
       const message = response.choices[0]?.message;
       if (!message) break;
@@ -89,13 +95,18 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
         messages.push(message as any);
 
         for (const toolCall of message.tool_calls) {
+          // Check abort between tool calls
+          if (abortSignal?.aborted) {
+            return '(sub-agent aborted)';
+          }
+
           const { name, arguments: argsStr } = (toolCall as any).function;
           logger.debug(`Sub-agent tool call: ${name}`);
           onProgress?.({ tool: name, status: 'running', iteration: i });
 
           try {
             const args = JSON.parse(argsStr);
-            const result = await handleToolCall(name, args, { sessionId: subAgentSessionId });
+            const result = await handleToolCall(name, args, { sessionId: subAgentSessionId, abortSignal });
             messages.push({
               role: 'tool',
               tool_call_id: toolCall.id,

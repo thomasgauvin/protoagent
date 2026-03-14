@@ -11,7 +11,7 @@ A minimal, educational AI coding agent CLI written in TypeScript. It stays small
 - **Built-in tools** — Read, write, edit, list, search, run shell commands, manage todos, and fetch web pages with `webfetch`
 - **Approval system** — Inline confirmation for file writes, file edits, and non-safe shell commands
 - **Session persistence** — Conversations and TODO state are saved automatically and can be resumed with `--session`
-- **Dynamic extensions** — Load skills on demand and add external tools through MCP servers
+<!-- - **Dynamic extensions** — Load skills on demand and add external tools through MCP servers -->
 - **Sub-agents** — Delegate self-contained tasks to isolated child conversations
 - **Usage tracking** — Live token, context, and estimated cost display in the TUI
 

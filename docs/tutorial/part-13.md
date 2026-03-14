@@ -8,6 +8,7 @@ Starting from Part 12, you add:
 
 - `src/utils/format-message.tsx` — markdown-to-ANSI formatting
 - `src/utils/file-time.ts` — staleness guard for edit_file
+- `src/components/LeftBar.tsx` — left-side bar indicator for callouts (no Box border)
 - `src/components/CollapsibleBox.tsx` — expand/collapse for long content
 - `src/components/ConsolidatedToolMessage.tsx` — grouped tool call rendering
 - `src/components/FormattedMessage.tsx` — markdown tables, code blocks, text formatting
@@ -95,6 +96,63 @@ export function clearSession(sessionId: string): void {
 
 ## Step 3: Create UI components
 
+### `src/components/LeftBar.tsx`
+
+A left-side bar indicator used by all callout-style components (tool calls, approvals, errors, code blocks). Renders a bold `│` character that stretches to match the full height of its content.
+
+**Why not `<Box borderStyle>`?** Box borders add lines on all four sides and inflate Ink's managed line count. Ink erases by line count on every re-render, so extra rows increase the chance of resize ghosting — stale lines left on screen when the new frame is shorter than the old one. `LeftBar` uses a plain `<Text>` column instead, so the total line count is exactly equal to the children's line count with no overhead.
+
+The bar height is derived by attaching a `ref` to the content box and calling Ink's built-in `measureElement` after each render to get the actual rendered row count.
+
+```typescript
+// src/components/LeftBar.tsx
+
+import React, { useRef, useState, useLayoutEffect } from 'react';
+import { Box, Text, measureElement } from 'ink';
+import type { DOMElement } from 'ink';
+
+export interface LeftBarProps {
+  color?: string;
+  children: React.ReactNode;
+  marginTop?: number;
+  marginBottom?: number;
+}
+
+export const LeftBar: React.FC<LeftBarProps> = ({
+  color = 'green',
+  children,
+  marginTop = 0,
+  marginBottom = 0,
+}) => {
+  const contentRef = useRef<DOMElement>(null);
+  const [height, setHeight] = useState(1);
+
+  useLayoutEffect(() => {
+    if (contentRef.current) {
+      try {
+        const { height: h } = measureElement(contentRef.current);
+        if (h > 0) setHeight(h);
+      } catch {
+        // measureElement can throw before layout is complete; keep previous height
+      }
+    }
+  });
+
+  const bar = Array.from({ length: height }, () => '│').join('\n');
+
+  return (
+    <Box flexDirection="row" marginTop={marginTop} marginBottom={marginBottom}>
+      <Box flexDirection="column" marginRight={1}>
+        <Text color={color} bold>{bar}</Text>
+      </Box>
+      <Box ref={contentRef} flexDirection="column" flexGrow={1}>
+        {children}
+      </Box>
+    </Box>
+  );
+};
+```
+
 ### `src/components/CollapsibleBox.tsx`
 
 Hides long content behind expand/collapse. Used for system prompts, tool results, and verbose output.
@@ -104,6 +162,7 @@ Hides long content behind expand/collapse. Used for system prompts, tool results
 
 import React from 'react';
 import { Box, Text } from 'ink';
+import { LeftBar } from './LeftBar.js';
 
 export interface CollapsibleBoxProps {
   title: string;
@@ -126,12 +185,10 @@ export const CollapsibleBox: React.FC<CollapsibleBoxProps> = ({
 
   if (!isLong) {
     return (
-      <Box flexDirection="column" marginBottom={marginBottom}>
+      <LeftBar color={titleColor ?? 'white'} marginBottom={marginBottom}>
         <Text color={titleColor} dimColor={dimColor} bold>{title}</Text>
-        <Box marginLeft={1}>
-          <Text dimColor={dimColor}>{content}</Text>
-        </Box>
-      </Box>
+        <Text dimColor={dimColor}>{content}</Text>
+      </LeftBar>
     );
   }
 
@@ -146,15 +203,13 @@ export const CollapsibleBox: React.FC<CollapsibleBoxProps> = ({
   }
 
   return (
-    <Box flexDirection="column" marginBottom={marginBottom}>
+    <LeftBar color={titleColor ?? 'white'} marginBottom={marginBottom}>
       <Text color={titleColor} dimColor={dimColor} bold>
         {expanded ? '▼' : '▶'} {title}
       </Text>
-      <Box flexDirection="column" marginLeft={1}>
-        <Text dimColor={dimColor}>{preview}</Text>
-        {!expanded && <Text dimColor={true}>... (use /expand to see all)</Text>}
-      </Box>
-    </Box>
+      <Text dimColor={dimColor}>{preview}</Text>
+      {!expanded && <Text dimColor={true}>... (use /expand to see all)</Text>}
+    </LeftBar>
   );
 };
 ```
@@ -169,6 +224,7 @@ Groups a tool call with its result into a single consolidated view.
 import React from 'react';
 import { Box, Text } from 'ink';
 import { FormattedMessage } from './FormattedMessage.js';
+import { LeftBar } from './LeftBar.js';
 
 export interface ConsolidatedToolMessageProps {
   toolCalls: Array<{ id: string; name: string }>;
@@ -182,25 +238,24 @@ export const ConsolidatedToolMessage: React.FC<ConsolidatedToolMessageProps> = (
   const toolNames = toolCalls.map((tc) => tc.name);
   const title = `Called: ${toolNames.join(', ')}`;
   const containsTodoTool = toolCalls.some((tc) => tc.name === 'todo_read' || tc.name === 'todo_write');
+  const titleColor = containsTodoTool ? 'green' : 'cyan';
   const isExpanded = expanded || containsTodoTool;
 
   if (isExpanded) {
     return (
-      <Box flexDirection="column">
-        <Text color={containsTodoTool ? 'green' : 'white'} bold>▼ {title}</Text>
-        <Box flexDirection="column" marginLeft={1}>
-          {toolCalls.map((tc, idx) => {
-            const result = toolResults.get(tc.id);
-            if (!result) return null;
-            return (
-              <Box key={idx} flexDirection="column">
-                <Text color="cyan" bold>[{result.name}]:</Text>
-                <FormattedMessage content={result.content} />
-              </Box>
-            );
-          })}
-        </Box>
-      </Box>
+      <LeftBar color={titleColor}>
+        <Text color={titleColor} bold>▼ {title}</Text>
+        {toolCalls.map((tc, idx) => {
+          const result = toolResults.get(tc.id);
+          if (!result) return null;
+          return (
+            <Box key={idx} flexDirection="column">
+              <Text color="cyan" bold>[{result.name}]:</Text>
+              <FormattedMessage content={result.content} />
+            </Box>
+          );
+        })}
+      </LeftBar>
     );
   }
 
@@ -216,17 +271,17 @@ export const ConsolidatedToolMessage: React.FC<ConsolidatedToolMessageProps> = (
     : compactPreview;
 
   return (
-    <Box flexDirection="column">
-      <Text color={containsTodoTool ? 'green' : 'white'} dimColor bold>▶ {title}</Text>
-      <Box marginLeft={1}><Text dimColor>{preview}</Text></Box>
-    </Box>
+    <LeftBar color="white">
+      <Text color={titleColor} dimColor bold>▶ {title}</Text>
+      <Text dimColor>{preview}</Text>
+    </LeftBar>
   );
 };
 ```
 
 ### `src/components/FormattedMessage.tsx`
 
-Renders markdown tables as preformatted monospace text, code blocks in bordered boxes, and applies text formatting.
+Renders markdown tables as preformatted monospace text, code blocks with a left-bar indicator, and applies text formatting.
 
 ```typescript
 // src/components/FormattedMessage.tsx
@@ -234,6 +289,7 @@ Renders markdown tables as preformatted monospace text, code blocks in bordered 
 import React from 'react';
 import { Box, Text } from 'ink';
 import { formatMessage } from '../utils/format-message.js';
+import { LeftBar } from './LeftBar.js';
 
 interface FormattedMessageProps {
   content: string;
@@ -347,16 +403,16 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
           if (!block.content.trim()) return null;
           if (deferTables) return <Box key={index} marginY={1}><Text dimColor>{DEFERRED_TABLE_PLACEHOLDER}</Text></Box>;
           return (
-            <Box key={index} marginY={1} paddingX={1} borderStyle="round" borderColor="gray">
+            <LeftBar key={index} color="gray" marginTop={1} marginBottom={1}>
               <Text>{renderPreformattedTable(block.content)}</Text>
-            </Box>
+            </LeftBar>
           );
         }
         if (block.type === 'code') {
           return (
-            <Box key={index} marginY={1} paddingX={1} borderStyle="round" borderColor="gray">
+            <LeftBar key={index} color="gray" marginTop={1} marginBottom={1}>
               <Text dimColor>{block.content}</Text>
-            </Box>
+            </LeftBar>
           );
         }
         if (!block.content.trim()) return null;
@@ -399,6 +455,7 @@ The final App brings together everything from Parts 1-12 plus:
 - **Archived vs live message rendering** — archived messages use `useMemo` for performance, live messages re-render during streaming
 - **Grouped tool rendering** — tool calls and results are consolidated using `ConsolidatedToolMessage`
 - **Collapsible output** — system prompts and tool results use `CollapsibleBox`
+- **Left-bar indicators** — `LeftBar` replaces Box borders for callout-style content; the bar stretches to match content height via `measureElement` with no extra line overhead
 - **Formatted text** — assistant messages use `FormattedMessage` with markdown/table support
 - **Slash commands** — `/clear`, `/collapse`, `/expand`, `/help`, `/quit`
 - **Spinner with active tool** — shows which tool is currently executing
@@ -455,8 +512,8 @@ npm run dev -- --log-level debug
 ```
 
 You should see:
-- Richer output rendering: code blocks in bordered boxes, tables as aligned monospace
-- Grouped tool activity: tool calls and results shown together
+- Richer output rendering: code blocks and tables with a left-bar indicator, no box borders
+- Grouped tool activity: tool calls and results shown together with a left-bar
 - Collapsible long content: system prompt collapsed by default
 - Slash commands: `/help`, `/clear`, `/expand`, `/collapse`, `/quit`
 - Debug log file path displayed at startup

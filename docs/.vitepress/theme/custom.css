@@ -383,23 +383,29 @@ a {
   font-family: var(--mono) !important;
 }
 
+/* Remove scrollbars from logo elements */
+.pa-nav-logo,
+.pa-logo {
+  overflow: hidden !important;
+}
+
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: var(--bg);
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(114, 255, 140, 0.25);
-  border: 1px solid rgba(114, 255, 140, 0.15);
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(114, 255, 140, 0.45);
-}
+   width: 8px;
+   height: 8px;
+ }
+ 
+ ::-webkit-scrollbar-track {
+   background: var(--bg);
+ }
+ 
+ ::-webkit-scrollbar-thumb {
+   background: rgba(114, 255, 140, 0.25);
+   border: 1px solid rgba(114, 255, 140, 0.15);
+ }
+ 
+ ::-webkit-scrollbar-thumb:hover {
+   background: rgba(114, 255, 140, 0.45);
+ }
 
 ::selection {
   background: rgba(114, 255, 140, 0.18);

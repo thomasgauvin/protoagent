@@ -8,17 +8,17 @@ const hero = computed(() => frontmatter.value.hero || {})
 const features = computed(() => frontmatter.value.features || [])
 
 const marqueeItems = [
-  'READABLE AI CODING AGENT',
+  'BUILD-IT-YOURSELF AI CODING AGENT',
   'MULTI-STEP TOOL LOOPS',
   'MCP + SKILLS SUPPORT',
   'SESSION PERSISTENCE',
-  'LEARNING BY BUILDING',
+  'SUB-AGENTS FOR CLEAN CONTEXT',
 ]
 
 const stats = [
   { label: '// readable codebase', value: 'SMALL', width: '78%' },
-  { label: '// core loop', value: 'VISIBLE', width: '92%' },
-  { label: '// docs mode', value: 'LIVE', width: '100%' },
+  { label: '// build it yourself', value: 'SIMPLE', width: '92%' },
+  { label: '// use it in real projects', value: 'USABLE', width: '100%' },
 ]
 
 const terminalLines = [
@@ -84,7 +84,7 @@ const terminalLines = [
       <div class="pa-terminal">
         <div class="pa-terminal-head">
           <span>PROTOAGENT -- LIVE SESSION</span>
-          <span>NODE 12</span>
+          <span>NODE 22</span>
         </div>
         <div class="pa-terminal-body">
           <div
@@ -178,7 +178,7 @@ const terminalLines = [
   line-height: 1;
   text-shadow: 0 0 10px var(--green-glow), 0 0 34px rgba(114, 255, 140, 0.12);
   max-width: 100%;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 .pa-hero-sub {

@@ -70,6 +70,10 @@ For a normal user message:
 6. The loop repeats until plain assistant text is returned.
 7. `App` saves the session and TODO state.
 
+The loop communicates back to the UI via these event types: `text_delta`, `tool_call`, `tool_result`, `sub_agent_iteration`, `usage`, `error`, `done`, `iteration_done`.
+
+`sub_agent_iteration` carries sub-agent progress (tool name + status) separately from `tool_call` so the UI can show it in the spinner without adding entries to the parent's tool-call message history.
+
 ## 5. Message and Session Model
 
 The core app state centers on:
@@ -130,9 +134,15 @@ Tool names are prefixed: `mcp_<server>_<tool>`. Tool results are flattened from 
 
 `src/sub-agent.ts` runs isolated child loops with a fresh prompt and message history. Children use the normal built-in and dynamic tools via `getAllTools()`, but do not recursively expose `sub_agent`. Default iteration limit is 30. Child TODOs are ephemeral (keyed by `sub-agent-<uuid>`) and cleared on completion.
 
+**Abort propagation:** the parent's `AbortSignal` is passed through to `runSubAgent()`, to the child's `client.chat.completions.create()` call, and to each `handleToolCall()` invocation. Pressing Escape stops the child as soon as the in-flight request or tool call acknowledges the signal.
+
+**UI progress isolation:** sub-agent tool steps are reported via `onProgress` callbacks that the agentic loop converts to `sub_agent_iteration` events. The UI handles these by updating the spinner label only — never touching `completionMessages` or `assistantMessageRef` — keeping the parent conversation history clean.
+
 ## 11. Conversation Compaction and Cost Tracking
 
 ProtoAgent estimates token usage (~4 chars/token), tracks context-window usage, and compacts old conversation history at 90% utilization. Compaction preserves protected skill payloads (messages containing `<skill_content`) and the 5 most recent messages. The compaction prompt produces a structured `<state_snapshot>` summary.
+
+If the API returns a 400 error indicating the prompt is too long (e.g. `prompt too long`, `context length exceeded`), the loop attempts forced compaction by treating current usage as 100% of the context window, then falls back to truncating oversized `role: 'tool'` messages exceeding 20,000 characters. This handles large MCP tool results such as base64 screenshot blobs.
 
 ## 12. Terminal UI
 
@@ -147,6 +157,16 @@ ProtoAgent estimates token usage (~4 chars/token), tracks context-window usage, 
 
 The UI also includes collapsible message boxes, grouped tool rendering, formatted assistant output, usage display, debounced text input, spinner, and terminal resize handling.
 
+### LeftBar
+
+Tool calls, approvals, errors, and code blocks are visually offset with a bold `│` bar on the left (`src/components/LeftBar.tsx`), similar to a GitHub callout block.
+
+This is deliberately not a `<Box borderStyle>`. Box borders add lines on all four sides, which increases Ink's managed line count and makes resize ghosting worse — Ink erases by line count, so any extra rows it doesn't expect to own can leave stale lines on screen. `LeftBar` instead renders a plain `<Text>` column containing `│` repeated once per content row. The row count comes from `measureElement` called after each render, so the bar always matches the content height exactly. Total line count equals the children's line count with no overhead.
+
+### Static scrollback
+
+Completed conversation turns are flushed to Ink's `<Static>` component, which writes them once above the managed region and removes them from the re-render cycle. Full history is available via session resume (`--session`).
+
 ## 13. Important Implementation Nuances
 
 These are the details that are easy to miss if you only skim the file tree:
@@ -157,7 +177,8 @@ These are the details that are easy to miss if you only skim the file tree:
 - `sub_agent` is not part of `getAllTools()` — it is injected by the agentic loop
 - some tool failures flow back as tool-result strings rather than thrown errors
 - the agentic loop sanitizes malformed tool names and JSON from streamed responses
-- error recovery includes retry logic for 400, 429, and 5xx responses
+- error recovery includes retry logic for 400 (context-too-long), 429, and 5xx responses
+- `sub_agent_iteration` events are handled by `App` in a separate case that only updates the spinner; they never touch `completionMessages` or `assistantMessageRef`
 
 ## 14. Shutdown and Lifecycle Boundaries
 

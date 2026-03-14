@@ -58,6 +58,7 @@ export async function runSubAgent(
   maxIterations = 30,
   requestDefaults: Record<string, unknown> = {},
   onProgress?: SubAgentProgressHandler,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const op = logger.startOperation('sub-agent');
   const subAgentSessionId = `sub-agent-${crypto.randomUUID()}`;
@@ -78,13 +79,18 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
 
   try {
     for (let i = 0; i < maxIterations; i++) {
+      // Check abort at the top of each iteration
+      if (abortSignal?.aborted) {
+        return '(sub-agent aborted)';
+      }
+
       const response = await client.chat.completions.create({
         ...requestDefaults,
         model,
         messages,
         tools: getAllTools(),
         tool_choice: 'auto',
-      });
+      }, { signal: abortSignal });
 
       const message = response.choices[0]?.message;
       if (!message) break;
@@ -93,13 +99,18 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
         messages.push(message as any);
 
         for (const toolCall of message.tool_calls) {
+          // Check abort between tool calls
+          if (abortSignal?.aborted) {
+            return '(sub-agent aborted)';
+          }
+
           const { name, arguments: argsStr } = (toolCall as any).function;
           logger.debug(`Sub-agent tool call: ${name}`);
           onProgress?.({ tool: name, status: 'running', iteration: i });
 
           try {
             const args = JSON.parse(argsStr);
-            const result = await handleToolCall(name, args, { sessionId: subAgentSessionId });
+            const result = await handleToolCall(name, args, { sessionId: subAgentSessionId, abortSignal });
             messages.push({
               role: 'tool',
               tool_call_id: toolCall.id,
@@ -138,16 +149,24 @@ The agentic loop needs to detect `sub_agent` tool calls and route them to the ch
 In your tool execution section, add special handling for `sub_agent`:
 
 ```typescript
-import { subAgentTool, runSubAgent } from './sub-agent.js';
+import { subAgentTool, runSubAgent, type SubAgentProgressHandler } from './sub-agent.js';
 
 // When processing tool calls, check for sub_agent:
 if (toolName === 'sub_agent') {
+  const subProgress: SubAgentProgressHandler = (evt) => {
+    onEvent({
+      type: 'sub_agent_iteration',
+      subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration },
+    });
+  };
   const result = await runSubAgent(
     client,
     model,
     args.task,
     args.max_iterations,
     requestDefaults,
+    subProgress,
+    abortSignal,
   );
   // Push the result as a tool message
   messages.push({
@@ -157,7 +176,7 @@ if (toolName === 'sub_agent') {
   } as any);
 } else {
   // Normal tool handling
-  const result = await handleToolCall(toolName, args, { sessionId });
+  const result = await handleToolCall(toolName, args, { sessionId, abortSignal });
   messages.push({
     role: 'tool',
     tool_call_id: toolCall.id,
@@ -200,8 +219,10 @@ Investigate how the config system works in this project and summarize the flow.
 
 You should see:
 - A `sub_agent` tool call in the parent conversation
-- The sub-agent working autonomously (visible in debug logs)
+- The spinner briefly showing `sub_agent → bash` (or whichever tool the sub-agent is using) — these are `sub_agent_iteration` events that update the spinner without adding entries to the parent's message history
 - Only the summary returned to the parent transcript
+
+Press Escape while the sub-agent is running and it will abort cleanly. The in-flight request and any pending tool call both honour the signal.
 
 ## Resulting snapshot
 
