@@ -1,0 +1,38 @@
+{
+  "name": "protoagent",
+  "version": "0.0.1",
+  "description": "A simple coding agent CLI.",
+  "bin": "dist/cli.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.tsx",
+    "build:watch": "tsc --watch"
+  },
+  "files": [
+    "dist"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@inkjs/ui": "^2.0.0",
+    "commander": "^14.0.1",
+    "he": "^1.2.0",
+    "html-to-text": "^9.0.5",
+    "ink": "^6.7.0",
+    "ink-big-text": "^2.0.0",
+    "jsonc-parser": "^3.3.1",
+    "openai": "^5.23.1",
+    "react": "^19.1.1",
+    "turndown": "^7.2.2",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@types/he": "^1.2.3",
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.15",
+    "@types/turndown": "^5.0.6",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
+  }
+}
