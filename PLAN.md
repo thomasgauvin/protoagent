@@ -1,7 +1,7 @@
 # Plan: Update Docs & Recreate Verification Folders
 
 ## Overview
-Update all documentation (tutorial, guide, reference) to match the current source code, then recreate the 13 `protoagent-tutorial-again-part-*` verification folders as complete working snapshots (including `node_modules`).
+Update all documentation (tutorial, guide, reference) to match the current source code, then recreate the 13 `protoagent-build-your-own-checkpoints/part-*` verification folders as complete working snapshots (including `node_modules`).
 
 ### Key Principle: Full Code Snippets in Tutorial
 The tutorial must include **complete, copy-pasteable code** for every file at every stage. A reader should be able to follow the tutorial and recreate the exact project by copying the provided code — no guesswork, no "try this on your own" hints. Each part should show the **full file contents** for every new or modified file.
@@ -143,7 +143,7 @@ Also update `docs/tutorial/index.md` if the overview needs changes.
 
 ## Phase 5: Recreate Verification Folders
 
-For each part 1–13, create a `protoagent-tutorial-again-part-N` folder containing:
+For each part 1–13, create a `protoagent-build-your-own-checkpoints/part-N` folder containing:
 - Complete source code matching that tutorial checkpoint
 - `package.json` with correct dependencies for that stage
 - `tsconfig.json`
@@ -158,7 +158,7 @@ For each part 1–13, create a `protoagent-tutorial-again-part-N` folder contain
 
 ### Delete old folders:
 - Remove the old `protoagent-tutorial-part-*` folders (the non-"again" set, parts 1-11)
-- The `protoagent-tutorial-again-part-*` folders will be recreated fresh
+- The `protoagent-build-your-own-checkpoints/part-*` folders will be recreated fresh
 
 ---
 

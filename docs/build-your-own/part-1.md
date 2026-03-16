@@ -250,7 +250,7 @@ A simple, hackable coding agent CLI.
 
 ## Snapshot
 
-Your project should match `protoagent-tutorial-again-part-1`.
+Your project should match `protoagent-build-your-own-checkpoints/part-1`.
 
 ## Pitfalls
 

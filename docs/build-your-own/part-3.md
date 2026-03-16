@@ -8,7 +8,7 @@ In this part, we're going to make it possible to configure `protoagent`, mainly 
 
 Project config takes precedence, allowing per-project overrides of user defaults.
 
-Your target snapshot is `protoagent-tutorial-again-part-3`.
+Your target snapshot is `protoagent-build-your-own-checkpoints/part-3`.
 
 ## What you are building
 
@@ -840,7 +840,7 @@ The app should show your configured model name and stream responses. Your creden
 
 ## Snapshot
 
-Your project should match `protoagent-tutorial-again-part-3`.
+Your project should match `protoagent-build-your-own-checkpoints/part-3`.
 
 ## What comes next
 

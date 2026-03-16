@@ -541,7 +541,7 @@ Session: k7pyp4ua
 
 ## Resulting snapshot
 
-Your project should match `protoagent-tutorial-again-part-11`.
+Your project should match `protoagent-build-your-own-checkpoints/part-11`.
 
 ## Core takeaway
 

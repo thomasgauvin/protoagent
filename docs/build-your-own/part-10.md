@@ -519,7 +519,7 @@ Replace `a1b2c3d4` with your actual session ID. You should see prior messages re
 
 ## Resulting snapshot
 
-Your project should match `protoagent-tutorial-again-part-10`.
+Your project should match `protoagent-build-your-own-checkpoints/part-10`.
 
 ## Core takeaway
 

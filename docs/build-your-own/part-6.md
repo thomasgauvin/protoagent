@@ -417,7 +417,7 @@ With the bypass flag, these also run without prompts:
 
 ## Resulting snapshot
 
-Your project should match `protoagent-tutorial-again-part-6`.
+Your project should match `protoagent-build-your-own-checkpoints/part-6`.
 
 ## Core takeaway
 

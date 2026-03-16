@@ -441,7 +441,7 @@ Session: 1h32x5xy
 
 ## Resulting snapshot
 
-Your project should match `protoagent-tutorial-again-part-12`.
+Your project should match `protoagent-build-your-own-checkpoints/part-12`.
 
 ## Core takeaway
 

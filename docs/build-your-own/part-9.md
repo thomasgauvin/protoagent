@@ -748,7 +748,7 @@ tokens: 1057↓ 100↑ | ctx: 0% | cost: $0.0005
 
 ## Resulting snapshot
 
-Your project should match `protoagent-tutorial-again-part-9`.
+Your project should match `protoagent-build-your-own-checkpoints/part-9`.
 
 ## Core takeaway
 

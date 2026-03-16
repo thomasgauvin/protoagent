@@ -17,23 +17,23 @@ Each part has two jobs:
 
 Every chapter is cumulative. Start at Part 1 and move forward in order.
 
-For each stage, you should end up with a folder that matches one of these snapshots:
+For each stage, you should end up with a folder that matches one of these snapshots, available in the GitHub repository:
 
-- `protoagent-tutorial-again-part-1`
-- `protoagent-tutorial-again-part-2`
-- `protoagent-tutorial-again-part-3`
-- `protoagent-tutorial-again-part-4`
-- `protoagent-tutorial-again-part-5`
-- `protoagent-tutorial-again-part-6`
-- `protoagent-tutorial-again-part-7`
-- `protoagent-tutorial-again-part-8`
-- `protoagent-tutorial-again-part-9`
-- `protoagent-tutorial-again-part-10`
-- `protoagent-tutorial-again-part-11`
-- `protoagent-tutorial-again-part-12`
-- `protoagent-tutorial-again-part-13`
+- `protoagent-build-your-own-checkpoints/part-1`
+- `protoagent-build-your-own-checkpoints/part-2`
+- `protoagent-build-your-own-checkpoints/part-3`
+- `protoagent-build-your-own-checkpoints/part-4`
+- `protoagent-build-your-own-checkpoints/part-5`
+- `protoagent-build-your-own-checkpoints/part-6`
+- `protoagent-build-your-own-checkpoints/part-7`
+- `protoagent-build-your-own-checkpoints/part-8`
+- `protoagent-build-your-own-checkpoints/part-9`
+- `protoagent-build-your-own-checkpoints/part-10`
+- `protoagent-build-your-own-checkpoints/part-11`
+- `protoagent-build-your-own-checkpoints/part-12`
+- `protoagent-build-your-own-checkpoints/part-13`
 
-The snapshots are the verification path. If a part says you should match `protoagent-tutorial-again-part-6`, that folder represents the completed result of following Parts 1 through 6 in order.
+The snapshots are the verification path. If a part says you should match `protoagent-build-your-own-checkpoints/part-6`, that folder represents the completed result of following Parts 1 through 6 in order.
 
 ## Before you start
 

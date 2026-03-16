@@ -1529,7 +1529,7 @@ Done — I created index.html with "hello world". Would you like any styling or 
 
 ## Resulting snapshot
 
-Your project should match `protoagent-tutorial-again-part-5`.
+Your project should match `protoagent-build-your-own-checkpoints/part-5`.
 
 ## Core takeaway
 

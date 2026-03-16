@@ -4,7 +4,7 @@ This is the part where the CLI stops being a terminal shell and starts talking t
 
 To keep things simple and remove abstractions, we're using the OpenAI SDK directly. We'll be supporting other providers such as [Google's Gemini](https://ai.google.dev/gemini-api/docs/openai) and [Anthropic's Claude](https://platform.claude.com/docs/en/api/openai-sdk) models using their OpenAI SDK compatibility capabilities. 
 
-Your target snapshot is `protoagent-tutorial-again-part-2`.
+Your target snapshot is `protoagent-build-your-own-checkpoints/part-2`.
 
 ## What you are building
 
@@ -243,7 +243,7 @@ with today?
 
 ## Snapshot
 
-Your project should match `protoagent-tutorial-again-part-2`.
+Your project should match `protoagent-build-your-own-checkpoints/part-2`.
 
 ## Pitfalls
 

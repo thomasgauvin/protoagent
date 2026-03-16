@@ -2,7 +2,7 @@
 
 This is where ProtoAgent becomes an agent instead of a chatbot. Up to Part 3, the app could stream text from a model. Now you add the tool-use loop: the model can request tools, the runtime executes them, and the model continues reasoning with the results.
 
-Your target snapshot is `protoagent-tutorial-again-part-4`.
+Your target snapshot is `protoagent-build-your-own-checkpoints/part-4`.
 
 ## What you are building
 
@@ -806,7 +806,7 @@ Here's the contents of tsconfig.json:
 
 ## Snapshot
 
-Your project should match `protoagent-tutorial-again-part-4`.
+Your project should match `protoagent-build-your-own-checkpoints/part-4`.
 
 ## Pitfalls
 

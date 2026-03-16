@@ -171,7 +171,7 @@ You should see:
 
 ## Resulting snapshot
 
-Your project should match `protoagent-tutorial-again-part-7`.
+Your project should match `protoagent-build-your-own-checkpoints/part-7`.
 
 ## Core takeaway
 

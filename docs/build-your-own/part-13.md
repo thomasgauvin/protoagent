@@ -1117,7 +1117,7 @@ You can use the part-13 checkpoint as a working foundation and evolve it indepen
 
 ## Resulting snapshot
 
-Your project should match `protoagent-tutorial-again-part-13`.
+Your project should match `protoagent-build-your-own-checkpoints/part-13`.
 
 This is the final checkpoint. At this point your staged rebuild matches the complete ProtoAgent application.
 
