@@ -1,8 +1,8 @@
 # Getting Started
 
-You've probably used coding agents that read files, run commands, and make edits without you really seeing what is going on under the hood. ProtoAgent is the same kind of tool, but built to stay readable.
+You've probably used coding agents that read files, run commands, and make edits without you really seeing what is going on under the hood. ProtoAgent is the same kind of tool, but with a simple codebase that is easy to understand. So easy to understand that you could build it yourself.
 
-It is a TypeScript CLI with an Ink terminal UI, a streaming tool loop, inline approvals, and persisted sessions.
+It's a TypeScript CLI with an Ink terminal UI, a streaming tool loop, inline approvals, and persisted sessions and the other features you would expect from coding agents like MCP and Skills.
 
 ## Install it
 
@@ -35,6 +35,8 @@ You can reopen configuration later with:
 protoagent configure
 ```
 
+See the [Configuration guide](/try-it-out/configuration) for more details.
+
 ## Use it like you would any coding agent
 
 Once it is configured, type a task and press Enter. ProtoAgent reads the project, decides which tools to call, asks for approval when it needs to, and keeps iterating until it has a final answer.
@@ -51,7 +53,6 @@ Some good first prompts:
 Inside the app, you can use:
 
 - `/help` — show available slash commands
-- `/clear` — clear conversation and start a fresh session
 - `/collapse` — collapse all long messages
 - `/expand` — expand all collapsed messages
 - `/quit` — save the session and exit (also accepts `/exit`)
@@ -61,13 +62,11 @@ Useful shortcuts:
 - `Esc` aborts the current in-flight completion
 - `Ctrl-C` exits immediately
 
-One small but important detail: `/quit` (and `/exit`) saves the current session first and prints the exact resume command.
-
 ## CLI flags
 
 | Flag | What it does |
 |---|---|
-| `--dangerously-accept-all` | Skip normal approval prompts for writes, edits, and non-safe shell commands |
+| `--dangerously-skip-permissions` | Skip normal approval prompts for writes, edits, and non-safe shell commands |
 | `--log-level <level>` | Set log verbosity: `TRACE`, `DEBUG`, `INFO`, `WARN`, or `ERROR` |
 | `--session <id>` | Resume a previously saved session |
 
@@ -84,8 +83,8 @@ As ProtoAgent runs, you see the loop rather than just the final answer:
 
 ## Where to go next
 
-- [Configuration](/guide/configuration)
-- [Tools](/guide/tools)
-- [Sessions](/guide/sessions)
-- [Skills](/guide/skills)
-- [Build your own](/tutorial/)
+- [Configuration](/try-it-out/configuration)
+- [Tools](/try-it-out/tools)
+- [Sessions](/try-it-out/sessions)
+- [Skills](/try-it-out/skills)
+- [Build your own](/build-your-own/)

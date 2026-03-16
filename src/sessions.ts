@@ -10,7 +10,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import crypto from 'node:crypto';
 import { chmodSync } from 'node:fs';
 import type OpenAI from 'openai';
 import type { TodoItem } from './tools/todo.js';
@@ -19,6 +18,7 @@ import { logger } from './utils/logger.js';
 const SESSION_DIR_MODE = 0o700;
 const SESSION_FILE_MODE = 0o600;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHORT_ID_PATTERN = /^[0-9a-z]{8}$/i;
 
 function hardenPermissions(targetPath: string, mode: number): void {
   if (process.platform === 'win32') return;
@@ -26,9 +26,20 @@ function hardenPermissions(targetPath: string, mode: number): void {
 }
 
 function assertValidSessionId(id: string): void {
-  if (!SESSION_ID_PATTERN.test(id)) {
+  // Accept both legacy UUIDs and new short IDs
+  if (!SESSION_ID_PATTERN.test(id) && !SHORT_ID_PATTERN.test(id)) {
     throw new Error(`Invalid session ID: ${id}`);
   }
+}
+
+/** Generate a short, readable session ID (8 alphanumeric characters). */
+function generateSessionId(): string {
+  const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let id = '';
+  for (let i = 0; i < 8; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return id;
 }
 
 export interface Session {
@@ -97,7 +108,7 @@ function sessionPath(id: string): string {
 /** Create a new session. */
 export function createSession(model: string, provider: string): Session {
   return {
-    id: crypto.randomUUID(),
+    id: generateSessionId(),
     title: 'New session',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

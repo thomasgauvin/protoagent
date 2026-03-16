@@ -31,7 +31,7 @@ export const bashTool = {
   },
 };
 
-// Hard-blocked commands — these CANNOT be run, even with --dangerously-accept-all
+// Hard-blocked commands — these CANNOT be run, even with --dangerously-skip-permissions
 const DANGEROUS_PATTERNS = [
   'rm -rf /',
   'sudo',

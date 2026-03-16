@@ -26,13 +26,9 @@ function hardenPermissions(targetPath: string, mode: number): void {
 }
 
 export function resolveApiKey(config: Pick<Config, 'provider' | 'apiKey'>): string | null {
-  const directApiKey = config.apiKey?.trim();
-  if (directApiKey) {
-    return directApiKey;
-  }
-
   const provider = getProvider(config.provider);
 
+  // 1. Provider-specific environment variable
   if (provider?.apiKeyEnvVar) {
     const providerEnvOverride = process.env[provider.apiKeyEnvVar]?.trim();
     if (providerEnvOverride) {
@@ -40,9 +36,16 @@ export function resolveApiKey(config: Pick<Config, 'provider' | 'apiKey'>): stri
     }
   }
 
+  // 2. Generic environment variable
   const envOverride = process.env.PROTOAGENT_API_KEY?.trim();
   if (envOverride) {
     return envOverride;
+  }
+
+  // 3. Config file (either from selected provider or direct apiKey)
+  const directApiKey = config.apiKey?.trim();
+  if (directApiKey) {
+    return directApiKey;
   }
 
   const providerApiKey = provider?.apiKey?.trim();
@@ -109,9 +112,47 @@ const RUNTIME_CONFIG_TEMPLATE = `{
   // - custom providers/models
   // - MCP server definitions
   // - request default parameters
-  "providers": {},
+  "providers": {
+    // "provider-id": {
+    //   "name": "Display Name",
+    //   "baseURL": "https://api.example.com/v1",
+    //   "apiKey": "your-api-key",
+    //   "apiKeyEnvVar": "ENV_VAR_NAME",
+    //   "headers": {
+    //     "X-Custom-Header": "value"
+    //   },
+    //   "defaultParams": {},
+    //   "models": {
+    //     "model-id": {
+    //       "name": "Display Name",
+    //       "contextWindow": 128000,
+    //       "inputPricePerMillion": 2.5,
+    //       "outputPricePerMillion": 10.0,
+    //       "cachedPricePerMillion": 1.25,
+    //       "defaultParams": {}
+    //     }
+    //   }
+    // }
+  },
   "mcp": {
-    "servers": {}
+    "servers": {
+      // "server-name": {
+      //   "type": "stdio",
+      //   "command": "npx",
+      //   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
+      //   "env": { "KEY": "value" },
+      //   "cwd": "/working/directory",
+      //   "enabled": true,
+      //   "timeoutMs": 30000
+      // },
+      // "http-server": {
+      //   "type": "http",
+      //   "url": "https://mcp-server.example.com",
+      //   "headers": { "Authorization": "Bearer token" },
+      //   "enabled": true,
+      //   "timeoutMs": 30000
+      // }
+    }
   }
 }
 `;
@@ -280,15 +321,46 @@ export const ResetPrompt: React.FC<ResetPromptProps> = ({ existingConfig, setSte
   );
 };
 
+interface TargetSelectionProps {
+  title?: string;
+  subtitle?: string;
+  onSelect: (target: InitConfigTarget) => void;
+}
+export const TargetSelection: React.FC<TargetSelectionProps> = ({
+  title,
+  subtitle,
+  onSelect,
+}) => {
+  return (
+    <Box flexDirection="column">
+      {title && <Text color="green" bold>{title}</Text>}
+      {subtitle && <Text>{subtitle}</Text>}
+      <Box marginTop={1}>
+        <Select
+          options={[
+            { label: `Project config — ${getProjectRuntimeConfigPath()}`, value: 'project' },
+            { label: `Shared user config — ${getUserRuntimeConfigPath()}`, value: 'user' },
+          ]}
+          onChange={(value) => onSelect(value as InitConfigTarget)}
+        />
+      </Box>
+    </Box>
+  );
+};
+
 interface ModelSelectionProps {
   setSelectedProviderId: (id: string) => void;
   setSelectedModelId: (id: string) => void;
-  setStep: (step: number) => void;
+  onSelect?: (providerId: string, modelId: string) => void;
+  setStep?: (step: number) => void;
+  title?: string;
 }
 export const ModelSelection: React.FC<ModelSelectionProps> = ({
   setSelectedProviderId,
   setSelectedModelId,
+  onSelect,
   setStep,
+  title,
 }) => {
   const items = getAllProviders().flatMap((provider) =>
     provider.models.map((model) => ({
@@ -301,11 +373,16 @@ export const ModelSelection: React.FC<ModelSelectionProps> = ({
     const [providerId, modelId] = value.split(':::');
     setSelectedProviderId(providerId);
     setSelectedModelId(modelId);
-    setStep(3);
+    if (onSelect) {
+      onSelect(providerId, modelId);
+    } else {
+      setStep?.(3);
+    }
   };
 
   return (
     <Box flexDirection="column">
+      {title && <Text color="green" bold>{title}</Text>}
       <Text>Select an AI Model:</Text>
       <Select options={items} onChange={handleSelect} />
     </Box>
@@ -315,14 +392,20 @@ export const ModelSelection: React.FC<ModelSelectionProps> = ({
 interface ApiKeyInputProps {
   selectedProviderId: string;
   selectedModelId: string;
-  target: InitConfigTarget;
-  setStep: (step: number) => void;
-  setConfigWritten: (written: boolean) => void;
+  target?: InitConfigTarget;
+  title?: string;
+  showProviderHeaders?: boolean;
+  onComplete?: (config: Config) => void;
+  setStep?: (step: number) => void;
+  setConfigWritten?: (written: boolean) => void;
 }
 export const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
   selectedProviderId,
   selectedModelId,
-  target,
+  target = 'user',
+  title,
+  showProviderHeaders = true,
+  onComplete,
   setStep,
   setConfigWritten,
 }) => {
@@ -342,16 +425,22 @@ export const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
       ...(value.trim().length > 0 ? { apiKey: value.trim() } : {}),
     };
     writeConfig(newConfig, target);
-    setConfigWritten(true);
-    setStep(4);
+
+    if (onComplete) {
+      onComplete(newConfig);
+    } else {
+      setConfigWritten?.(true);
+      setStep?.(4);
+    }
   };
 
   return (
     <Box flexDirection="column">
+      {title && <Text color="green" bold>{title}</Text>}
       <Text>
         {canUseResolvedAuth ? 'Optional API Key' : 'Enter API Key'} for {provider?.name || selectedProviderId}:
       </Text>
-      {provider?.headers && Object.keys(provider.headers).length > 0 && (
+      {showProviderHeaders && provider?.headers && Object.keys(provider.headers).length > 0 && (
         <Text dimColor>
           This provider can authenticate with configured headers or environment variables.
         </Text>
@@ -391,23 +480,15 @@ export const ConfigureComponent = () => {
 
   if (step === 0) {
     return (
-      <Box flexDirection="column">
-        <Text>Choose where to configure ProtoAgent:</Text>
-        <Box marginTop={1}>
-          <Select
-            options={[
-              { label: `Project config — ${getProjectRuntimeConfigPath()}`, value: 'project' },
-              { label: `Shared user config — ${getUserRuntimeConfigPath()}`, value: 'user' },
-            ]}
-            onChange={(value) => {
-              setTarget(value as InitConfigTarget);
-              const existing = readConfig(value as InitConfigTarget);
-              setExistingConfig(existing);
-              setStep(existing ? 1 : 2);
-            }}
-          />
-        </Box>
-      </Box>
+      <TargetSelection
+        subtitle="Choose where to configure ProtoAgent:"
+        onSelect={(value) => {
+          setTarget(value);
+          const existing = readConfig(value);
+          setExistingConfig(existing);
+          setStep(existing ? 1 : 2);
+        }}
+      />
     );
   }
 

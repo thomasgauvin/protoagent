@@ -2,6 +2,8 @@
 
 This is the part where the CLI stops being a terminal shell and starts talking to a model. By the end, your app will stream responses from OpenAI in real time.
 
+To keep things simple and remove abstractions, we're using the OpenAI SDK directly. We'll be supporting other providers such as [Google's Gemini](https://ai.google.dev/gemini-api/docs/openai) and [Anthropic's Claude](https://platform.claude.com/docs/en/api/openai-sdk) models using their OpenAI SDK compatibility capabilities. 
+
 Your target snapshot is `protoagent-tutorial-again-part-2`.
 
 ## What you are building
@@ -211,6 +213,7 @@ The streaming loop is the important part. Instead of waiting for the full respon
 Set your API key and launch:
 
 ```bash
+npm install
 npm run dev
 ```
 
@@ -220,6 +223,23 @@ Ask something simple. You should see:
 - "Agent is thinking..." shows briefly
 - The assistant response streams in character by character
 - Errors show inline if the API key is wrong or the call fails
+
+```
+ █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+ █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █ 
+
+
+A simple, hackable coding agent CLI.
+
+> hi
+Hello! How can I assist you today?
+> how are you?
+I’m just a program, so I don’t have feelings, but I’m here and ready to help you! What do you need assistance
+with today?
+╭─────────────────────────────────────────────────────────────╮
+│ > Type your message...                                      │
+╰─────────────────────────────────────────────────────────────╯
+```
 
 ## Snapshot
 

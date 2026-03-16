@@ -42,8 +42,7 @@ Here's how the terminal UI is laid out (showcasing all options at once for demon
 ├─────────────────────────────────────────┤
 │  tokens: 1234↓ 56↑ | ctx: 12% | $0.02   │  static-ish, updates after each turn
 ├─────────────────────────────────────────┤
-│  /clear — Clear conversation...         │  dynamic, shown when typing /
-│  /quit  — Exit ProtoAgent               │
+│  /quit  — Exit ProtoAgent               │  dynamic, shown when typing /
 ├─────────────────────────────────────────┤
 │  ⠹ Running read_file...                 │  dynamic, shown while loading
 ├─────────────────────────────────────────┤
@@ -59,18 +58,18 @@ Here's how the terminal UI is laid out (showcasing all options at once for demon
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, Static, useApp, useInput, useStdout } from 'ink';
 import { LeftBar } from './components/LeftBar.js';
-import { TextInput, Select, PasswordInput } from '@inkjs/ui';
+import { TextInput, Select } from '@inkjs/ui';
 import { OpenAI } from 'openai';
-import { readConfig, writeConfig, resolveApiKey, type Config } from './config.js';
-import { loadRuntimeConfig } from './runtime-config.js';
-import { getAllProviders, getProvider, getModelPricing, getRequestDefaultParams } from './providers.js';
+import { readConfig, writeConfig, writeInitConfig, resolveApiKey, type Config, type InitConfigTarget, TargetSelection, ModelSelection, ApiKeyInput } from './config.js';
+import { loadRuntimeConfig, getActiveRuntimeConfigPath } from './runtime-config.js';
+import { getProvider, getModelPricing, getRequestDefaultParams } from './providers.js';
 import {
   runAgenticLoop,
   initializeMessages,
   type Message,
   type AgentEvent,
 } from './agentic-loop.js';
-import { setDangerouslyAcceptAll, setApprovalHandler, clearApprovalHandler } from './tools/index.js';
+import { setDangerouslySkipPermissions, setApprovalHandler, clearApprovalHandler } from './tools/index.js';
 import type { ApprovalRequest, ApprovalResponse } from './utils/approval.js';
 import { setLogLevel, LogLevel, initLogFile, logger } from './utils/logger.js';
 import {
@@ -82,7 +81,7 @@ import {
   type Session,
 } from './sessions.js';
 import { clearTodos, getTodosForSession, setTodosForSession } from './tools/todo.js';
-import { initializeMcp, closeMcp } from './mcp.js';
+import { initializeMcp, closeMcp, getConnectedMcpServers } from './mcp.js';
 import { generateSystemPrompt } from './system-prompt.js';
 
 interface InlineThreadError {
@@ -111,24 +110,29 @@ function printBanner(addStatic: AddStaticFn): void {
   const green = '\x1b[38;2;9;164;105m';
   const reset = '\x1b[0m';
   addStatic([
-    '',
     `${green}█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀${reset}`,
     `${green}█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █${reset}`,
     '',
   ].join('\n'));
 }
 
-function printRuntimeHeader(addStatic: AddStaticFn, config: Config, session: Session | null, logFilePath: string | null, dangerouslyAcceptAll: boolean): void {
+function printRuntimeHeader(addStatic: AddStaticFn, config: Config, session: Session | null, dangerouslySkipPermissions: boolean): void {
   const provider = getProvider(config.provider);
-  const grey = '\x1b[90m';
-  const reset = '\x1b[0m';
-  let line = `${grey}Model: ${provider?.name || config.provider} / ${config.model}`;
-  if (dangerouslyAcceptAll) line += ' (auto-approve all)';
-  if (session) line += ` | Session: ${session.id.slice(0, 8)}`;
-  line += reset;
-  let text = `${line}\n`;
+  let line = `Model: ${provider?.name || config.provider} / ${config.model}`;
+  if (dangerouslySkipPermissions) line += ' (auto-approve all)';
+  if (session) line += ` | Session: ${session.id}`;
+  let text = `\x1b[2m${line}\x1b[0m\n`;
+  const logFilePath = logger.getLogFilePath();
   if (logFilePath) {
-    text += `${grey}Debug logs: ${logFilePath}${reset}\n`;
+    text += `\x1b[2mDebug logs: ${logFilePath}\x1b[0m\n`;
+  }
+  const configPath = getActiveRuntimeConfigPath();
+  if (configPath) {
+    text += `\x1b[2mConfig file: ${configPath}\x1b[0m\n`;
+  }
+  const mcpServers = getConnectedMcpServers();
+  if (mcpServers.length > 0) {
+    text += `\x1b[2mMCPs: ${mcpServers.join(', ')}\x1b[0m\n`;
   }
   text += '\n';
   addStatic(text);
@@ -153,6 +157,69 @@ function printMessageToScrollback(addStatic: AddStaticFn, role: 'user' | 'assist
     return;
   }
   addStatic(`${normalized}\n\n`);
+}
+
+/**
+ * Format a sub-agent tool call into a human-readable activity string.
+ * Shows what the sub-agent is actually doing, e.g. "Sub-agent reading file package.json"
+ */
+function formatSubAgentActivity(tool: string, args?: Record<string, unknown>): string {
+  if (!args || typeof args !== 'object') {
+    return `Sub-agent running ${tool}...`;
+  }
+
+  const argEntries = Object.entries(args);
+  if (argEntries.length === 0) {
+    return `Sub-agent running ${tool}...`;
+  }
+
+  // Extract the most meaningful argument based on the tool
+  let detail = '';
+  const firstValue = argEntries[0]?.[1];
+
+  switch (tool) {
+    case 'read_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'write_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'edit_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'list_directory':
+      detail = typeof args.directory_path === 'string' ? args.directory_path : '(current)';
+      break;
+    case 'search_files':
+      detail = typeof args.search_term === 'string' ? `"${args.search_term}"` : '';
+      break;
+    case 'bash':
+      detail = typeof args.command === 'string'
+        ? args.command.split(/\s+/).slice(0, 3).join(' ') + (args.command.split(/\s+/).length > 3 ? '...' : '')
+        : '';
+      break;
+    case 'todo_write':
+      detail = Array.isArray(args.todos) ? `${args.todos.length} task(s)` : '';
+      break;
+    case 'webfetch':
+      detail = typeof args.url === 'string' ? new URL(args.url).hostname : '';
+      break;
+    case 'sub_agent':
+      // Nested sub-agent
+      detail = 'nested task...';
+      break;
+    default:
+      // Use the first argument value as fallback
+      detail = typeof firstValue === 'string'
+        ? firstValue.length > 30 ? firstValue.slice(0, 30) + '...' : firstValue
+        : '';
+  }
+
+  if (detail) {
+    return `Sub-agent ${tool.replace(/_/g, ' ')}: ${detail}`;
+  }
+
+  return `Sub-agent running ${tool}...`;
 }
 
 function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[]): void {  for (const message of messages) {
@@ -189,14 +256,13 @@ function clipToRows(text: string, terminalRows: number): string {
 
 // ─── Props ───
 export interface AppProps {
-  dangerouslyAcceptAll?: boolean;
+  dangerouslySkipPermissions?: boolean;
   logLevel?: string;
   sessionId?: string;
 }
 
 // ─── Available slash commands ───
 const SLASH_COMMANDS = [
-  { name: '/clear', description: 'Clear conversation and start fresh' },
   { name: '/help', description: 'Show all available commands' },
   { name: '/quit', description: 'Exit ProtoAgent' },
   { name: '/exit', description: 'Alias for /quit' },
@@ -205,7 +271,6 @@ const SLASH_COMMANDS = [
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const HELP_TEXT = [
   'Commands:',
-  '  /clear  - Clear conversation and start fresh',
   '  /help   - Show this help',
   '  /quit   - Exit ProtoAgent',
   '  /exit   - Alias for /quit',
@@ -323,20 +388,22 @@ const UsageDisplay: React.FC<{
     <Box marginTop={1}>
       {usage && (
         <Box>
-          <Box backgroundColor="#042f2e" paddingX={1}>
-            <Text color="grey">tokens: </Text>
-            <Text color="grey" bold>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
-          </Box>
           <Box backgroundColor="#064e3b" paddingX={1}>
-            <Text color="grey">ctx: </Text>
-            <Text color="grey" bold>{usage.contextPercent.toFixed(0)}%</Text>
+            <Text color="white">tokens: </Text>
+            <Text color="white" bold>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
+          </Box>
+          <Box backgroundColor="#065f46" paddingX={1}>
+            <Text color="white">ctx: </Text>
+            <Text color="white" bold>{usage.contextPercent.toFixed(0)}%</Text>
           </Box>
         </Box>
       )}
-      <Box backgroundColor="#042f2e" paddingX={1}>
-        <Text color="grey">cost: </Text>
-        <Text color="grey" bold>${totalCost.toFixed(4)}</Text>
-      </Box>
+      {totalCost > 0 && (
+        <Box backgroundColor="#064e3b" paddingX={1}>
+          <Text color="black">cost: </Text>
+          <Text color="black" bold>${totalCost.toFixed(4)}</Text>
+        </Box>
+      )}
     </Box>
   );
 };
@@ -345,64 +412,60 @@ const UsageDisplay: React.FC<{
 const InlineSetup: React.FC<{
   onComplete: (config: Config) => void;
 }> = ({ onComplete }) => {
-  const [setupStep, setSetupStep] = useState<'provider' | 'api_key'>('provider');
+  const [setupStep, setSetupStep] = useState<'target' | 'provider' | 'api_key'>('target');
+  const [target, setTarget] = useState<InitConfigTarget>('project');
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModelId, setSelectedModelId] = useState('');
-  const [apiKeyError, setApiKeyError] = useState('');
 
-  const providerItems = getAllProviders().flatMap((provider) =>
-    provider.models.map((model) => ({
-      label: `${provider.name} - ${model.name}`,
-      value: `${provider.id}:::${model.id}`,
-    })),
-  );
+  const handleModelSelect = (providerId: string, modelId: string) => {
+    setSelectedProviderId(providerId);
+    setSelectedModelId(modelId);
+    setSetupStep('api_key');
+  };
 
-  if (setupStep === 'provider') {
+  const handleConfigComplete = (config: Config) => {
+    writeInitConfig(target);
+    writeConfig(config, target);
+    onComplete(config);
+  };
+
+  if (setupStep === 'target') {
     return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="yellow" bold>First-time setup</Text>
-        <Text dimColor>Select a provider and model:</Text>
-        <Box marginTop={1}>
-          <Select
-            options={providerItems.map((item) => ({ value: item.value, label: item.label }))}
-            onChange={(value: string) => {
-              const [providerId, modelId] = value.split(':::');
-              setSelectedProviderId(providerId);
-              setSelectedModelId(modelId);
-              setSetupStep('api_key');
-            }}
-          />
-        </Box>
+      <Box marginTop={1}>
+        <TargetSelection
+          title="First-time setup"
+          subtitle="Create a ProtoAgent runtime config:"
+          onSelect={(value) => {
+            setTarget(value);
+            setSetupStep('provider');
+          }}
+        />
       </Box>
     );
   }
 
-  const provider = getProvider(selectedProviderId);
-  const hasResolvedAuth = Boolean(resolveApiKey({ provider: selectedProviderId, apiKey: undefined }));
+  if (setupStep === 'provider') {
+    return (
+      <Box marginTop={1}>
+        <ModelSelection
+          setSelectedProviderId={setSelectedProviderId}
+          setSelectedModelId={setSelectedModelId}
+          onSelect={handleModelSelect}
+          title="First-time setup"
+        />
+      </Box>
+    );
+  }
 
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text color="yellow" bold>First-time setup</Text>
-      <Text dimColor>
-        Selected: {provider?.name} / {selectedModelId}
-      </Text>
-      <Text>{hasResolvedAuth ? 'Optional API key:' : 'Enter your API key:'}</Text>
-      {apiKeyError && <Text color="red">{apiKeyError}</Text>}
-      <PasswordInput
-        placeholder={hasResolvedAuth ? 'Press enter to keep resolved auth' : `Paste your ${provider?.apiKeyEnvVar || 'API'} key`}
-        onSubmit={(value) => {
-          if (value.trim().length === 0 && !hasResolvedAuth) {
-            setApiKeyError('API key cannot be empty.');
-            return;
-          }
-          const newConfig: Config = {
-            provider: selectedProviderId,
-            model: selectedModelId,
-            ...(value.trim().length > 0 ? { apiKey: value.trim() } : {}),
-          };
-          writeConfig(newConfig, 'project');
-          onComplete(newConfig);
-        }}
+    <Box marginTop={1}>
+      <ApiKeyInput
+        selectedProviderId={selectedProviderId}
+        selectedModelId={selectedModelId}
+        target={target}
+        title="First-time setup"
+        showProviderHeaders={false}
+        onComplete={handleConfigComplete}
       />
     </Box>
   );
@@ -410,7 +473,7 @@ const InlineSetup: React.FC<{
 
 // ─── Main App ───
 export const App: React.FC<AppProps> = ({
-  dangerouslyAcceptAll = false,
+  dangerouslySkipPermissions = false,
   logLevel,
   sessionId,
 }) => {
@@ -453,7 +516,6 @@ export const App: React.FC<AppProps> = ({
   const [threadErrors, setThreadErrors] = useState<InlineThreadError[]>([]);
   const [initialized, setInitialized] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
-  const [logFilePath, setLogFilePath] = useState<string | null>(null);
 
   // Input reset key — incremented on submit to force TextInput remount and clear
   const [inputResetKey, setInputResetKey] = useState(0);
@@ -491,7 +553,6 @@ export const App: React.FC<AppProps> = ({
 
   const didPrintIntroRef = useRef(false);
   const printedThreadErrorIdsRef = useRef<Set<string>>(new Set());
-  const printedLogPathRef = useRef<string | null>(null);
 
   // ─── Post-config initialization (reused after inline setup) ───
 
@@ -518,7 +579,7 @@ export const App: React.FC<AppProps> = ({
         setCompletionMessages(loadedSession.completionMessages);
         if (!didPrintIntroRef.current) {
           printBanner(addStatic);
-          printRuntimeHeader(addStatic, loadedConfig, loadedSession, logFilePath, dangerouslyAcceptAll);
+          printRuntimeHeader(addStatic, loadedConfig, loadedSession, dangerouslySkipPermissions);
           replayMessagesToScrollback(addStatic, loadedSession.completionMessages);
           didPrintIntroRef.current = true;
         }
@@ -538,14 +599,14 @@ export const App: React.FC<AppProps> = ({
       setSession(newSession);
       if (!didPrintIntroRef.current) {
         printBanner(addStatic);
-        printRuntimeHeader(addStatic, loadedConfig, newSession, logFilePath, dangerouslyAcceptAll);
+        printRuntimeHeader(addStatic, loadedConfig, newSession, dangerouslySkipPermissions);
         didPrintIntroRef.current = true;
       }
     }
 
     setNeedsSetup(false);
     setInitialized(true);
-  }, [dangerouslyAcceptAll, logFilePath, sessionId, addStatic]);
+  }, [dangerouslySkipPermissions, sessionId, addStatic]);
 
   // ─── Initialization ───
 
@@ -568,13 +629,7 @@ export const App: React.FC<AppProps> = ({
     }
   }, [error, addStatic]);
 
-  useEffect(() => {
-    if (!didPrintIntroRef.current || !logFilePath || printedLogPathRef.current === logFilePath) {
-      return;
-    }
-    printedLogPathRef.current = logFilePath;
-    addStatic(`Debug logs: ${logFilePath}\n\n`);
-  }, [logFilePath, addStatic]);
+
 
   useEffect(() => {
     for (const threadError of threadErrors) {
@@ -593,17 +648,16 @@ export const App: React.FC<AppProps> = ({
         const level = LogLevel[logLevel.toUpperCase() as keyof typeof LogLevel];
         if (level !== undefined) {
           setLogLevel(level);
-          const logPath = initLogFile();
-          setLogFilePath(logPath);
+          initLogFile();
 
           logger.info(`ProtoAgent started with log level: ${logLevel}`);
-          logger.info(`Log file: ${logPath}`);
+          logger.info(`Log file: ${logger.getLogFilePath()}`);
         }
       }
 
       // Set global approval mode
-      if (dangerouslyAcceptAll) {
-        setDangerouslyAcceptAll(true);
+      if (dangerouslySkipPermissions) {
+        setDangerouslySkipPermissions(true);
       }
 
       // Register interactive approval handler
@@ -667,23 +721,6 @@ export const App: React.FC<AppProps> = ({
         } catch (err: any) {
           setError(`Failed to save session before exit: ${err.message}`);
         }
-        return true;
-      case '/clear':
-        // Re-initialize messages with just the system prompt
-        initializeMessages().then((msgs) => {
-          setCompletionMessages(msgs);
-          setHelpMessage(null);
-          setLastUsage(null);
-          setTotalCost(0);
-          setThreadErrors([]);
-          if (session) {
-            const newSession = createSession(config!.model, config!.provider);
-            clearTodos(session.id);
-            clearTodos(newSession.id);
-            newSession.completionMessages = msgs;
-            setSession(newSession);
-          }
-        });
         return true;
       case '/expand':
       case '/collapse':
@@ -770,12 +807,16 @@ export const App: React.FC<AppProps> = ({
             }
             case 'sub_agent_iteration':
               if (event.subAgentTool) {
-                const { tool, status } = event.subAgentTool;
+                const { tool, status, args } = event.subAgentTool;
                 if (status === 'running') {
-                  setActiveTool(`sub_agent → ${tool}`);
+                  setActiveTool(formatSubAgentActivity(tool, args));
                 } else {
                   setActiveTool(null);
                 }
+              }
+              // Handle sub-agent usage update
+              if (event.subAgentUsage) {
+                setTotalCost((prev) => prev + event.subAgentUsage!.cost);
               }
               break;
             case 'tool_call':
@@ -1015,8 +1056,8 @@ export const App: React.FC<AppProps> = ({
       )}
 
       {threadErrors.filter((threadError) => threadError.transient).map((threadError) => (
-        <LeftBar key={`thread-error-${threadError.id}`} color="red" marginBottom={1}>
-          <Text color="red">Error: {threadError.message}</Text>
+        <LeftBar key={`thread-error-${threadError.id}`} color="gray" marginBottom={1}>
+          <Text color="gray">{threadError.message}</Text>
         </LeftBar>
       ))}
 

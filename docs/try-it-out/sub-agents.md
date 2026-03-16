@@ -17,25 +17,11 @@ This is useful for repo exploration, focused research, and independent subtasks.
 
 ## Implementation details
 
-- `max_iterations` defaults to `30`
+- `max_iterations` defaults to `100`
 - child runs use the normal tool registry from `getAllTools()`
 - `sub_agent` is not re-exposed recursively inside the child (the child cannot spawn its own sub-agents)
-- child TODOs use an ephemeral session ID (`sub-agent-<uuid>`) and are cleared afterward
+- child TODOs use an ephemeral session ID (`sub-agent-<uuid>`) and are **automatically cleared on completion**
 - child history is not persisted as a normal user-facing session
 - the parent receives a progress callback for each tool call in the child (`running`, `done`, `error` status per iteration)
 
-## Abort behaviour
-
-Pressing Escape aborts both the parent loop and any in-flight sub-agent. The abort signal is passed through to the sub-agent's API request and to each tool call it runs. When a sub-agent is interrupted, the spinner shows `sub_agent → <tool>` until the signal is acknowledged and the child stops.
-
-## UI progress display
-
-Sub-agent tool calls are reported as `sub_agent_iteration` events, which are distinct from the parent's own `tool_call` events. This keeps the parent's tool-call history clean — the sub-agent's intermediate steps only appear in the spinner (`Running sub_agent → bash...`) and are not added to the parent conversation as fake tool calls.
-
-## Approvals
-
-Sub-agents share the same process-level tool handlers, so writes, edits, and non-safe shell commands can still surface the normal approval UI.
-
-## Why use them
-
-Sub-agents reduce context pollution. A child can do the noisy work of exploring files and tools, while the parent keeps only the distilled result.
+See the tutorial for implementing sub-agents: [Part 12 - Sub-agents](/build-your-own/part-12)

@@ -39,47 +39,45 @@ The snapshots are the verification path. If a part says you should match `protoa
 
 You'll want:
 
-- Node.js 20+
+- Node.js 22+
 - npm
-- an API key for one of the supported providers (OpenAI, Anthropic, Google, or Cerebras)
+- an API key for one of the supported providers (OpenAI, Anthropic, or Google)
 - basic TypeScript knowledge
 - a terminal you are comfortable working in
-
-You should also be willing to build this in order. The later parts assume the earlier wiring is already in place.
 
 ## The parts
 
 ### Foundation
 
-1. **[Scaffolding](/tutorial/part-1)** — Commander, Ink, and the basic CLI shell
-2. **[AI Integration](/tutorial/part-2)** — OpenAI SDK streaming and message flow
-3. **[Configuration Management](/tutorial/part-3)** — provider/model selection, persisted config, and API key resolution
+1. **[Scaffolding](/build-your-own/part-1)** — Commander, Ink, and the basic CLI shell
+2. **[AI Integration](/build-your-own/part-2)** — OpenAI SDK streaming and message flow
+3. **[Configuration Management](/build-your-own/part-3)** — provider/model selection, persisted config, and API key resolution
 
 ### Core runtime
 
-4. **[The Agentic Loop](/tutorial/part-4)** — the tool-use loop, streaming events, retries, and termination
-5. **[Core Tools: Files, TODOs, and Web Fetching](/tutorial/part-5)** — path validation, approval system, file tools, TODO tracking, and web fetching
-6. **[Shell Commands & Approvals](/tutorial/part-6)** — `bash` tool with three-tier security (hard-blocked, auto-approved, requires approval)
-7. **[System Prompt & Runtime Policy](/tutorial/part-7)** — dynamic system prompt with directory tree and tool descriptions
-8. **[Compaction & Cost Tracking](/tutorial/part-8)** — token estimation, cost display, logger, and long-context compaction
+4. **[The Agentic Loop](/build-your-own/part-4)** — the tool-use loop, streaming events, retries, and termination
+5. **[Core Tools: Files, TODOs, and Web Fetching](/build-your-own/part-5)** — path validation, approval system, file tools, TODO tracking, and web fetching
+6. **[Shell Commands & Approvals](/build-your-own/part-6)** — `bash` tool with three-tier security (hard-blocked, auto-approved, requires approval)
+7. **[System Prompt & Runtime Policy](/build-your-own/part-7)** — dynamic system prompt with directory tree and tool descriptions
+8. **[Compaction & Cost Tracking](/build-your-own/part-8)** — token estimation, cost display, logger, and long-context compaction
 
 ### Persistence and reuse
 
-9. **[Skills](/tutorial/part-9)** — `SKILL.md` discovery, validation, activation, and catalog generation
-10. **[Sessions](/tutorial/part-10)** — persisted conversations, TODO restore, and resume flows
+9. **[Skills & AGENTS.md](/build-your-own/part-9)** — `SKILL.md` and `AGENTS.md` discovery, validation, activation, and catalog generation
+10. **[Sessions](/build-your-own/part-10)** — persisted conversations, TODO restore, and resume flows
 
 ### Extensibility
 
-11. **[MCP Integration](/tutorial/part-11)** — runtime config, MCP client for stdio and HTTP servers, dynamic tool registration
-12. **[Sub-agents](/tutorial/part-12)** — isolated child agent execution for context-heavy tasks
+11. **[MCP Integration](/build-your-own/part-11)** — runtime config, MCP client for stdio and HTTP servers, dynamic tool registration
+12. **[Sub-agents](/build-your-own/part-12)** — isolated child agent execution for context-heavy tasks
 
 ### UI and operations
 
-13. **[Polish, Rendering & Logging](/tutorial/part-13)** — components, formatted output, grouped tool rendering, slash commands, fuzzy edit matching, and the final App
+13. **[Polish, Rendering & Logging](/build-your-own/part-13)** — components, formatted output, grouped tool rendering, slash commands, fuzzy edit matching, and the final App
 
 ## Philosophy
 
-ProtoAgent is intentionally small, but it is not a toy. It has persisted sessions, TODO state, web fetching, skills, MCP, sub-agents, compaction, and a rich terminal UI.
+ProtoAgent is intentionally small. It has persisted sessions, TODO state, web fetching, skills, MCP, sub-agents, compaction, and a rich terminal UI.
 
 That is exactly why this tutorial exists. Once you understand the core loop and the runtime boundaries, the rest of the codebase stops feeling mysterious.
 

@@ -10,6 +10,7 @@ export interface RuntimeModelConfig {
   contextWindow?: number;
   inputPricePerMillion?: number;
   outputPricePerMillion?: number;
+  cachedPricePerMillion?: number;
   defaultParams?: Record<string, unknown>;
 }
 

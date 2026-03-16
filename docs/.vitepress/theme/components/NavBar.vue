@@ -5,8 +5,8 @@ import { useRouter } from 'vitepress'
 const router = useRouter()
 
 const navLinks = [
-  { text: 'GUIDE', link: '/guide/getting-started', match: '/guide/' },
-  { text: 'TUTORIAL', link: '/tutorial/', match: '/tutorial/' },
+  { text: 'TRY IT OUT', link: '/try-it-out/getting-started', match: '/try-it-out/' },
+  { text: 'BUILD YOUR OWN', link: '/build-your-own/', match: '/build-your-own/' },
   { text: 'REFERENCE', link: '/reference/spec', match: '/reference/' },
 ]
 

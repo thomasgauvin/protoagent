@@ -5,14 +5,14 @@ import {
   clearSessionApprovals,
   requestApproval,
   setApprovalHandler,
-  setDangerouslyAcceptAll,
+  setDangerouslySkipPermissions,
 } from '../src/utils/approval.js';
 import { runBash } from '../src/tools/bash.js';
 
 test('approval and bash security controls', async (t) => {
   clearApprovalHandler();
   clearSessionApprovals();
-  setDangerouslyAcceptAll(false);
+  setDangerouslySkipPermissions(false);
 
   await t.test('approval fails closed when no handler is registered', async () => {
     clearApprovalHandler();
@@ -97,5 +97,5 @@ test('approval and bash security controls', async (t) => {
 
   clearApprovalHandler();
   clearSessionApprovals();
-  setDangerouslyAcceptAll(false);
+  setDangerouslySkipPermissions(false);
 });

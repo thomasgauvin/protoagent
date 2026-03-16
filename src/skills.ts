@@ -73,6 +73,7 @@ function isValidSkillName(name: string): boolean {
   return name.length >= 1 && name.length <= 64 && VALID_SKILL_NAME.test(name);
 }
 
+// normalizeMetadata ensures the metadata field is an object with string values, or undefined if not provided or invalid
 function normalizeMetadata(value: unknown): Record<string, string> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
 
@@ -134,7 +135,7 @@ async function loadSkillFromDirectory(skillDir: string, source: 'project' | 'use
     const rawContent = await fs.readFile(location, 'utf8');
     const parsed = parseFrontmatter(rawContent);
     const skill = validateSkill(parsed, skillDir, source, location);
-    logger.debug(`Loaded skill: ${skill.name} (${source})`, { location });
+    logger.info(`Loaded skill: ${skill.name} (${source})`, { location });
     return skill;
   } catch (error) {
     logger.warn(`Skipping invalid skill at ${location}`, {

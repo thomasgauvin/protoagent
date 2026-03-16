@@ -20,6 +20,12 @@ By the end of this part you will have a working terminal app: a Commander-based 
 
 ## Step 1: `package.json`
 
+Create the file:
+
+```bash
+touch package.json
+```
+
 ```json
 {
   "name": "protoagent",
@@ -61,6 +67,12 @@ Key points:
 
 ## Step 2: `tsconfig.json`
 
+Create the file:
+
+```bash
+touch tsconfig.json
+```
+
 ```json
 {
   "compilerOptions": {
@@ -83,6 +95,12 @@ Key points:
 The `"jsx": "react-jsx"` setting tells TypeScript to transform JSX without requiring explicit React imports. This is the modern approach supported in React 17+.
 
 ## Step 3: `src/cli.tsx`
+
+Create the file:
+
+```bash
+mkdir -p src && touch src/cli.tsx
+```
 
 This file does three things: reads the package version, creates the Commander program, and renders the Ink app.
 
@@ -119,6 +137,12 @@ render(<App options={options} />);
 Note the import path: `./App.js`, not `./App.tsx`. When TypeScript compiles, `.tsx` files become `.js` files in `dist/`, so all imports must reference the compiled extension.
 
 ## Step 4: `src/App.tsx`
+
+Create the file:
+
+```bash
+touch src/App.tsx
+```
 
 The first version of `App` is just a terminal chat shell — no AI, no tools. It keeps an array of messages and an input box. When you submit text, it appears in the message area.
 
@@ -209,6 +233,20 @@ You should see:
 - A text input at the bottom
 - Submitted messages appear in the message area
 - `Ctrl-C` exits the app
+
+```
+ █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+ █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █ 
+
+
+A simple, hackable coding agent CLI.
+
+> hi
+> how are you
+╭─────────────────────────────────────────────────────────────╮
+│ > Type your message...                                      │
+╰─────────────────────────────────────────────────────────────╯
+```
 
 ## Snapshot
 

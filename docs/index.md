@@ -9,10 +9,10 @@ hero:
   actions:
     - theme: brand
       text: Build Your Own
-      link: /tutorial/
+      link: /build-your-own/
     - theme: alt
       text: Try it out
-      link: /guide/getting-started
+      link: /try-it-out/getting-started
 
 features:
   - title: CORE AGENTIC LOOP

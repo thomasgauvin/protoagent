@@ -12,6 +12,12 @@ Starting from Part 6, you add:
 
 ## Step 1: Create `src/system-prompt.ts`
 
+Create the file:
+
+```bash
+touch src/system-prompt.ts
+```
+
 This module builds the system prompt dynamically from the runtime environment:
 
 - Discovers the working directory and project name
@@ -145,18 +151,6 @@ export async function initializeMessages(): Promise<Message[]> {
 ```
 
 The rest of the agentic loop stays the same as Part 4. The only change is this one function.
-
-## Step 3: Update `src/tools/index.ts`
-
-Add a `getAllTools()` function so the system prompt can read the current tool list. This is needed because the prompt generator imports from the tool registry.
-
-```typescript
-// Add to src/tools/index.ts, after the tools array:
-
-export function getAllTools() {
-  return [...tools];
-}
-```
 
 ## Verification
 

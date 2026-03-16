@@ -12,12 +12,12 @@ test.afterEach(() => {
   resetRuntimeConfigForTests();
 });
 
-test('resolveApiKey prefers config value over environment fallback', () => {
+test('resolveApiKey prefers environment variable over config value', () => {
   process.env.OPENAI_API_KEY = 'env-secret';
 
   const apiKey = resolveApiKey({ provider: 'openai', apiKey: 'config-secret' });
 
-  assert.equal(apiKey, 'config-secret');
+  assert.equal(apiKey, 'env-secret');
 });
 
 test('resolveApiKey falls back to provider environment variable', () => {
@@ -87,7 +87,6 @@ test('getActiveRuntimeConfigPath prefers project config over user config', () =>
 
 test('getInitConfigPath returns project-local protoagent.jsonc path', () => {
   const projectPath = getInitConfigPath('project', '/tmp/demo-project');
-
   assert.equal(projectPath, path.join('/tmp/demo-project', '.protoagent', 'protoagent.jsonc'));
 });
 
@@ -102,8 +101,8 @@ test('writeInitConfig creates project runtime config and reports the path', asyn
     assert.ok(fs.existsSync(result.path));
 
     const content = fs.readFileSync(result.path, 'utf8');
-    assert.ok(content.includes('"providers": {}'));
-    assert.ok(content.includes('"servers": {}'));
+    assert.ok(content.includes('"providers":'));
+    assert.ok(content.includes('"servers":'));
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
@@ -138,8 +137,8 @@ test('writeInitConfig can overwrite an existing file when forced', async () => {
 
     assert.equal(result.status, 'overwritten');
     const content = fs.readFileSync(configPath, 'utf8');
-    assert.ok(content.includes('"providers": {}'));
-    assert.ok(content.includes('"servers": {}'));
+    assert.ok(content.includes('"providers":'));
+    assert.ok(content.includes('"servers":'));
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

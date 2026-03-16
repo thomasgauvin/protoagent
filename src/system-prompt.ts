@@ -6,6 +6,7 @@
  *  - Working directory and project structure
  *  - Tool descriptions (auto-generated from tool schemas)
  *  - Skills catalog (loaded progressively from skill directories)
+ *  - AGENTS.md content (custom instructions for the agent)
  *  - Guidelines for file operations, TODO tracking, etc.
  */
 
@@ -13,6 +14,40 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getAllTools } from './tools/index.js';
 import { buildSkillsCatalogSection, initializeSkillsSupport } from './skills.js';
+import { getActiveRuntimeConfigPath } from './runtime-config.js';
+
+/**
+ * Load AGENTS.md content from cwd and parent directories.
+ *
+ * AGENTS.md (https://agents.md/) is a simple, open format for guiding coding agents.
+ * It's like a README for agents — a dedicated place to give AI coding tools the
+ * context they need to work on a project.
+ *
+ * The lookup is hierarchical:
+ *  - Checks cwd, then parent directories up to the filesystem root
+ *  - First AGENTS.md found wins
+ *  - Returns null if no AGENTS.md is found
+ */
+async function loadAgentsMd(): Promise<{ content: string; path: string } | null> {
+  let currentDir = path.resolve('.');
+
+  while (true) {
+    const agentsPath = path.join(currentDir, 'AGENTS.md');
+    try {
+      await fs.access(agentsPath);
+      const content = await fs.readFile(agentsPath, 'utf-8');
+      return { content, path: agentsPath };
+    } catch {
+      // File doesn't exist here — check parent
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) break; // Reached filesystem root
+    currentDir = parentDir;
+  }
+
+  return null;
+}
 
 /** Build a filtered directory tree (depth 3, excludes noise). */
 async function buildDirectoryTree(dirPath = '.', depth = 0, maxDepth = 3): Promise<string> {
@@ -73,6 +108,12 @@ export async function generateSystemPrompt(): Promise<string> {
   const skills = await initializeSkillsSupport();
   const toolDescriptions = generateToolDescriptions();
   const skillsSection = buildSkillsCatalogSection(skills);
+  const configPath = getActiveRuntimeConfigPath();
+  const agentsMd = await loadAgentsMd();
+
+  const agentsMdSection = agentsMd
+    ? `\nAGENTS.md INSTRUCTIONS\n\nThe following instructions are from the AGENTS.md file at: ${agentsMd.path}\n\n${agentsMd.content}\n`
+    : '';
 
   return `You are ProtoAgent, a coding assistant with file system and shell command capabilities.
 Your job is to help the user complete coding tasks in their project. You must be absolutely careful and diligent in your work, and follow all guidelines to the letter. Always prefer thoroughness and correctness over speed. Never cut corners.
@@ -81,9 +122,16 @@ PROJECT CONTEXT
 
 Working Directory: ${cwd}
 Project Name: ${projectName}
+Configuration Path: ${configPath || 'none (using defaults)'}
 
 PROJECT STRUCTURE:
 ${tree}
+${agentsMdSection}
+PROTOAGENT DOCUMENTATION
+
+ProtoAgent is a build-your-own coding agent — a lean, readable implementation that gives you the blueprint to understand and build your own AI coding assistant.
+
+Configuration guide: https://protoagent.dev/guide/configuration
 
 AVAILABLE TOOLS
 

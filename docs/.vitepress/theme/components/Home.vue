@@ -22,20 +22,20 @@ const stats = [
 ]
 
 const terminalLines = [
-  { type: 'prompt', text: 'PROTO> read this repo and explain how the agent loop works' },
-  { type: 'dim', text: '  Reading src/agentic-loop.ts...' },
+  { type: 'dim', text: 'Model: OpenAI / gpt-5-mini' },
+  { type: 'dim', text: '[System prompt loaded]' },
   { type: 'gap', text: '' },
-  { type: 'prompt', text: 'USER> now add session resume support' },
+  { type: 'prompt', text: '> hi' },
+  { type: 'dim', text: 'Hi — how can I help you today?' },
   { type: 'gap', text: '' },
-  { type: 'dim', text: '  [PLAN] Add session persistence in src/sessions.ts' },
-  { type: 'dim', text: '  [PLAN] Wire --session into src/cli.tsx' },
-  { type: 'dim', text: '  [EXEC] Updating App state and save/load flow...' },
-  { type: 'dim', text: '  [TEST] Re-running the flow from a fresh terminal...' },
-  { type: 'dim', text: '  [TEST] Running test suite...' },
+  { type: 'prompt', text: '> create index.html with hello world' },
   { type: 'gap', text: '' },
-  { type: 'ok', text: '  [OK] sessions resume with TODO state intact' },
-  { type: 'ok', text: '  [OK] the exact resume command is printed on quit' },
-  { type: 'ok', text: '  [OK] docs updated to match the runtime' },
+  { type: 'dim', text: 'Tool: write_file({"file_path":"index.html","content":"<!doctype html>...' },
+  { type: 'gap', text: '' },
+  { type: 'ok', text: 'Successfully wrote 12 lines to index.html' },
+  { type: 'gap', text: '' },
+  { type: 'dim', text: 'Done — I created index.html with "hello world".' },
+  { type: 'dim', text: 'Would you like any styling or additional content?' },
 ]
 </script>
 
@@ -83,10 +83,17 @@ const terminalLines = [
 
       <div class="pa-terminal">
         <div class="pa-terminal-head">
-          <span>PROTOAGENT -- LIVE SESSION</span>
-          <span>NODE 22</span>
+          <span>TRY IT OUT</span>
+          <span>NPM INSTALL -G PROTOAGENT</span>
         </div>
         <div class="pa-terminal-body">
+          <div class="pa-terminal-line is-shell">$ npm i -g protoagent</div>
+          <div class="pa-terminal-line is-shell">$ protoagent</div>
+          <div class="pa-terminal-line is-gap"></div>
+          <div class="pa-terminal-line is-gap"></div>
+          <pre class="pa-terminal-banner">█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █</pre>
+          <div class="pa-terminal-line is-gap"></div>
           <div
             v-for="line in terminalLines"
             :key="`${line.type}-${line.text}`"
@@ -95,7 +102,10 @@ const terminalLines = [
           >
             {{ line.text }}
           </div>
-          <div class="pa-terminal-line is-prompt">PROTO&gt;<span class="pa-cursor"></span></div>
+          <div class="pa-terminal-line is-gap"></div>
+          <div class="pa-terminal-line is-input-line">
+            <span class="pa-input-box">Type your message...</span>
+          </div>
         </div>
       </div>
     </section>
@@ -318,6 +328,16 @@ const terminalLines = [
   overflow-wrap: anywhere;
 }
 
+.pa-terminal-banner {
+  margin: 0 0 8px;
+  color: var(--green);
+  font-family: monospace;
+  font-size: clamp(0.55rem, 0.75vw, 0.68rem);
+  line-height: 1.1;
+  text-shadow: 0 0 8px var(--green-glow), 0 0 20px rgba(114, 255, 140, 0.1);
+  overflow: hidden;
+}
+
 .pa-terminal-line.is-prompt {
   color: var(--green);
 }
@@ -326,12 +346,29 @@ const terminalLines = [
   color: var(--text-dim);
 }
 
+.pa-terminal-line.is-shell {
+  color: var(--text);
+}
+
 .pa-terminal-line.is-ok {
   color: var(--green-bright);
 }
 
 .pa-terminal-line.is-gap {
   min-height: 12px;
+}
+
+.pa-terminal-line.is-input-line {
+  color: var(--text-dim);
+}
+
+.pa-input-box {
+  display: inline-block;
+  border: 1px solid var(--border-strong);
+  background: rgba(0, 0, 0, 0.3);
+  padding: 6px 14px;
+  width: 100%;
+  border-radius: 2px;
 }
 
 .pa-cursor {

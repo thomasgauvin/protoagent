@@ -8,23 +8,43 @@ Starting from Part 5, you add:
 
 - `src/tools/bash.ts` — shell execution with security controls
 - Updated `src/tools/index.ts` — registers the bash tool
-- Updated `src/cli.tsx` — adds `--dangerously-accept-all` flag
+- Updated `src/cli.tsx` — adds `--dangerously-skip-permissions` flag
 
 ## Step 1: Create `src/tools/bash.ts`
 
+Create the file:
+
+```bash
+touch src/tools/bash.ts
+```
+
 The three-tier security model:
-1. **Hard-blocked** — dangerous commands that cannot run even with `--dangerously-accept-all`
+1. **Hard-blocked** — dangerous commands that cannot run even with `--dangerously-skip-permissions`
 2. **Auto-approved** — safe read-only commands (git status, pwd, etc.)
 3. **Requires approval** — everything else goes through the approval handler
 
 ```typescript
 // src/tools/bash.ts
 
+// SECURITY NOTICE: This tool executes shell commands with multiple safety layers:
+// 1. Hard-blocks dangerous patterns (sudo, rm -rf /, etc.) - cannot be bypassed
+// 2. Auto-approves a whitelist of safe read-only commands (git status, ls, etc.)
+// 3. Requires user approval for all other commands
+// 4. Blocks shell control operators (;, &&, ||, |, >, <, `, $(), *, ?)
+// 5. Validates paths stay within the working directory
+// 6. Enforces timeouts and output limits
+//
+// HOWEVER: Shell execution is inherently risky. Like other coding agents (Claude Code,
+// Cursor Agent, etc.), running this tool within a sandboxed environment (Docker container,
+// VM, or restricted user account) can provide higher degrees of security for untrusted code.
+// The approval system is your last line of defense - review commands carefully.
+
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { requestApproval } from '../utils/approval.js';
 import { getWorkingDirectory, validatePath } from '../utils/path-validation.js';
 
+// Define the tool schema for the bash tool
 export const bashTool = {
   type: 'function' as const,
   function: {
@@ -43,7 +63,7 @@ export const bashTool = {
   },
 };
 
-// Hard-blocked commands — these CANNOT be run, even with --dangerously-accept-all
+// Hard-blocked commands — these CANNOT be run, even with --dangerously-skip-permissions
 const DANGEROUS_PATTERNS = [
   'rm -rf /',
   'sudo',
@@ -63,6 +83,16 @@ const SAFE_COMMANDS = [
   'node --version', 'npm --version', 'python --version', 'python3 --version',
 ];
 
+// What are shell control operators? 
+// Shell control operators are characters or sequences that allow chaining or controlling the flow of commands in a shell. For example:
+// - `;` allows you to run multiple commands sequentially, like `ls; echo "done"`
+// - `&&` allows you to run the next command only if the previous one succeeded, like `mkdir new_folder && cd new_folder`
+// - `||` allows you to run the next command only if the previous one failed, like `cd non_existent_folder || echo "Failed to change directory"`
+// - `|` allows you to pipe the output of one command into another, like `ls | grep "txt"`
+// - `>` and `<` allow you to redirect output and input, like `echo "Hello" > file.txt` or `sort < unsorted.txt`
+// - `` ` `` and `$()` allow you to execute a command and use its output in another command, like ``echo "Today is `date`"`` or `echo "Today is $(date)"`
+// - `*` and `?` are wildcard characters used for pattern matching in file names, like `ls *.txt` or `ls file?.txt`
+// The presence of these operators can indicate that a command is trying to do more than just execute a single, simple instruction, which is why we check for them as a potential safety measure.
 const SHELL_CONTROL_PATTERN = /(^|[^\\])(?:;|&&|\|\||\||>|<|`|\$\(|\*|\?)/;
 
 function isDangerous(command: string): boolean {
@@ -74,6 +104,7 @@ function hasShellControlOperators(command: string): boolean {
   return SHELL_CONTROL_PATTERN.test(command);
 }
 
+// Tokenize the command while respecting quoted substrings (e.g., "ls 'my folder'")
 function tokenizeCommand(command: string): string[] | null {
   const tokens = command.match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+/g);
   return tokens && tokens.length > 0 ? tokens : null;
@@ -226,24 +257,28 @@ import { bashTool, runBash } from './bash.js';
 import { todoReadTool, todoWriteTool, readTodos, writeTodos } from './todo.js';
 import { webfetchTool, webfetch } from './webfetch.js';
 
-export { setDangerouslyAcceptAll, setApprovalHandler, clearApprovalHandler } from '../utils/approval.js';
+export { setDangerouslySkipPermissions, setApprovalHandler, clearApprovalHandler } from '../utils/approval.js';
 
 export interface ToolCallContext {
   sessionId?: string;
 }
 
-export const tools = [
-  readFileTool,
-  writeFileTool,
-  editFileTool,
-  listDirectoryTool,
-  searchFilesTool,
-  bashTool,
-  todoReadTool,
-  todoWriteTool,
-  webfetchTool,
-];
+// All tool definitions — passed to the LLM
+export function getAllTools() {
+  return [
+    readFileTool,
+    writeFileTool,
+    editFileTool,
+    listDirectoryTool,
+    searchFilesTool,
+    bashTool,
+    todoReadTool,
+    todoWriteTool,
+    webfetchTool,
+  ];
+}
 
+// Dispatch a tool call to the appropriate handler.
 export async function handleToolCall(toolName: string, args: any, context: ToolCallContext = {}): Promise<string> {
   try {
     switch (toolName) {
@@ -279,38 +314,80 @@ export async function handleToolCall(toolName: string, args: any, context: ToolC
 
 ## Step 3: Update `src/cli.tsx`
 
-Add the `--dangerously-accept-all` flag that bypasses approval prompts.
+Add the `--dangerously-skip-permissions` flag that bypasses approval prompts.
 
 ```typescript
 // src/cli.tsx
-
-#!/usr/bin/env node
+import process from 'node:process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import React from 'react';
 import { render } from 'ink';
 import { Command } from 'commander';
 import { App } from './App.js';
-import { ConfigureComponent } from './config.js';
+import { ConfigureComponent, readConfig, writeConfig } from './config.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const packageJson: { version: string } = JSON.parse(
+  readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
+);
 
 const program = new Command();
 
 program
-  .name('protoagent')
-  .description('A minimal coding agent in your terminal')
-  .option('--dangerously-accept-all', 'Auto-approve all file writes and shell commands')
+  .description('ProtoAgent — a simple, hackable coding agent CLI')
+  .version(packageJson.version)
+  .option('--dangerously-skip-permissions', 'Auto-approve all file writes and shell commands')
   .action((options) => {
-    render(
-      <App dangerouslyAcceptAll={options.dangerouslyAcceptAll} />
-    );
+    render(<App dangerouslySkipPermissions={options.dangerouslySkipPermissions || false} />);
   });
 
 program
   .command('configure')
-  .description('Set up or change your AI provider and model')
-  .action(() => {
+  .description('Configure AI model and API key settings')
+  .option('--project', 'Write <cwd>/.protoagent/protoagent.jsonc')
+  .option('--user', 'Write the shared user protoagent.jsonc')
+  .option('--provider <id>', 'Provider id to configure')
+  .option('--model <id>', 'Model id to configure')
+  .option('--api-key <key>', 'Explicit API key to store in protoagent.jsonc')
+  .action((options) => {
+    if (options.project || options.user || options.provider || options.model || options.apiKey) {
+      if (options.project && options.user) {
+        console.error('Choose only one of --project or --user.');
+        process.exitCode = 1;
+        return;
+      }
+      if (!options.provider || !options.model) {
+        console.error('Non-interactive configure requires --provider and --model.');
+        process.exitCode = 1;
+        return;
+      }
+
+      const target = options.project ? 'project' : 'user';
+      const resultPath = writeConfig(
+        {
+          provider: options.provider,
+          model: options.model,
+          ...(typeof options.apiKey === 'string' && options.apiKey.trim() ? { apiKey: options.apiKey.trim() } : {}),
+        },
+        target,
+      );
+
+      console.log('Configured ProtoAgent:');
+      console.log(resultPath);
+      const selected = readConfig(target);
+      if (selected) {
+        console.log(`${selected.provider} / ${selected.model}`);
+      }
+      return;
+    }
+
     render(<ConfigureComponent />);
   });
 
-program.parse();
+program.parse(process.argv);
 ```
 
 ## Verification
@@ -324,15 +401,19 @@ Try these prompts:
 - `Run git status and summarize it.` — auto-approved (safe command)
 - `Run npm install` — requires approval (not in safe list)
 - `List files using ls -la` — requires approval (shell operators)
-- `Run sudo rm -rf /` — hard-blocked (dangerous pattern)
 
 Then try with the bypass flag:
 
 ```bash
-npm run dev -- --dangerously-accept-all
+npm run dev -- --dangerously-skip-permissions
 ```
 
 Now non-blocked commands run without prompts.
+
+With the bypass flag, these also run without prompts:
+- `Write a file index.html with "hello world"` — auto-approved file write
+- `Edit src/config.tsx to change the default model to gpt-4o` — auto-approved file edit
+- `Create a new folder called tests` — auto-approved via bash
 
 ## Resulting snapshot
 

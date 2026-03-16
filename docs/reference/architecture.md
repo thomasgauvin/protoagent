@@ -29,7 +29,7 @@ Main implementation areas:
 - `src/agentic-loop.ts` — Tool-use loop with streaming, error recovery, sub-agent routing, compaction
 - `src/system-prompt.ts` — Dynamic prompt with directory tree, tool descriptions, skills catalog
 - `src/sub-agent.ts` — Isolated child agent runs
-- `src/config.tsx` — Config persistence, legacy format support, 5-step API key resolution, ConfigureComponent wizard
+- `src/config.tsx` — Config persistence, legacy format support, API key resolution, ConfigureComponent wizard
 - `src/providers.ts` — Provider catalog with OpenAI, Anthropic, Google Gemini, Cerebras
 - `src/sessions.ts` — Session persistence with UUID IDs and hardened permissions
 - `src/skills.ts` — SKILL.md discovery from 5 roots, YAML frontmatter parsing, validation, activation
@@ -37,13 +37,13 @@ Main implementation areas:
 - `src/runtime-config.ts` — Merged `protoagent.jsonc` from 3 locations with env var interpolation
 - `src/tools/index.ts` — 9 static tools + dynamic tool registry
 - `src/tools/*` — Individual tool implementations
-- `src/components/*` — CollapsibleBox, ConsolidatedToolMessage, FormattedMessage, ConfigDialog
-- `src/utils/logger.ts` — File-based logger with levels (ERROR/WARN/INFO/DEBUG/TRACE)
+- `src/components/*` — Ink UI components: CollapsibleBox, ConsolidatedToolMessage, FormattedMessage, Table, LeftBar, ConfigDialog
+- `src/utils/logger.ts` — File-based logger with levels (ERROR/WARN/INFO/DEBUG/TRACE) and in-memory buffer (last 100 entries)
 - `src/utils/cost-tracker.ts` — Token estimation (~4 chars/token), cost calculation
 - `src/utils/compactor.ts` — Conversation compaction at 90% context utilization
-- `src/utils/approval.ts` — Approval system: per-operation, per-session, or --dangerously-accept-all
+- `src/utils/approval.ts` — Approval system: per-operation, per-session, or --dangerously-skip-permissions
 - `src/utils/path-validation.ts` — Path security with allowedRoots for skills
-- `src/utils/file-time.ts` — Read-before-edit staleness guard
+- `src/utils/file-time.ts` — Read-before-edit staleness guard (per-session file modification tracking)
 
 ## 3. Startup Flow
 
@@ -106,7 +106,7 @@ Dynamic tools can be registered by:
 The current safety model combines:
 
 - path validation for file tools (working directory + skill roots, symlink-aware)
-- read-before-edit staleness guard (file-time tracking)
+- read-before-edit staleness guard (file-time tracking per session)
 - approval prompts for writes, edits, and non-safe shell commands
 - three-tier shell security: hard-blocked patterns, auto-approved safe commands, approval-required everything else
 - fail-closed behavior when no approval handler is registered
@@ -132,9 +132,11 @@ Tool names are prefixed: `mcp_<server>_<tool>`. Tool results are flattened from 
 
 ## 10. Sub-Agent Architecture
 
-`src/sub-agent.ts` runs isolated child loops with a fresh prompt and message history. Children use the normal built-in and dynamic tools via `getAllTools()`, but do not recursively expose `sub_agent`. Default iteration limit is 30. Child TODOs are ephemeral (keyed by `sub-agent-<uuid>`) and cleared on completion.
+`src/sub-agent.ts` runs isolated child loops with a fresh prompt and message history. Children use the normal built-in and dynamic tools via `getAllTools()`, but do not recursively expose `sub_agent`. Default iteration limit is 100. Child TODOs are ephemeral (keyed by `sub-agent-<uuid>`) and cleared on completion.
 
 **Abort propagation:** the parent's `AbortSignal` is passed through to `runSubAgent()`, to the child's `client.chat.completions.create()` call, and to each `handleToolCall()` invocation. Pressing Escape stops the child as soon as the in-flight request or tool call acknowledges the signal.
+
+**AbortSignal listener limit:** the same `AbortSignal` is shared across every API call in the loop. The OpenAI SDK attaches one `abort` listener per call, so on a long run the default Node.js limit of 10 listeners per `EventTarget` is exceeded, producing a `MaxListenersExceededWarning`. `AbortSignal` is a Web API `EventTarget` with no `.setMaxListeners()` instance method, so the fix uses the standalone `setMaxListeners(0, abortSignal)` from `node:events`, which supports both `EventEmitter` and `EventTarget`. This is called once at the start of `runAgenticLoop`, scoped to that signal only.
 
 **UI progress isolation:** sub-agent tool steps are reported via `onProgress` callbacks that the agentic loop converts to `sub_agent_iteration` events. The UI handles these by updating the spinner label only — never touching `completionMessages` or `assistantMessageRef` — keeping the parent conversation history clean.
 
@@ -148,7 +150,7 @@ If the API returns a 400 error indicating the prompt is too long (e.g. `prompt t
 
 `src/App.tsx` is both the visible UI layer and the runtime coordinator for:
 
-- slash commands (`/clear`, `/collapse`, `/expand`, `/help`, `/quit`, `/exit`)
+- slash commands (`/collapse`, `/expand`, `/help`, `/quit`, `/exit`)
 - session lifecycle (create, save, resume, clear)
 - approvals (interactive prompt with approve-once, approve-session, reject)
 - config flows (inline first-run setup)
@@ -176,9 +178,11 @@ These are the details that are easy to miss if you only skim the file tree:
 - skills initialization mutates runtime state (tool registration and path roots)
 - `sub_agent` is not part of `getAllTools()` — it is injected by the agentic loop
 - some tool failures flow back as tool-result strings rather than thrown errors
-- the agentic loop sanitizes malformed tool names and JSON from streamed responses
+- the agentic loop sanitizes malformed tool calls (normalizes/repairs malformed JSON, detects repeated string patterns)
 - error recovery includes retry logic for 400 (context-too-long), 429, and 5xx responses
 - `sub_agent_iteration` events are handled by `App` in a separate case that only updates the spinner; they never touch `completionMessages` or `assistantMessageRef`
+- the loop includes retrigger logic: after tool calls complete, if the model returns an empty response, the loop auto-retries rather than returning to the user
+- a sub-agent that calls tools but produces no final text returns the sentinel string `'(sub-agent completed with no response)'`; this is logged at debug level and is not an error
 
 ## 14. Shutdown and Lifecycle Boundaries
 

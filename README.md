@@ -61,7 +61,6 @@ protoagent init --project --force
 ## Interactive Commands
 
 - `/help` — Show available slash commands
-- `/clear` — Start a fresh conversation in a new session
 - `/collapse` — Collapse long system and tool output
 - `/expand` — Expand collapsed messages
 - `/quit` or `/exit` — Save and exit

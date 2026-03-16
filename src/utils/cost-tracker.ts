@@ -24,6 +24,7 @@ export interface ContextInfo {
 export interface ModelPricing {
   inputPerToken: number;
   outputPerToken: number;
+  cachedPerToken?: number;
   contextWindow: number;
 }
 
@@ -52,7 +53,20 @@ export function estimateConversationTokens(messages: OpenAI.Chat.Completions.Cha
 }
 
 /** Calculate dollar cost for a given number of tokens. */
-export function calculateCost(inputTokens: number, outputTokens: number, pricing: ModelPricing): number {
+export function calculateCost(
+  inputTokens: number,
+  outputTokens: number,
+  pricing: ModelPricing,
+  cachedTokens?: number
+): number {
+  if (cachedTokens && cachedTokens > 0 && pricing.cachedPerToken != null) {
+    const uncachedTokens = inputTokens - cachedTokens;
+    return (
+      uncachedTokens * pricing.inputPerToken +
+      cachedTokens * pricing.cachedPerToken +
+      outputTokens * pricing.outputPerToken
+    );
+  }
   return inputTokens * pricing.inputPerToken + outputTokens * pricing.outputPerToken;
 }
 
@@ -73,11 +87,16 @@ export function getContextInfo(
 }
 
 /** Build a UsageInfo from actual or estimated token counts. */
-export function createUsageInfo(inputTokens: number, outputTokens: number, pricing: ModelPricing): UsageInfo {
+export function createUsageInfo(
+  inputTokens: number,
+  outputTokens: number,
+  pricing: ModelPricing,
+  cachedTokens?: number
+): UsageInfo {
   return {
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
-    estimatedCost: calculateCost(inputTokens, outputTokens, pricing),
+    estimatedCost: calculateCost(inputTokens, outputTokens, pricing, cachedTokens),
   };
 }

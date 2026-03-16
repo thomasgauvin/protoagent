@@ -22,6 +22,12 @@ Your target snapshot is `protoagent-tutorial-again-part-4`.
 
 ## Step 1: Create `src/tools/read-file.ts`
 
+Create the file:
+
+```bash
+mkdir -p src/tools && touch src/tools/read-file.ts
+```
+
 The first tool. It reads files with line numbers, supports offset/limit for large files, and validates that paths stay within the working directory.
 
 ```typescript
@@ -30,6 +36,7 @@ import { createReadStream } from 'node:fs';
 import readline from 'node:readline';
 import path from 'node:path';
 
+// Definitions of the read file tool as provided to the LLM
 export const readFileTool = {
   type: 'function' as const,
   function: {
@@ -104,6 +111,12 @@ export async function readFile(filePath: string, offset = 0, limit = 2000): Prom
 
 ## Step 2: Create `src/tools/index.ts`
 
+Create the file:
+
+```bash
+touch src/tools/index.ts
+```
+
 The tool registry collects all tool definitions and provides a dispatcher. At this stage there's only one tool, but the pattern scales to many.
 
 ```typescript
@@ -142,6 +155,12 @@ export async function handleToolCall(toolName: string, args: any, context: ToolC
 
 ## Step 3: Create `src/agentic-loop.ts`
 
+Create the file:
+
+```bash
+touch src/agentic-loop.ts
+```
+
 This is the heart of the agent runtime. The loop:
 
 1. Sends the conversation to the LLM with tool definitions
@@ -155,9 +174,10 @@ import type OpenAI from 'openai';
 import { getAllTools, handleToolCall } from './tools/index.js';
 
 // ─── Types ───
-
 export type Message = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
+// Type for tool calls included in the model's response, which the agentic loop will execute
+// Exported for use in the UI layer to display ongoing tool calls and their results
 export interface ToolCallEvent {
   id: string;
   name: string;
@@ -166,6 +186,8 @@ export interface ToolCallEvent {
   result?: string;
 }
 
+// Type for events emitted during the agentic loop, such as text deltas, tool calls, and errors
+// Exported for use in the UI layer to update the interface in real-time as the agent processes
 export interface AgentEvent {
   type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done';
   content?: string;
@@ -183,15 +205,14 @@ export interface AgenticLoopOptions {
   sessionId?: string;
 }
 
-/**
- * Run the agentic loop: send messages to the model, execute any tool calls,
- * and continue until the model returns plain text.
- */
+// Run the agentic loop: send messages to the model, execute any tool calls,
+// and continue until the model returns plain text.
 export async function runAgenticLoop(
   client: OpenAI,
   model: string,
   messages: Message[],
   userInput: string,
+  // The onEvent callback allows the agentic loop to emit events that the UI can listen to for real-time updates (like streaming text or tool call status)
   onEvent: AgentEventHandler,
   options: AgenticLoopOptions = {}
 ): Promise<Message[]> {
@@ -199,10 +220,16 @@ export async function runAgenticLoop(
   const abortSignal = options.abortSignal;
   const sessionId = options.sessionId;
 
+  // The updatedMessages array will accumulate the conversation history, including tool call results, as we loop
   const updatedMessages: Message[] = [...messages];
   let iterationCount = 0;
 
+  // The While loop is the core of the Agentic Loop.
+  // We continue to request a new message from the LLM until it indicates it is 'done' with an empty message
+  // Or, we continue until the user stops the agent
+  // Or, we reach the max amount of iterations to avoid endless loops
   while (iterationCount < maxIterations) {
+    // The abort signal allows the user to stop the agent from the UI
     if (abortSignal?.aborted) {
       onEvent({ type: 'done' });
       return updatedMessages;
@@ -213,6 +240,8 @@ export async function runAgenticLoop(
     try {
       const allTools = getAllTools();
 
+      // This is the API call to the LLM, passing the conversation history and available tools.
+      // The model can respond with text, and/or indicate it wants to call a tool by including tool_calls in the response.
       const stream = await client.chat.completions.create({
         model,
         messages: updatedMessages,
@@ -232,10 +261,11 @@ export async function runAgenticLoop(
       let streamedContent = '';
       let hasToolCalls = false;
 
+      // Iterate through all the chunks of the streamed LLM response
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta;
 
-        // Stream text content
+        // Stream text content back to the UI
         if (delta?.content) {
           streamedContent += delta.content;
           assistantMessage.content = streamedContent;
@@ -249,6 +279,8 @@ export async function runAgenticLoop(
           hasToolCalls = true;
           for (const tc of delta.tool_calls) {
             const idx = tc.index || 0;
+
+            // Create a tool call entry at the correct index if it doesn't exist, then fill in details as they stream in
             if (!assistantMessage.tool_calls[idx]) {
               assistantMessage.tool_calls[idx] = {
                 id: '',
@@ -269,6 +301,8 @@ export async function runAgenticLoop(
 
       // Handle tool calls
       if (assistantMessage.tool_calls.length > 0) {
+        // Collapses "sparse" arrays by removing empty slots (undefined) or null values 
+        // that can occur if streaming indexes arrive out of order or are skipped.
         assistantMessage.tool_calls = assistantMessage.tool_calls.filter(Boolean);
         updatedMessages.push(assistantMessage);
 
@@ -286,9 +320,14 @@ export async function runAgenticLoop(
           });
 
           try {
+            // This is where the tool is actually executed. 
+            // The handleToolCall function looks up the tool by name and runs it with the provided arguments.
             const args = JSON.parse(argsStr);
             const result = await handleToolCall(name, args, { sessionId });
 
+            // We add the tool result back into the conversation history as a
+            // new message with role 'tool' so that the LLM can see the result of its 
+            // tool call in the next iteration.
             updatedMessages.push({
               role: 'tool',
               tool_call_id: toolCall.id,
@@ -315,6 +354,10 @@ export async function runAgenticLoop(
         }
 
         // Continue loop — let the model process tool results
+        // This is the end of the if block for handling tool calls. 
+        // After executing all tool calls and adding their results to the conversation history, 
+        // we loop back and call the model again with the updated messages. 
+        // The model can then respond with more text, more tool calls, or indicate it is done.
         continue;
       }
 
@@ -531,6 +574,9 @@ export const App: React.FC = () => {
     abortControllerRef.current = new AbortController();
 
     try {
+      // This is the main change in this file. When the user submits a message
+      // We run the agentic loop. The switch allows us to handle the AgentEvents,
+      // and update the UI as needed.
       const updatedMessages = await runAgenticLoop(
         clientRef.current,
         config.model,
@@ -538,6 +584,7 @@ export const App: React.FC = () => {
         trimmed,
         (event: AgentEvent) => {
           switch (event.type) {
+            // Text deltas are streamed as the model generates text, so we append them to the current assistant message in real-time.
             case 'text_delta':
               if (!assistantMessageRef.current) {
                 const msg = { role: 'assistant', content: event.content || '' } as Message;
@@ -554,6 +601,7 @@ export const App: React.FC = () => {
                 });
               }
               break;
+            // When the model indicates it wants to call a tool, we add the tool call info to the current assistant message.
             case 'tool_call':
               if (event.toolCall) {
                 const toolCall = event.toolCall;
@@ -584,6 +632,7 @@ export const App: React.FC = () => {
                 });
               }
               break;
+            // When a tool result is received, we add it as a new message with role 'tool' so it appears in the UI, and also so that the model can see the result in the conversation history for the next iteration of the loop.
             case 'tool_result':
               if (event.toolCall) {
                 setCompletionMessages((prev) => [
@@ -709,13 +758,51 @@ npm run dev
 Try:
 
 ```
-Read src/App.tsx and tell me what it does.
+Read tsconfig.json and tell me what it does.
 ```
 
 You should see:
 - A `[tool: read_file]` indicator
 - A tool result preview
 - The assistant's analysis of the file contents
+
+```
+
+ █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+ █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █ 
+
+
+Model: OpenAI / gpt-5-mini
+> hi
+Hi! How can I help you today? (I can answer questions, help with code, read project files, or anything else you need.)
+> whats in tsconfig.json
+[tool: read_file]
+→ File: tsconfig.json (16 lines total, showing 1-16)
+    1 | {
+    2 |   "compilerOptions": {
+    3 | ...
+Here's the contents of tsconfig.json:
+
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "jsx": "react-jsx",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+╭─────────────────────────────────────────────────────────────╮
+│ > Type your message...                                      │
+╰─────────────────────────────────────────────────────────────╯
+```
 
 ## Snapshot
 

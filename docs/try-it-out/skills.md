@@ -2,6 +2,8 @@
 
 Skills are how you give ProtoAgent project-specific instructions without hardcoding those instructions into the app itself.
 
+Skills follow the [Agent Skills Specification](https://agentskills.io/specification).
+
 If you want the agent to follow your code style, your release process, your package-manager preference, or some internal project conventions, this is the mechanism.
 
 ## Skill format
@@ -28,6 +30,8 @@ description: Follow the project's TypeScript and export conventions.
 - Use camelCase for variables and functions
 - Use PascalCase for types and interfaces
 ```
+
+This is an extremely simple example. Skills can contain detailed instructions, code examples, step-by-step workflows, or any other guidance the agent should follow.
 
 Current validation rules:
 
@@ -69,15 +73,17 @@ Instead it:
 
 That is the whole design in one sentence: keep the base prompt smaller, but still let the model load the detailed instructions on demand.
 
+See the tutorial for implementing skills: [Part 9 - Skills](/build-your-own/part-9)
+
 ## Skill resources
 
-Skills can also bundle files under these directories inside the skill folder:
+The [Agent Skills Specification](https://agentskills.io/specification) defines three optional directories that skills can bundle:
 
-- `scripts/`
-- `references/`
-- `assets/`
+- `scripts/` — executable code
+- `references/` — documentation and reference materials
+- `assets/` — templates, images, data files
 
-The skills system walks these directories (up to 200 files) and lists them in the activation output. It also adds discovered skill directories to the allowed path roots, so those bundled files can be accessed through the normal file tools.
+ProtoAgent walks these directories (up to 200 files maximum) and lists them in the activation output. It also adds discovered skill directories to the allowed path roots, so those bundled files can be accessed through the normal file tools.
 
 ## Supported frontmatter fields
 

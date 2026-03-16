@@ -2,11 +2,16 @@
 
 MCP (Model Context Protocol) turns ProtoAgent from a local coding agent into one that can grow beyond its built-in tools. External tool servers — filesystem, GitHub, browser automation, databases — become available through a standard protocol.
 
+We use the official MCP SDK (`@modelcontextprotocol/sdk`) to handle transport, connectivity, and capability discovery. The SDK manages the low-level protocol details: establishing connections over stdio or HTTP, negotiating capabilities with servers, and routing tool calls. See the SDK docs at https://modelcontextprotocol.io/docs/sdk. For a deeper understanding of how MCP works under the hood, see [How MCP Works: A Visualization](https://thomasgauvin.com/writing/learning-how-mcp-works-by-reading-logs-and-building-mcp-interceptor/).
+
 ## What you are building
+
+We will allow users to configure MCP servers via the `protoagent.jsonc` file. We will create a specific file `src/runtime-config.ts` to handle this configuration, and clean up duplicated code in `config.tsx`.
 
 Starting from Part 10, you add:
 
 - `src/runtime-config.ts` — active `protoagent.jsonc` configuration loader
+- Updated `src/config.tsx` — remove duplicated config paths/types (now imported from runtime-config.ts)
 - `src/mcp.ts` — MCP client that connects to stdio and HTTP servers
 - Updated `src/providers.ts` — merges runtime config providers with built-in catalog
 - Updated `src/App.tsx` — initializes MCP on startup, closes on unmount
@@ -19,6 +24,14 @@ npm install @modelcontextprotocol/sdk jsonc-parser
 
 ## Step 1: Create `src/runtime-config.ts`
 
+Create the file:
+
+```bash
+touch src/runtime-config.ts
+```
+
+This file will become the single source of truth for runtime configuration — handling config file discovery, parsing, caching, and type definitions. This lets us remove duplicated logic from `config.tsx`.
+
 The runtime config system loads the active `protoagent.jsonc` file. If a project file (`.protoagent/protoagent.jsonc`) exists in the current working directory, ProtoAgent uses that; otherwise it falls back to the shared user file (`~/.config/protoagent/protoagent.jsonc`). There is no merging between the two — one file wins. This is where MCP servers are configured, and where custom providers/models can be added.
 
 ```typescript
@@ -29,7 +42,6 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse, printParseErrorCode } from 'jsonc-parser';
-import { logger } from './utils/logger.js';
 
 export interface RuntimeModelConfig {
   name?: string;
@@ -92,10 +104,12 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfigFile = {
 
 let runtimeConfigCache: RuntimeConfigFile | null = null;
 
+// Returns the path to the project-level runtime config file.
 function getProjectRuntimeConfigPath(): string {
   return path.join(process.cwd(), '.protoagent', 'protoagent.jsonc');
 }
 
+// Returns the path to the user-level runtime config file based on the OS.
 function getUserRuntimeConfigPath(): string {
   const homeDir = os.homedir();
   if (process.platform === 'win32') {
@@ -104,7 +118,7 @@ function getUserRuntimeConfigPath(): string {
   return path.join(homeDir, '.config', 'protoagent', 'protoagent.jsonc');
 }
 
-/** Returns the active config path: project if it exists, otherwise user. */
+// Returns the active config path: project if it exists, otherwise user.
 export function getActiveRuntimeConfigPath(): string | null {
   const projectPath = getProjectRuntimeConfigPath();
   if (existsSync(projectPath)) return projectPath;
@@ -113,21 +127,23 @@ export function getActiveRuntimeConfigPath(): string | null {
   return null;
 }
 
+// Checks if a value is a plain object (not an array or null).
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+// Replaces environment variable placeholders in a string with their values.
 function interpolateString(value: string, sourcePath: string): string {
   return value.replace(/\$\{([A-Z0-9_]+)\}/gi, (_match, envVar: string) => {
     const resolved = process.env[envVar];
     if (resolved === undefined) {
-      logger.warn(`Missing environment variable ${envVar} while loading ${sourcePath}`);
       return '';
     }
     return resolved;
   });
 }
 
+// Recursively interpolates environment variables in any value type.
 function interpolateValue<T>(value: T, sourcePath: string): T {
   if (typeof value === 'string') return interpolateString(value, sourcePath) as T;
   if (Array.isArray(value)) return value.map((entry) => interpolateValue(entry, sourcePath)) as T;
@@ -149,13 +165,13 @@ function interpolateValue<T>(value: T, sourcePath: string): T {
   return value;
 }
 
+// Removes reserved parameter keys from provider and model defaultParams.
 function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfigFile {
   const nextProviders = Object.fromEntries(
     Object.entries(config.providers || {}).map(([providerId, provider]) => {
       const providerDefaultParams = Object.fromEntries(
         Object.entries(provider.defaultParams || {}).filter(([key]) => {
           const allowed = !RESERVED_DEFAULT_PARAM_KEYS.has(key);
-          if (!allowed) logger.warn(`Ignoring reserved provider default param '${key}' for provider ${providerId}`);
           return allowed;
         })
       );
@@ -165,7 +181,6 @@ function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfig
           const modelDefaultParams = Object.fromEntries(
             Object.entries(model.defaultParams || {}).filter(([key]) => {
               const allowed = !RESERVED_DEFAULT_PARAM_KEYS.has(key);
-              if (!allowed) logger.warn(`Ignoring reserved model default param '${key}' for model ${providerId}/${modelId}`);
               return allowed;
             })
           );
@@ -180,6 +195,7 @@ function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfig
   return { ...config, providers: nextProviders };
 }
 
+// Merges two runtime configs, with overlay taking precedence.
 function mergeRuntimeConfig(base: RuntimeConfigFile, overlay: RuntimeConfigFile): RuntimeConfigFile {
   const mergedProviders: Record<string, RuntimeProviderConfig> = { ...(base.providers || {}) };
   for (const [providerId, providerConfig] of Object.entries(overlay.providers || {})) {
@@ -194,6 +210,7 @@ function mergeRuntimeConfig(base: RuntimeConfigFile, overlay: RuntimeConfigFile)
   return { providers: mergedProviders, mcp: { servers: mergedServers } };
 }
 
+// Reads and parses a runtime config file with interpolation and validation.
 async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigFile | null> {
   try {
     const content = await fs.readFile(configPath, 'utf8');
@@ -211,6 +228,7 @@ async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigF
   }
 }
 
+// Loads the runtime config from file or cache, merging with defaults.
 export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeConfigFile> {
   if (!forceReload && runtimeConfigCache) return runtimeConfigCache;
 
@@ -220,7 +238,6 @@ export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeCon
   if (configPath) {
     const fileConfig = await readRuntimeConfigFile(configPath);
     if (fileConfig) {
-      logger.debug('Loaded runtime config', { path: configPath });
       loaded = mergeRuntimeConfig(DEFAULT_RUNTIME_CONFIG, fileConfig);
     }
   }
@@ -229,16 +246,53 @@ export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeCon
   return loaded;
 }
 
+// Returns the cached runtime config or the default config.
 export function getRuntimeConfig(): RuntimeConfigFile {
   return runtimeConfigCache || DEFAULT_RUNTIME_CONFIG;
 }
 
+// Clears the runtime config cache for testing purposes.
 export function resetRuntimeConfigForTests(): void {
   runtimeConfigCache = null;
 }
 ```
 
-## Step 2: Create `src/mcp.ts`
+## Step 2: Clean up `src/config.tsx`
+
+Now that `runtime-config.ts` is the single source of truth for config paths and types, we need to remove the duplicated code from `config.tsx`. Replace the relevant sections:
+
+1. Add the import at the top:
+```typescript
+import { getActiveRuntimeConfigPath, type RuntimeConfigFile, type RuntimeProviderConfig } from './runtime-config.js';
+```
+
+2. Remove these duplicate functions and interfaces:
+   - `getUserRuntimeConfigPath()` — now imported from runtime-config.ts
+   - `getProjectRuntimeConfigPath()` — now computed inline where needed  
+   - `getActiveRuntimeConfigPath()` — now imported from runtime-config.ts
+   - Inline `RuntimeProviderConfig` interface — now imported type
+   - Inline `RuntimeConfigFile` interface — now imported type
+
+3. Update `getInitConfigPath()` to compute paths directly:
+```typescript
+export const getInitConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
+  const projectPath = path.join(getProjectRuntimeConfigDirectory(cwd), 'protoagent.jsonc');
+  const userPath = path.join(getUserRuntimeConfigDirectory(), 'protoagent.jsonc');
+  return target === 'project' ? projectPath : userPath;
+};
+```
+
+4. Update `ConfigureComponent` Select options to use inline paths:
+```typescript
+options={[
+  { label: `Project config — ${path.join(getProjectRuntimeConfigDirectory(), 'protoagent.jsonc')}`, value: 'project' },
+  { label: `Shared user config — ${path.join(getUserRuntimeConfigDirectory(), 'protoagent.jsonc')}`, value: 'user' },
+]}
+```
+
+The `isPlainObject()` helper stays in config.tsx since it's still used by `readRuntimeConfigFileSync()`.
+
+## Step 3: Create `src/mcp.ts`
 
 The MCP client connects to configured servers, discovers their tools, and registers them as dynamic tools.
 
@@ -263,6 +317,7 @@ interface McpConnection {
 
 const connections = new Map<string, McpConnection>();
 
+// Connects to a stdio-based MCP server and returns the connection.
 async function connectStdioServer(serverName: string, config: StdioServerConfig): Promise<McpConnection> {
   const transport = new StdioClientTransport({
     command: config.command,
@@ -276,6 +331,7 @@ async function connectStdioServer(serverName: string, config: StdioServerConfig)
   return { client, serverName, transport };
 }
 
+// Connects to an HTTP-based MCP server and returns the connection.
 async function connectHttpServer(serverName: string, config: HttpServerConfig): Promise<McpConnection> {
   const transport = new StreamableHTTPClientTransport(new URL(config.url), {
     requestInit: config.headers ? { headers: config.headers } : undefined,
@@ -286,6 +342,7 @@ async function connectHttpServer(serverName: string, config: HttpServerConfig): 
   return { client, serverName, transport };
 }
 
+// Discovers and registers all tools from an MCP connection as dynamic tools.
 async function registerMcpTools(conn: McpConnection): Promise<void> {
   try {
     const response = await conn.client.listTools();
@@ -324,6 +381,7 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
   }
 }
 
+// Loads runtime config and initializes all configured MCP servers.
 export async function initializeMcp(): Promise<void> {
   await loadRuntimeConfig();
   const servers = getRuntimeConfig().mcp?.servers || {};
@@ -360,6 +418,7 @@ export async function initializeMcp(): Promise<void> {
   }
 }
 
+// Closes all active MCP connections and clears the connection map.
 export async function closeMcp(): Promise<void> {
   for (const [name, conn] of connections) {
     try {
@@ -373,7 +432,7 @@ export async function closeMcp(): Promise<void> {
 }
 ```
 
-## Step 3: Update `src/App.tsx`
+## Step 4: Update `src/App.tsx`
 
 Add MCP initialization on startup and cleanup on unmount:
 
@@ -384,32 +443,63 @@ import { loadRuntimeConfig } from './runtime-config.js';
 
 // In initializeWithConfig, after building the client:
 await initializeMcp();
-
-// In the init useEffect, before reading config:
-await loadRuntimeConfig();
-
-// In the cleanup return:
-return () => {
-  clearApprovalHandler();
-  closeMcp();
-};
 ```
 
-## Step 4: Configure MCP servers
+Replace the init `useEffect`:
 
-Create `.protoagent/protoagent.jsonc` in your project:
+```typescript
+  useEffect(() => {
+    const init = async () => {
+      if (dangerouslySkipPermissions) {
+        setDangerouslySkipPermissions(true);
+      }
+
+      // Register interactive approval handler
+      setApprovalHandler(async (req: ApprovalRequest): Promise<ApprovalResponse> => {
+        return new Promise((resolve) => {
+          setPendingApproval({ request: req, resolve });
+        });
+      });
+
+      await loadRuntimeConfig();
+
+      const loadedConfig = readConfig();
+      if (!loadedConfig) {
+        setNeedsSetup(true);
+        return;
+      }
+
+      await initializeWithConfig(loadedConfig);
+    };
+
+    init().catch((err) => {
+      setError(`Initialization failed: ${err.message}`);
+    });
+
+    return () => {
+      clearApprovalHandler();
+      closeMcp();
+    };
+  }, []);
+```
+
+## Step 5: Configure MCP servers
+
+Create `.protoagent/protoagent.jsonc` in your project and configure a sample MCP server. 
 
 ```jsonc
 {
   // MCP server configuration
   "mcp": {
     "servers": {
-      // Example: filesystem MCP server
-      // "filesystem": {
-      //   "type": "stdio",
-      //   "command": "npx",
-      //   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-      // }
+      "chrome-devtools": {
+        "type": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "chrome-devtools-mcp@latest",
+        ]
+      }
     }
   }
 }
@@ -422,6 +512,32 @@ npm run dev
 ```
 
 If you have MCP servers configured, you should see them connecting during startup (visible in debug logs). The discovered tools will be available to the model alongside the built-in tools.
+
+```
+ █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+ █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █ 
+
+
+Model: OpenAI / gpt-5-mini
+[System prompt loaded]
+
+> open hacker news with chrome mcp
+Tool: mcp_chrome-devtools_new_page({"url":"https://news.ycombinator.com","background
+":false})
+## Pages
+1: about:blank
+2: https://news.ycombinator.com/ [selected]
+BEEP BEEP
+
+✅ Opened Hacker News in a new Chrome tab (page 2).
+
+tokens: 3216↓ 16↑ | ctx: 0% | cost: $0.0017
+
+Session: k7pyp4ua
+╭────────────────────────────────────────────────────────────╮
+│ > Type your message...                                     │
+╰────────────────────────────────────────────────────────────╯
+```
 
 ## Resulting snapshot
 

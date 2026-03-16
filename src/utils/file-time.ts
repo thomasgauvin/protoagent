@@ -50,15 +50,6 @@ export function checkReadBefore(sessionId: string, absolutePath: string): string
 }
 
 /**
- * @deprecated Use checkReadBefore instead — it returns a string rather than
- * throwing, so the error surfaces cleanly as a tool result.
- */
-export function assertReadBefore(sessionId: string, absolutePath: string): void {
-  const err = checkReadBefore(sessionId, absolutePath);
-  if (err) throw new Error(err);
-}
-
-/**
  * Clear all read-time entries for a session (e.g. on session end).
  */
 export function clearSession(sessionId: string): void {

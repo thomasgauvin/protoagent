@@ -61,6 +61,7 @@ async function connectStdioServer(
       ...(config.env || {}),
     } as Record<string, string>,
     cwd: config.cwd,
+    stderr: 'pipe',
   });
 
   const client = new Client(
@@ -74,6 +75,14 @@ async function connectStdioServer(
   );
 
   await client.connect(transport);
+
+  // Pipe stderr from the spawned process to the logger instead of letting it
+  // bleed through to the terminal and corrupt the Ink UI.
+  (transport as any).stderr?.on('data', (data: Buffer) => {
+    for (const line of data.toString('utf-8').split('\n')) {
+      if (line.trim()) logger.debug(`MCP [${serverName}] ${line}`);
+    }
+  });
 
   return {
     client,
@@ -211,4 +220,11 @@ export async function closeMcp(): Promise<void> {
     }
   }
   connections.clear();
+}
+
+/**
+ * Get the names of all connected MCP servers.
+ */
+export function getConnectedMcpServers(): string[] {
+  return Array.from(connections.keys());
 }

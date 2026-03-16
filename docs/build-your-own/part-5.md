@@ -27,6 +27,12 @@ npm install -D @types/turndown @types/he
 
 ## Step 1: Path validation — `src/utils/path-validation.ts`
 
+Create the file:
+
+```bash
+mkdir -p src/utils && touch src/utils/path-validation.ts
+```
+
 Every file tool resolves paths through this module. It ensures all operations stay inside the working directory and prevents symlink escape.
 
 ```typescript
@@ -81,7 +87,13 @@ export function getWorkingDirectory(): string {
 
 ## Step 2: Approval system — `src/utils/approval.ts`
 
-File writes, edits, and (later) shell commands all go through this system. Approval can be per-operation, per-session, or globally bypassed with `--dangerously-accept-all`.
+Create the file:
+
+```bash
+touch src/utils/approval.ts
+```
+
+File writes, edits, and (later) shell commands all go through this system. Approval can be per-operation, per-session, or globally bypassed with `--dangerously-skip-permissions`.
 
 ```typescript
 // src/utils/approval.ts
@@ -98,18 +110,20 @@ export type ApprovalRequest = {
 export type ApprovalResponse = 'approve_once' | 'approve_session' | 'reject';
 
 // Global state
-let dangerouslyAcceptAll = false;
+let dangerouslySkipPermissions = false;
+// This Set stores which operations a user has allowed for the whole session.
+// It is a combination of session ID and scope key (e.g. operation type) to allow for flexible approval scopes.
 const sessionApprovals = new Set<string>();
 
 // Callback that the Ink UI provides to handle interactive approval
 let approvalHandler: ((req: ApprovalRequest) => Promise<ApprovalResponse>) | null = null;
 
-export function setDangerouslyAcceptAll(value: boolean): void {
-  dangerouslyAcceptAll = value;
+export function setDangerouslySkipPermissions(value: boolean): void {
+  dangerouslySkipPermissions = value;
 }
 
-export function isDangerouslyAcceptAll(): boolean {
-  return dangerouslyAcceptAll;
+export function isDangerouslySkipPermissions(): boolean {
+  return dangerouslySkipPermissions;
 }
 
 export function setApprovalHandler(handler: (req: ApprovalRequest) => Promise<ApprovalResponse>): void {
@@ -134,13 +148,13 @@ function getApprovalScopeKey(req: ApprovalRequest): string {
  * Request approval for an operation. Returns true if approved.
  *
  * Check order:
- *  1. --dangerously-accept-all → auto-approve
+ *  1. --dangerously-skip-permissions → auto-approve
  *  2. Session approval for this type → auto-approve
  *  3. Interactive prompt via the UI handler
  *  4. No handler registered → reject (fail closed)
  */
 export async function requestApproval(req: ApprovalRequest): Promise<boolean> {
-  if (dangerouslyAcceptAll) return true;
+  if (dangerouslySkipPermissions) return true;
 
   const sessionKey = getApprovalScopeKey(req);
   if (sessionApprovals.has(sessionKey)) return true;
@@ -165,6 +179,12 @@ export async function requestApproval(req: ApprovalRequest): Promise<boolean> {
 
 ## Step 3: `write_file` — `src/tools/write-file.ts`
 
+Create the file:
+
+```bash
+touch src/tools/write-file.ts
+```
+
 Creates or overwrites a file. Requires approval. Uses atomic write (temp file + rename).
 
 ```typescript
@@ -175,6 +195,7 @@ import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
 
+// Define the tool metadata for the LLM
 export const writeFileTool = {
   type: 'function' as const,
   function: {
@@ -231,6 +252,12 @@ export async function writeFile(filePath: string, content: string, sessionId?: s
 
 ## Step 4: `edit_file` — `src/tools/edit-file.ts`
 
+Create the file:
+
+```bash
+touch src/tools/edit-file.ts
+```
+
 Find-and-replace using exact string matching. This version uses straightforward exact match — a fuzzy match cascade is added in Part 13.
 
 ```typescript
@@ -241,6 +268,7 @@ import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
 
+// Define the tool metadata for the LLM
 export const editFileTool = {
   type: 'function' as const,
   function: {
@@ -300,7 +328,8 @@ export async function editFile(
     return `Error: found ${count} occurrence(s) of old_string, but expected ${expectedReplacements}. Be more specific or set expected_replacements=${count}.`;
   }
 
-  // Request approval
+  // Create a preview of the change for user approval. 
+  // If the strings are long, we truncate them for better readability in the approval prompt.
   const oldPreview = oldString.length > 200 ? oldString.slice(0, 200) + '...' : oldString;
   const newPreview = newString.length > 200 ? newString.slice(0, 200) + '...' : newString;
 
@@ -333,6 +362,12 @@ export async function editFile(
 ```
 
 ## Step 5: `list_directory` — `src/tools/list-directory.ts`
+
+Create the file:
+
+```bash
+touch src/tools/list-directory.ts
+```
 
 Simple directory listing with `[DIR]` and `[FILE]` markers.
 
@@ -375,6 +410,12 @@ export async function listDirectory(directoryPath = '.'): Promise<string> {
 
 ## Step 6: `search_files` — `src/tools/search-files.ts`
 
+Create the file:
+
+```bash
+touch src/tools/search-files.ts
+```
+
 Recursive text search. This version uses a pure JS directory walk. Ripgrep support is added in Part 13.
 
 ```typescript
@@ -384,6 +425,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 
+// Define the tool metadata for the LLM
 export const searchFilesTool = {
   type: 'function' as const,
   function: {
@@ -439,6 +481,7 @@ export async function searchFiles(
       // Skip common non-useful directories
       if (entry.isDirectory()) {
         if (['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__'].includes(entry.name)) continue;
+        // Recurse into subdirectory
         await search(fullPath);
         continue;
       }
@@ -484,7 +527,13 @@ export async function searchFiles(
 
 ## Step 7: TODO tools — `src/tools/todo.ts`
 
-In-memory task tracking for multi-step work. The agent uses these to plan work and track progress. TODOs are stored per session.
+Create the file:
+
+```bash
+touch src/tools/todo.ts
+```
+
+In-memory task tracking for multi-step work. The agent uses these to plan work and track progress. TODOs are stored per session. This allows the agent to set tasks for itself and retrieve them at a later point, without having to rely on the conversation history to determine whether or not the complete task is complete and not forget any subtask.
 
 ```typescript
 // src/tools/todo.ts
@@ -498,6 +547,7 @@ export interface TodoItem {
 
 const DEFAULT_SESSION_ID = '__default__';
 
+// In-memory storage for TODO items, keyed by session ID
 const todosBySession = new Map<string, TodoItem[]>();
 
 function getSessionKey(sessionId?: string): string {
@@ -599,10 +649,23 @@ export function clearTodos(sessionId?: string): void {
 
 ## Step 8: Web fetch — `src/tools/webfetch.ts`
 
+Create the file:
+
+```bash
+touch src/tools/webfetch.ts
+```
+
 Fetch and process web content with HTML-to-text/markdown conversion, size limits, and redirect handling.
 
 ```typescript
 // src/tools/webfetch.ts
+
+// Webfetch tool: Fetches content from URLs and converts to different formats.
+// - format='text': Uses html-to-text to strip all markup, returns plain readable text
+// - format='markdown': Uses turndown to preserve structure as Markdown
+// - format='html': Returns raw HTML as-is
+// Features: Timeout control, redirect handling (max 10), size limits (5MB response, 2MB output),
+// charset detection, and HTML entity decoding.
 
 import { convert } from 'html-to-text';
 
@@ -630,6 +693,7 @@ const TEXT_MIME_TYPES = [
 ];
 
 // Lazy-loaded Turndown instance
+// Turndown is an HTML-to-Markdown converter library
 let _turndownService: any = null;
 async function getTurndownService() {
   if (!_turndownService) {
@@ -646,6 +710,7 @@ async function getTurndownService() {
 }
 
 // Lazy-loaded he module
+// he is an HTML entity decoder library (e.g., &lt; becomes <)
 let _he: any = null;
 async function getHe() {
   if (!_he) {
@@ -959,23 +1024,25 @@ import { searchFilesTool, searchFiles } from './search-files.js';
 import { todoReadTool, todoWriteTool, readTodos, writeTodos } from './todo.js';
 import { webfetchTool, webfetch } from './webfetch.js';
 
-export { setDangerouslyAcceptAll, setApprovalHandler, clearApprovalHandler } from '../utils/approval.js';
+export { setDangerouslySkipPermissions, setApprovalHandler, clearApprovalHandler } from '../utils/approval.js';
 
 export interface ToolCallContext {
   sessionId?: string;
 }
 
 // All tool definitions — passed to the LLM
-export const tools = [
-  readFileTool,
-  writeFileTool,
-  editFileTool,
-  listDirectoryTool,
-  searchFilesTool,
-  todoReadTool,
-  todoWriteTool,
-  webfetchTool,
-];
+export function getAllTools() {
+  return [
+    readFileTool,
+    writeFileTool,
+    editFileTool,
+    listDirectoryTool,
+    searchFilesTool,
+    todoReadTool,
+    todoWriteTool,
+    webfetchTool,
+  ];
+}
 
 // Dispatch a tool call to the appropriate handler.
 export async function handleToolCall(toolName: string, args: any, context: ToolCallContext = {}): Promise<string> {
@@ -1036,11 +1103,11 @@ import {
   type Message,
   type AgentEvent,
 } from './agentic-loop.js';
-import { setDangerouslyAcceptAll, setApprovalHandler, clearApprovalHandler } from './tools/index.js';
+import { setDangerouslySkipPermissions, setApprovalHandler, clearApprovalHandler } from './tools/index.js';
 import type { ApprovalRequest, ApprovalResponse } from './utils/approval.js';
 
 export interface AppProps {
-  dangerouslyAcceptAll?: boolean;
+  dangerouslySkipPermissions?: boolean;
 }
 
 function buildClient(config: Config): OpenAI {
@@ -1167,7 +1234,7 @@ const InlineSetup: React.FC<{
   );
 };
 
-export const App: React.FC<AppProps> = ({ dangerouslyAcceptAll = false }) => {
+export const App: React.FC<AppProps> = ({ dangerouslySkipPermissions = false }) => {
   const { exit } = useApp();
 
   const [config, setConfig] = useState<Config | null>(null);
@@ -1200,8 +1267,8 @@ export const App: React.FC<AppProps> = ({ dangerouslyAcceptAll = false }) => {
 
   useEffect(() => {
     const init = async () => {
-      if (dangerouslyAcceptAll) {
-        setDangerouslyAcceptAll(true);
+      if (dangerouslySkipPermissions) {
+        setDangerouslySkipPermissions(true);
       }
 
       // Register interactive approval handler
@@ -1317,7 +1384,7 @@ export const App: React.FC<AppProps> = ({ dangerouslyAcceptAll = false }) => {
       {config && (
         <Text dimColor>
           Model: {providerInfo?.name || config.provider} / {config.model}
-          {dangerouslyAcceptAll && <Text color="red"> (auto-approve all)</Text>}
+          {dangerouslySkipPermissions && <Text color="red"> (auto-approve all)</Text>}
         </Text>
       )}
 
@@ -1439,7 +1506,26 @@ Try prompts that exercise the new tools:
 - `Create a file called test.txt with "hello world"` — uses `write_file` (triggers approval)
 - `Read test.txt and change "hello" to "goodbye"` — uses `read_file` then `edit_file` (triggers approval)
 
-You should see approval prompts for write and edit operations (unless using `--dangerously-accept-all`).
+You should see approval prompts for write and edit operations (unless using `--dangerously-skip-permissions`).
+
+```
+ █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+ █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █ 
+
+
+Model: OpenAI / gpt-5-mini
+[System prompt loaded]
+
+> hi
+Hi — how can I help you today?
+> create index.html with hello world
+Tool: write_file({"file_path":"index.html","content":"<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\")
+Successfully wrote 12 lines to index.html
+Done — I created index.html with "hello world". Would you like any styling or additional content?
+╭─────────────────────────────────────────────────────────────╮
+│ > Type your message...                                      │
+╰─────────────────────────────────────────────────────────────╯
+```
 
 ## Resulting snapshot
 

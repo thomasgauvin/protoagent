@@ -18,6 +18,7 @@
  */
 
 import type OpenAI from 'openai';
+import { setMaxListeners } from 'node:events';
 import { getAllTools, handleToolCall } from './tools/index.js';
 import { generateSystemPrompt } from './system-prompt.js';
 import { subAgentTool, runSubAgent, type SubAgentProgressHandler } from './sub-agent.js';
@@ -50,8 +51,10 @@ export interface AgentEvent {
   /** Emitted while a sub-agent is executing — carries the child tool name and iteration status.
    *  Distinct from `tool_call` so the UI can show it as a nested progress indicator
    *  without adding it to the parent's tool-call message history. */
-  subAgentTool?: { tool: string; status: 'running' | 'done' | 'error'; iteration: number };
+  subAgentTool?: { tool: string; status: 'running' | 'done' | 'error'; iteration: number; args?: Record<string, unknown> };
   usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
+  /** Emitted when a sub-agent completes, carrying its accumulated usage. */
+  subAgentUsage?: { inputTokens: number; outputTokens: number; cost: number };
   error?: string;
   transient?: boolean;
 }
@@ -336,6 +339,18 @@ export async function runAgenticLoop(
   const sessionId = options.sessionId;
   const requestDefaults = options.requestDefaults || {};
 
+  // The same AbortSignal is passed into every OpenAI SDK call and every
+  // sleepWithAbort() across all loop iterations and sub-agent calls.
+  // The SDK attaches an 'abort' listener per request, so on a long run
+  // the default limit of 10 listeners is quickly exceeded, producing the
+  // MaxListenersExceededWarning.  AbortSignal is a Web API EventTarget,
+  // not a Node EventEmitter, so the instance method .setMaxListeners()
+  // doesn't exist on it — use the standalone setMaxListeners() from
+  // node:events instead, which handles both EventEmitter and EventTarget.
+  if (abortSignal) {
+    setMaxListeners(0, abortSignal); // 0 = unlimited, scoped to this signal only
+  }
+
   // Note: userInput is passed for context/logging but user message should already be in messages array
   // (added by the caller in handleSubmit for immediate UI display)
   const updatedMessages: Message[] = [...messages];
@@ -350,6 +365,10 @@ export async function runAgenticLoop(
   let iterationCount = 0;
   let repairRetryCount = 0;
   let contextRetryCount = 0;
+  let retriggerCount = 0;
+  let truncateRetryCount = 0;
+  const MAX_RETRIGGERS = 3;
+  const MAX_TRUNCATE_RETRIES = 5;
   const validToolNames = getValidToolNames();
 
   while (iterationCount < maxIterations) {
@@ -381,15 +400,17 @@ export async function runAgenticLoop(
       }
     }
 
+    // Declare assistantMessage outside try block so it's accessible in catch
+    let assistantMessage: any;
+
     try {
       // Build tools list: core tools + sub-agent tool + dynamic (MCP) tools
       const allTools = [...getAllTools(), subAgentTool];
 
-      logger.debug('Making API request', {
+      logger.info('Making API request', {
         model,
         toolsCount: allTools.length,
         messagesCount: updatedMessages.length,
-        toolNames: allTools.map((t: any) => t.function?.name).join(', '),
       });
 
       // Log message structure for debugging provider compatibility
@@ -432,7 +453,7 @@ export async function runAgenticLoop(
       });
 
       // Accumulate the streamed response
-      const assistantMessage: any = {
+      assistantMessage = {
         role: 'assistant',
         content: '',
         tool_calls: [],
@@ -494,24 +515,51 @@ export async function runAgenticLoop(
         }
       }
 
-      // Emit usage info — always emit, even without pricing (use estimates)
+      // Log API response with usage info at INFO level
       {
         const inputTokens = actualUsage?.prompt_tokens ?? estimateConversationTokens(updatedMessages);
         const outputTokens = actualUsage?.completion_tokens ?? estimateTokens(assistantMessage.content || '');
+        const cachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens;
         const cost = pricing
-          ? createUsageInfo(inputTokens, outputTokens, pricing).estimatedCost
+          ? createUsageInfo(inputTokens, outputTokens, pricing, cachedTokens).estimatedCost
           : 0;
         const contextPercent = pricing
           ? getContextInfo(updatedMessages, pricing).utilizationPercentage
           : 0;
+
+        logger.info('Received API response', {
+          model,
+          inputTokens,
+          outputTokens,
+          cachedTokens,
+          cost: cost > 0 ? `$${cost.toFixed(4)}` : 'N/A',
+          contextPercent: contextPercent > 0 ? `${contextPercent.toFixed(1)}%` : 'N/A',
+          hasToolCalls: assistantMessage.tool_calls.length > 0,
+          contentLength: assistantMessage.content?.length || 0,
+        });
+
         onEvent({
           type: 'usage',
           usage: { inputTokens, outputTokens, cost, contextPercent },
         });
       }
 
+      // Log the full assistant message for debugging
+      logger.debug('Assistant response details', {
+        contentLength: assistantMessage.content?.length || 0,
+        contentPreview: assistantMessage.content?.slice(0, 200) || '(empty)',
+        toolCallsCount: assistantMessage.tool_calls?.length || 0,
+        toolCalls: assistantMessage.tool_calls?.map((tc: any) => ({
+          id: tc.id,
+          name: tc.function?.name,
+          argsPreview: tc.function?.arguments?.slice(0, 100),
+        })),
+      });
+
       // Handle tool calls
       if (assistantMessage.tool_calls.length > 0) {
+        // Reset retrigger count on valid tool call response
+        retriggerCount = 0;
         // Clean up empty tool_calls entries (from sparse array)
         assistantMessage.tool_calls = assistantMessage.tool_calls.filter(Boolean);
         assistantMessage.tool_calls = assistantMessage.tool_calls.map((toolCall: any) => {
@@ -525,13 +573,33 @@ export async function runAgenticLoop(
           return sanitized.toolCall;
         });
 
-        logger.debug('Model returned tool calls', {
+        // Validate that all tool calls have valid JSON arguments
+        const invalidToolCalls = assistantMessage.tool_calls.filter((tc: any) => {
+          const args = tc.function?.arguments;
+          if (!args) return false; // Empty args is valid
+          try {
+            JSON.parse(args);
+            return false; // Valid JSON
+          } catch {
+            return true; // Invalid JSON
+          }
+        });
+
+        if (invalidToolCalls.length > 0) {
+          logger.warn('Assistant produced tool calls with invalid JSON, skipping this turn', {
+            invalidToolCalls: invalidToolCalls.map((tc: any) => ({
+              name: tc.function?.name,
+              argsPreview: tc.function?.arguments?.slice(0, 100),
+            })),
+          });
+          // Don't add the malformed assistant message to conversation
+          // The loop will continue and retry
+          continue;
+        }
+
+        logger.info('Model returned tool calls', {
           count: assistantMessage.tool_calls.length,
-          calls: assistantMessage.tool_calls.map((tc: any) => ({
-            id: tc.id,
-            name: tc.function?.name,
-            argsPreview: tc.function?.arguments?.slice(0, 100),
-          })),
+          tools: assistantMessage.tool_calls.map((tc: any) => tc.function?.name).join(', '),
         });
 
         updatedMessages.push(assistantMessage);
@@ -578,10 +646,10 @@ export async function runAgenticLoop(
               const subProgress: SubAgentProgressHandler = (evt) => {
                 onEvent({
                   type: 'sub_agent_iteration',
-                  subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration },
+                  subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration, args: evt.args },
                 });
               };
-              result = await runSubAgent(
+              const subResult = await runSubAgent(
                 client,
                 model,
                 args.task,
@@ -589,16 +657,23 @@ export async function runAgenticLoop(
                 requestDefaults,
                 subProgress,
                 abortSignal,
+                pricing,
               );
+              result = subResult.response;
+              // Emit sub-agent usage for the UI to add to total cost
+              if (subResult.usage.inputTokens > 0 || subResult.usage.outputTokens > 0) {
+                onEvent({
+                  type: 'sub_agent_iteration',
+                  subAgentUsage: subResult.usage,
+                });
+              }
             } else {
               result = await handleToolCall(name, args, { sessionId, abortSignal });
             }
 
-            logger.debug('Tool result', {
+            logger.info('Tool completed', {
               tool: name,
-              tool_call_id: toolCall.id,
               resultLength: result.length,
-              resultPreview: result.slice(0, 200),
             });
 
             updatedMessages.push({
@@ -651,15 +726,67 @@ export async function runAgenticLoop(
           role: 'assistant',
           content: assistantMessage.content,
         } as Message);
+        // Reset retrigger count on valid content response
+        retriggerCount = 0;
+      }
+
+      // Check if we need to retrigger: if the last message is a tool result
+      // but we got no assistant response (empty content, no tool_calls), the AI
+      // may have stopped prematurely. Inject a 'continue' prompt and retry.
+      const lastMessage = updatedMessages[updatedMessages.length - 1];
+      if (lastMessage?.role === 'tool' && retriggerCount < MAX_RETRIGGERS) {
+        retriggerCount++;
+        logger.warn('AI stopped after tool call without responding; retriggering', {
+          retriggerCount,
+          maxRetriggers: MAX_RETRIGGERS,
+          lastMessageRole: lastMessage.role,
+          assistantContent: assistantMessage.content || '(empty)',
+          hasToolCalls: assistantMessage.tool_calls.length > 0,
+        });
+        // Inject a 'continue' prompt to help the AI continue
+        updatedMessages.push({
+          role: 'user',
+          content: 'Please continue.',
+        } as Message);
+        continue;
       }
 
       repairRetryCount = 0;
+      retriggerCount = 0;
       onEvent({ type: 'done' });
       return updatedMessages;
 
       } catch (apiError: any) {
       if (abortSignal?.aborted || apiError?.name === 'AbortError' || apiError?.message === 'Operation aborted') {
         logger.debug('Agentic loop request aborted');
+        // If we have a partial assistant message with tool_calls, we need to
+        // add it to the conversation history before returning, otherwise the
+        // message sequence will be invalid (tool results without assistant tool_calls).
+        if (assistantMessage && (assistantMessage.content || assistantMessage.tool_calls?.length > 0)) {
+          // Clean up empty tool_calls entries
+          if (assistantMessage.tool_calls?.length > 0) {
+            assistantMessage.tool_calls = assistantMessage.tool_calls.filter(Boolean);
+            // Filter out tool calls with malformed/incomplete JSON arguments
+            assistantMessage.tool_calls = assistantMessage.tool_calls.filter((tc: any) => {
+              const args = tc.function?.arguments;
+              if (!args) return true; // No args is valid
+              try {
+                JSON.parse(args);
+                return true; // Valid JSON
+              } catch {
+                logger.warn('Filtering out tool call with malformed JSON arguments due to abort', {
+                  tool: tc.function?.name,
+                  argsPreview: args.slice(0, 100),
+                });
+                return false; // Invalid JSON, filter out
+              }
+            });
+          }
+          // Only add the assistant message if we have content or valid tool calls
+          if (assistantMessage.content || assistantMessage.tool_calls?.length > 0) {
+            updatedMessages.push(assistantMessage);
+          }
+        }
         emitAbortAndFinish(onEvent);
         return updatedMessages;
       }
@@ -700,21 +827,43 @@ export async function runAgenticLoop(
       const retryableStatus = apiError?.status === 408 || apiError?.status === 409 || apiError?.status === 425;
       const retryableCode = ['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ENETUNREACH', 'EAI_AGAIN'].includes(apiError?.code);
 
-      if (apiError?.status === 400 && repairRetryCount < 2) {
-        const sanitized = sanitizeMessagesForRetry(updatedMessages, getValidToolNames());
-        if (sanitized.changed) {
-          repairRetryCount++;
-          updatedMessages.length = 0;
-          updatedMessages.push(...sanitized.messages);
-          logger.warn('400 response after malformed tool payload; retrying with sanitized messages', {
-            repairRetryCount,
-          });
-          onEvent({
-            type: 'error',
-            error: 'Provider rejected the tool payload. Repairing the request and retrying...',
-            transient: true,
-          });
-          continue;
+      // Handle 400 errors: try sanitization first, then truncate messages
+      if (apiError?.status === 400) {
+        // Try sanitization first
+        if (repairRetryCount < 2) {
+          const sanitized = sanitizeMessagesForRetry(updatedMessages, getValidToolNames());
+          if (sanitized.changed) {
+            repairRetryCount++;
+            updatedMessages.length = 0;
+            updatedMessages.push(...sanitized.messages);
+            logger.warn('400 response after malformed tool payload; retrying with sanitized messages', {
+              repairRetryCount,
+            });
+            // Silently retry without showing error to user
+            continue;
+          }
+        }
+
+        // If sanitization didn't help, try removing messages one at a time (up to 5)
+        if (truncateRetryCount < MAX_TRUNCATE_RETRIES) {
+          truncateRetryCount++;
+          const removedCount = Math.min(1, Math.max(0, updatedMessages.length - 2)); // Remove 1 at a time, keep system + at least 1 user
+          if (removedCount > 0) {
+            const removed = updatedMessages.splice(-removedCount);
+            logger.debug('400 error: removing message from history to attempt fix', {
+              truncateRetryCount,
+              maxRetries: MAX_TRUNCATE_RETRIES,
+              removedCount,
+              removedRoles: removed.map((m: any) => m.role),
+              removedPreviews: removed.map((m: any) => ({
+                role: m.role,
+                content: m.content?.slice(0, 100),
+                tool_calls: m.tool_calls?.map((tc: any) => tc.function?.name),
+              })),
+            });
+            // Silently retry without showing error to user
+            continue;
+          }
         }
       }
 
@@ -785,6 +934,17 @@ export async function runAgenticLoop(
         onEvent({ type: 'error', error: `Request failed. Retrying in ${backoff / 1000}s...`, transient: true });
         await sleepWithAbort(backoff, abortSignal);
         continue;
+      }
+
+      // 400 error that couldn't be fixed by sanitization or truncation
+      if (apiError?.status === 400) {
+        onEvent({
+          type: 'error',
+          error: 'The conversation history appears to be corrupted and could not be automatically repaired. Try /clear to start fresh.',
+          transient: false,
+        });
+        onEvent({ type: 'done' });
+        return updatedMessages;
       }
 
       // Non-retryable error

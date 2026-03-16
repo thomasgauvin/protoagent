@@ -6,6 +6,8 @@ Instead of baking every possible tool into the app, you point ProtoAgent at one 
 
 Configuration lives in the active `protoagent.jsonc` file under `mcp.servers`.
 
+See the tutorial for implementing MCP support: [Part 11 - MCP](/build-your-own/part-11)
+
 ## Supported server types
 
 ProtoAgent currently supports:
@@ -34,9 +36,11 @@ The implementation uses the official `@modelcontextprotocol/sdk`, specifically t
 }
 ```
 
+Stdio server stderr output is piped to ProtoAgent's debug logs for troubleshooting.
+
 Fields:
 
-- `type`: must be `"stdio"`
+- `type`: must be `"stdio`"
 - `command`: executable to run
 - `args`: optional command-line arguments
 - `env`: optional environment variables (merged with `process.env`)
@@ -85,16 +89,6 @@ When ProtoAgent launches, it loads the active `protoagent.jsonc` config and:
 So if a server named `github` exposes a tool named `search_docs`, the model sees `mcp_github_search_docs`.
 
 Tool descriptions are prefixed with `[MCP: <server>]` so the model knows which server a tool came from.
-
-## Tool results
-
-When an MCP tool is called, ProtoAgent forwards the arguments with `callTool()` and flattens text content blocks into a single string result (joined with newlines). Non-text blocks are JSON-stringified.
-
-That flattening is a simplification, but it keeps the tool surface easy to work with in the current app.
-
-## Shutdown
-
-On app cleanup, ProtoAgent closes all MCP client connections.
 
 ## Current limits
 

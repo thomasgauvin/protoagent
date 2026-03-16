@@ -1,6 +1,6 @@
 {
   "name": "protoagent",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "type": "module",
   "files": [
     "dist",
@@ -20,8 +20,28 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
-  "author": "",
-  "license": "ISC",
+  "author": "Thomas Gauvin",
+  "license": "MIT",
+  "homepage": "https://protoagent.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thomasgauvin/protoagent.git"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "coding-agent",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "terminal",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.27.1",

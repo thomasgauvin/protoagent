@@ -2,6 +2,12 @@
 
 Part 2 hardcoded everything — OpenAI, one model, one env var. That works for a demo but not for a real tool. This part introduces persisted configuration: a provider/model catalog, a config wizard, and API key resolution that works across providers.
 
+In this part, we're going to make it possible to configure `protoagent`, mainly with the introduction of `protoagent.jsonc` configuration file. It will allow you to specify LLM providers and other configurations in the future, which will be automatically used by `protoagent`. `protoagent` will look for this `protoagent.jsonc` file either within the directory/project it is being run, or at configurations in the user directory. The paths will be one of the following:  
+1. `<process.cwd()>/.protoagent/protoagent.jsonc` (project config)
+2. `~/.config/protoagent/protoagent.jsonc` (user config)
+
+Project config takes precedence, allowing per-project overrides of user defaults.
+
 Your target snapshot is `protoagent-tutorial-again-part-3`.
 
 ## What you are building
@@ -67,9 +73,13 @@ Note: we dropped `dotenv` — API keys are now resolved through the config syste
 
 ## Step 2: Create `src/providers.ts`
 
-This file defines the built-in provider catalog. Every supported provider, model, pricing, and connection details live here.
+Create the file:
 
-**Note:** The models listed below are illustrative and represent a forward-looking model catalog. In your own projects, you can replace these with actual current models like `gpt-4o`, `gpt-4-turbo`, `claude-opus`, `claude-sonnet`, etc. The structure and pricing fields are what matter; the exact model IDs should match your provider's current offerings.
+```bash
+touch src/providers.ts
+```
+
+This file defines the built-in provider catalog. Every supported provider, model, pricing, and connection details live here.
 
 ```typescript
 export interface ModelDetails {
@@ -98,9 +108,9 @@ export const BUILTIN_PROVIDERS: ModelProvider[] = [
     name: 'OpenAI',
     apiKeyEnvVar: 'OPENAI_API_KEY',
     models: [
-      { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 200_000, pricingPerMillionInput: 6.0, pricingPerMillionOutput: 24.0 },
-      { id: 'gpt-5-mini', name: 'GPT-5 Mini', contextWindow: 200_000, pricingPerMillionInput: 0.15, pricingPerMillionOutput: 0.6 },
-      { id: 'gpt-4.1', name: 'GPT-4.1', contextWindow: 128_000, pricingPerMillionInput: 2.5, pricingPerMillionOutput: 10.0 },
+      { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 1_048_576, pricingPerMillionInput: 2.50, pricingPerMillionOutput: 15.00 },
+      { id: 'gpt-5-mini', name: 'GPT-5 Mini', contextWindow: 1_000_000, pricingPerMillionInput: 0.25, pricingPerMillionOutput: 2.00 },
+      { id: 'gpt-4.1', name: 'GPT-4.1', contextWindow: 1_048_576, pricingPerMillionInput: 2.0, pricingPerMillionOutput: 8.00 },
     ],
   },
   {
@@ -109,8 +119,8 @@ export const BUILTIN_PROVIDERS: ModelProvider[] = [
     baseURL: 'https://api.anthropic.com/v1/',
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
     models: [
-      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', contextWindow: 200_000, pricingPerMillionInput: 5.0, pricingPerMillionOutput: 25.0 },
-      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', contextWindow: 200_000, pricingPerMillionInput: 3.0, pricingPerMillionOutput: 15.0 },
+      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', contextWindow: 1_000_000, pricingPerMillionInput: 5.0, pricingPerMillionOutput: 25.0 },
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', contextWindow: 1_000_000, pricingPerMillionInput: 3.0, pricingPerMillionOutput: 15.0 },
       { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', contextWindow: 200_000, pricingPerMillionInput: 1.0, pricingPerMillionOutput: 5.0 },
     ],
   },
@@ -120,21 +130,12 @@ export const BUILTIN_PROVIDERS: ModelProvider[] = [
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
     apiKeyEnvVar: 'GEMINI_API_KEY',
     models: [
-      { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 0.075, pricingPerMillionOutput: 0.3 },
-      { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 1.25, pricingPerMillionOutput: 10.0 },
-      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1_000_000, pricingPerMillionInput: 0.075, pricingPerMillionOutput: 0.3 },
+      { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 0.50, pricingPerMillionOutput: 3.0 },
+      { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 2.0, pricingPerMillionOutput: 12.0 },
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1_000_000, pricingPerMillionInput: 0.30, pricingPerMillionOutput: 2.5 },
       { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', contextWindow: 1_000_000, pricingPerMillionInput: 1.25, pricingPerMillionOutput: 10.0 },
     ],
-  },
-  {
-    id: 'cerebras',
-    name: 'Cerebras',
-    baseURL: 'https://api.cerebras.ai/v1',
-    apiKeyEnvVar: 'CEREBRAS_API_KEY',
-    models: [
-      { id: 'llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B', contextWindow: 128_000, pricingPerMillionInput: 0.0, pricingPerMillionOutput: 0.0 },
-    ],
-  },
+  }
 ];
 
 export function getAllProviders(): ModelProvider[] {
@@ -155,7 +156,7 @@ export function getModelPricing(providerId: string, modelId: string) {
   return {
     inputPerToken: details.pricingPerMillionInput / 1_000_000,
     outputPerToken: details.pricingPerMillionOutput / 1_000_000,
-    contextWindow: details.contextWindow,
+    contextWindow: details.contextWindow ?? 128_000,
   };
 }
 
@@ -172,6 +173,12 @@ export function getRequestDefaultParams(providerId: string, modelId: string): Re
 Note: `getAllProviders()` just returns the built-in list for now. In Part 11 (MCP/Runtime Config), we add runtime config loading from the active `protoagent.jsonc` so users can add custom providers via that file.
 
 ## Step 3: Create `src/config.tsx`
+
+Create the file:
+
+```bash
+touch src/config.tsx
+```
 
 This file handles config persistence and the setup wizard. The active provider/model/API key selection is stored in `protoagent.jsonc`, using the project file if present and otherwise the shared user file. Configuration is read from and written to `protoagent.jsonc` using `jsonc-parser`.
 
@@ -194,14 +201,27 @@ export interface Config {
 export type InitConfigTarget = 'project' | 'user';
 export type InitConfigWriteStatus = 'created' | 'exists' | 'overwritten';
 
-const CONFIG_DIR_MODE = 0o700;
-const CONFIG_FILE_MODE = 0o600;
+// These constants define Unix file permissions in octal notation.
+// They ensure config directories and files are only accessible by the owner,
+// protecting sensitive data like API keys from other users on the system.
+const CONFIG_DIR_MODE = 0o700;  // Owner: rwx, Group: ---, Others: ---
+const CONFIG_FILE_MODE = 0o600; // Owner: rw-, Group: ---, Others: ---
 
+// Applies restrictive Unix permissions to a file or directory.
+// Skips on Windows since Unix permission concepts don't apply there.
+// Uses chmodSync to enforce the permission mode immediately.
 function hardenPermissions(targetPath: string, mode: number): void {
   if (process.platform === 'win32') return;
   chmodSync(targetPath, mode);
 }
 
+// Resolves the API key for a provider using a precedence chain:
+// 1. Direct API key from config
+// 2. Environment variable specific to the provider (e.g., OPENAI_API_KEY)
+// 3. Generic PROTOAGENT_API_KEY environment variable
+// 4. Default API key from provider definition
+// 5. 'none' if provider uses header-based auth instead of API key
+// Returns null if no API key could be resolved.
 export function resolveApiKey(config: Pick<Config, 'provider' | 'apiKey'>): string | null {
   const directApiKey = config.apiKey?.trim();
   if (directApiKey) return directApiKey;
@@ -273,6 +293,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+// Reads and parses protoagent.jsonc (with comments support), returns null on error/missing file.
 function readRuntimeConfigFileSync(configPath: string): RuntimeConfigFile | null {
   if (!existsSync(configPath)) return null;
   try {
@@ -286,6 +307,7 @@ function readRuntimeConfigFileSync(configPath: string): RuntimeConfigFile | null
   }
 }
 
+// Extracts the first configured provider/model from runtime config (returns null if none found).
 function getConfiguredProviderAndModel(runtimeConfig: RuntimeConfigFile): Config | null {
   for (const [providerId, providerConfig] of Object.entries(runtimeConfig.providers || {})) {
     const modelId = Object.keys(providerConfig.models || {})[0];
@@ -298,6 +320,7 @@ function getConfiguredProviderAndModel(runtimeConfig: RuntimeConfigFile): Config
   return null;
 }
 
+// Creates config directory with secure permissions if it doesn't exist.
 function ensureDirectory(targetDir: string): void {
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true, mode: CONFIG_DIR_MODE });
@@ -311,6 +334,7 @@ function writeRuntimeConfigFile(configPath: string, runtimeConfig: RuntimeConfig
   hardenPermissions(configPath, CONFIG_FILE_MODE);
 }
 
+// Updates or inserts a provider/model selection into runtime config, preserving existing settings.
 function upsertSelectedConfig(runtimeConfig: RuntimeConfigFile, config: Config): RuntimeConfigFile {
   const existingProviders = runtimeConfig.providers || {};
   const currentProvider = existingProviders[config.provider] || {};
@@ -355,8 +379,13 @@ export const writeConfig = (config: Config, target: InitConfigTarget = 'user', c
   return configPath;
 };
 
-// ─── Configure Wizard (standalone subcommand) ───
-
+// React component for Configure Wizard (standalone subcommand)
+// Guides users through selecting a provider/model and saving it to config
+// Steps:
+// 1. Choose project vs user config
+// 2. If existing config found, show it and ask to reset or keep
+// 3. If resetting or no existing config, show provider/model selection
+// 4. After selection, prompt for API key (if needed) and save config
 export const ConfigureComponent = () => {
   const [step, setStep] = useState(0);
   const [target, setTarget] = useState<InitConfigTarget>('user');
@@ -598,7 +627,7 @@ function buildClient(config: Config): OpenAI {
   return new OpenAI(clientOptions);
 }
 
-/** Inline setup wizard — shown when no config exists. */
+// If protoagent isn't already set up with LLM provider/model, guide the user through an interactive setup flow
 const InlineSetup: React.FC<{ onComplete: (config: Config) => void }> = ({ onComplete }) => {
   const [setupStep, setSetupStep] = useState<'provider' | 'api_key'>('provider');
   const [selectedProviderId, setSelectedProviderId] = useState('');
@@ -656,6 +685,7 @@ const InlineSetup: React.FC<{ onComplete: (config: Config) => void }> = ({ onCom
   );
 };
 
+// Main Protoagent app
 export const App: React.FC = () => {
   const { exit } = useApp();
   const [config, setConfig] = useState<Config | null>(null);
@@ -683,6 +713,7 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  // When the app loads, read the configuration file
   useEffect(() => {
     const loadedConfig = readConfig();
     if (!loadedConfig) {
@@ -805,7 +836,7 @@ You should see a provider/model selector, then an API key prompt. After completi
 npm run dev
 ```
 
-The app should show your configured model name and stream responses.
+The app should show your configured model name and stream responses. Your credentials are now stored in your `protoagent.jsonc` file. In `Part 11`, we will make it possible for the `protoagent.jsonc` to load your API keys from environment variables instead of having it in the file for a more secure setup.
 
 ## Snapshot
 

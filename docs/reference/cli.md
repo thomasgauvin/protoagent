@@ -16,7 +16,28 @@ Starts the main interactive app. If no config exists, ProtoAgent shows the first
 
 ### `protoagent configure`
 
-Launches the standalone configuration wizard for provider, model, and API key selection.
+Launches the configuration wizard for provider, model, and API key selection.
+
+Interactive mode (default):
+```bash
+protoagent configure
+```
+
+Non-interactive mode with flags:
+```bash
+protoagent configure --provider <id> --model <id> --api-key <key>
+protoagent configure --provider <id> --model <id> --api-key <key> --project
+protoagent configure --provider <id> --model <id> --api-key <key> --user
+```
+
+Flags:
+- `--provider <id>` — select provider by ID (e.g., `openai`, `anthropic`)
+- `--model <id>` — select model by ID (e.g., `gpt-5.2`, `claude-sonnet-4-6`)
+- `--api-key <key>` — set the API key
+- `--project` — save to project config (`<cwd>/.protoagent/protoagent.jsonc`)
+- `--user` — save to user config (`~/.config/protoagent/protoagent.jsonc`)
+
+When both `--project` and `--user` are omitted, ProtoAgent defaults to project config.
 
 ### `protoagent init`
 
@@ -41,14 +62,14 @@ protoagent init --project --force
 
 ## Flags
 
-### `--dangerously-accept-all`
+### `--dangerously-skip-permissions`
 
 Skips normal approval prompts for file writes, file edits, and non-safe shell commands.
 
 Hard-blocked shell patterns are still denied.
 
 ```bash
-protoagent --dangerously-accept-all
+protoagent --dangerously-skip-permissions
 ```
 
 ### `--log-level <level>`
@@ -67,15 +88,17 @@ ProtoAgent initializes a log file and shows its path in the UI.
 
 ### `--session <id>`
 
-Resumes a previously saved session by UUID.
+Resumes a previously saved session by ID.
 
 ```bash
-protoagent --session 123e4567-e89b-12d3-a456-426614174000
+protoagent --session abc123de
 ```
+
+Session IDs are 8-character alphanumeric strings (a-z, 0-9). Legacy UUID format is also accepted.
 
 ### `--version`
 
-Prints the current version (currently 0.1.4).
+Prints the current version.
 
 ## Slash commands
 
@@ -83,7 +106,6 @@ Prints the current version (currently 0.1.4).
 |---|---|
 | `/quit` | save the session and exit |
 | `/exit` | alias for `/quit` |
-| `/clear` | start a fresh session |
 | `/collapse` | collapse all long messages |
 | `/expand` | expand all collapsed messages |
 | `/help` | show available slash commands |

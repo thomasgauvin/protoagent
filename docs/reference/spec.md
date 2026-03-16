@@ -44,14 +44,13 @@ Current entry points and flags:
 
 - `protoagent`
 - `protoagent configure`
-- `--dangerously-accept-all`
+- `--dangerously-skip-permissions`
 - `--log-level <level>` (default: `INFO`)
 - `--session <id>`
 - `--version`
 
 Current slash commands:
 
-- `/clear`
 - `/collapse`
 - `/expand`
 - `/help`
@@ -97,10 +96,9 @@ Built-in providers ship in `src/providers.ts`:
 
 | Provider | Models |
 |---|---|
-| **OpenAI** | GPT-5.2, GPT-5 Mini, GPT-4.1 |
+| **OpenAI** | GPT-5.4, GPT-5.4 Pro, GPT-5.2, GPT-5 Mini, GPT-5 Nano, GPT-4.1 |
 | **Anthropic Claude** | Claude Opus 4.6, Claude Sonnet 4.6, Claude Haiku 4.5 |
 | **Google Gemini** | Gemini 3 Flash (Preview), Gemini 3 Pro (Preview), Gemini 2.5 Flash, Gemini 2.5 Pro |
-| **Cerebras** | Llama 4 Scout 17B |
 
 The active runtime registry is the result of built-in providers plus the active `protoagent.jsonc` file.
 
@@ -115,10 +113,10 @@ The loop in `src/agentic-loop.ts`:
 3. sends messages and tools to the model
 4. streams assistant text and tool calls
 5. executes tools and appends results
-6. retries selected transient failures (400, 429, 5xx)
+6. retries selected transient failures (400 context-too-long, 429 rate limit, 5xx server errors)
 7. returns when the model emits plain assistant text
 
-It also sanitizes malformed streamed tool names and JSON payloads before retrying. Sub-agent calls are routed through the loop rather than the normal tool registry.
+It sanitizes malformed streamed tool names and JSON payloads before retrying. Sub-agent calls are routed through the loop rather than the normal tool registry.
 
 ## 7. Tool System
 
@@ -161,9 +159,9 @@ Approval can be granted:
 
 - per-operation (one-time)
 - per-type for the session
-- globally via `--dangerously-accept-all`
+- globally via `--dangerously-skip-permissions`
 
-Hard-blocked shell patterns are always denied, even with `--dangerously-accept-all`. If no approval handler is registered, operations fail closed (rejected).
+Hard-blocked shell patterns are always denied, even with `--dangerously-skip-permissions`. If no approval handler is registered, operations fail closed (rejected).
 
 ## 10. Session Persistence
 
@@ -207,7 +205,7 @@ with URL, timeout, redirect, MIME, and size limits enforced in `src/tools/webfet
 
 ## 15. Sub-agents
 
-`sub_agent` creates isolated child runs with their own message history and system prompt. Children use the normal tool stack but do not recursively expose `sub_agent`. Default iteration limit is 30. Child TODOs are ephemeral and cleared on completion.
+`sub_agent` creates isolated child runs with their own message history and system prompt. Children use the normal tool stack but do not recursively expose `sub_agent`. Default iteration limit is 100. Child TODOs are ephemeral and cleared on completion.
 
 ## 16. Terminal UI
 

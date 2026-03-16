@@ -1,21 +1,48 @@
-/**
- * Sub-agents — Spawn isolated child agent sessions.
- *
- * Sub-agents prevent context pollution by running tasks in a separate
- * message history. The parent agent delegates a task, the sub-agent
- * executes it with its own tool calls, and returns a summary.
- *
- * This is exposed as a `sub_agent` tool that the main agent can call.
- */
+# Part 12: Sub-agents
+
+Sub-agents solve context pollution. Sometimes the model needs to do noisy work — search a repo, read ten files, compare implementations — just to answer one question. Without sub-agents, all that intermediate work stays in the parent conversation forever. Sub-agents push it into an isolated child run that returns only a summary.
+
+## What you are building
+
+Starting from Part 11, you add:
+
+- `src/sub-agent.ts` — isolated child agent execution
+- Updated `src/agentic-loop.ts` — imports and registers the sub-agent tool, routes `sub_agent` tool calls to the child runner
+
+## Step 1: Create `src/sub-agent.ts`
+
+Create the file:
+
+```bash
+touch src/sub-agent.ts
+```
+
+The `sub-agent.ts` file will look very similar to the existing `agentic-loop.ts` file. That is because it has it's own loop, with a few variations. For instance, the `sub-agent.ts` must run autonomously and be a background agent, while the main `agentic-loop.ts` interacts with the user.The sub-agent gets its own message history, system prompt, and tool access.
+
+This is the analogy: With subagents, the parent delegates a research task to a specialist. That specialist might read 20 files, run grep, compare implementations — messy exploratory work. All those intermediate steps stay in the specialist's notebook. When they're done, they hand the parent a single summary. The parent never sees the messy drafts, only the clean result.
+
+```typescript
+// src/sub-agent.ts
 
 import type OpenAI from 'openai';
 import crypto from 'node:crypto';
 import { handleToolCall, getAllTools } from './tools/index.js';
 import { generateSystemPrompt } from './system-prompt.js';
-import { logger } from './utils/logger.js';
 import { clearTodos } from './tools/todo.js';
-import type { ModelPricing } from './utils/cost-tracker.js';
+import { ModelPricing } from './utils/cost-tracker.js';
 
+export interface SubAgentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+}
+
+export interface SubAgentResult {
+  response: string;
+  usage: SubAgentUsage;
+}
+
+// Defines sub-agents as a tool that the main coding agent can invoke
 export const subAgentTool = {
   type: 'function' as const,
   function: {
@@ -43,21 +70,7 @@ export const subAgentTool = {
 
 export type SubAgentProgressHandler = (event: { tool: string; status: 'running' | 'done' | 'error'; iteration: number; args?: Record<string, unknown> }) => void;
 
-export interface SubAgentUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cost: number;
-}
-
-export interface SubAgentResult {
-  response: string;
-  usage: SubAgentUsage;
-}
-
-/**
- * Run a sub-agent with its own isolated conversation.
- * Returns the sub-agent's final text response.
- */
+// Spawns an isolated sub-agent to handle a task independently from the main conversation context.
 export async function runSubAgent(
   client: OpenAI,
   model: string,
@@ -66,9 +79,8 @@ export async function runSubAgent(
   requestDefaults: Record<string, unknown> = {},
   onProgress?: SubAgentProgressHandler,
   abortSignal?: AbortSignal,
-  pricing?: ModelPricing,
+  pricing?: ModelPricing
 ): Promise<SubAgentResult> {
-  const op = logger.startOperation('sub-agent');
   const subAgentSessionId = `sub-agent-${crypto.randomUUID()}`;
 
   const systemPrompt = await generateSystemPrompt();
@@ -176,7 +188,6 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
       } catch (err) {
         // If aborted during streaming, return gracefully
         if (abortSignal?.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message === 'Operation aborted'))) {
-          logger.debug('Sub-agent aborted during streaming');
           return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
         }
         throw err;
@@ -197,10 +208,6 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
             JSON.parse(args);
             return true;
           } catch {
-            logger.warn('Filtering out sub-agent tool call with malformed JSON', {
-              tool: tc.function?.name,
-              argsPreview: args.slice(0, 100),
-            });
             return false;
           }
         });
@@ -224,7 +231,6 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
           } catch {
             args = {};
           }
-          logger.debug(`Sub-agent tool call: ${name}`, { args });
           onProgress?.({ tool: name, status: 'running', iteration: i, args });
 
           try {
@@ -256,16 +262,187 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
         });
         return { response: message.content, usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
       }
-      // The model produced an empty text response (e.g. it only called tools
-      // and issued no final summary).  Log it and return a sentinel so the
-      // parent agent knows the sub-agent finished but had nothing to say.
-      logger.debug('Sub-agent returned empty content', { iteration: i });
       return { response: '(sub-agent completed with no response)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
     }
 
     return { response: '(sub-agent reached iteration limit)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
   } finally {
-    op.end();
     clearTodos(subAgentSessionId);
   }
 }
+```
+
+## Step 2: Update `src/tools/index.ts`
+
+Add `abortSignal` to `ToolCallContext` so tools can honor cancellation when a sub-agent is aborted:
+
+```typescript
+export interface ToolCallContext {
+  sessionId?: string;
+  abortSignal?: AbortSignal;
+}
+```
+
+## Step 3: Update `src/agentic-loop.ts`
+
+Import the sub-agent tool and types, add `sub_agent_iteration` event type, and wire up special handling for `sub_agent` tool calls.
+
+Add the import at the top:
+
+```typescript
+import { subAgentTool, runSubAgent, type SubAgentProgressHandler, SubAgentResult } from './sub-agent.js';
+```
+
+Update `AgentEvent` to include sub-agent progress and usage:
+
+```typescript
+export interface AgentEvent {
+  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done' | 'sub_agent_iteration';
+  content?: string;
+  toolCall?: ToolCallEvent;
+  usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
+  error?: string;
+  transient?: boolean;
+  subAgentTool?: { tool: string; status: 'running' | 'done' | 'error'; iteration: number; args?: Record<string, unknown> };
+  subAgentUsage?: { inputTokens: number; outputTokens: number; cost: number };
+}
+```
+
+Include `subAgentTool` in the tools list sent to the API:
+
+```typescript
+const allTools = [...getAllTools(), subAgentTool];
+```
+
+In your tool execution section (above where `handleToolCall` is called), add special handling for `sub_agent`:
+
+```typescript
+let result: string;
+
+// Handle sub-agent tool specially
+if (name === 'sub_agent') {
+  const subProgress: SubAgentProgressHandler = (evt) => {
+    onEvent({
+      type: 'sub_agent_iteration',
+      subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration, args: evt.args },
+    });
+  };
+  const subResult = await runSubAgent(
+    client,
+    model,
+    args.task,
+    args.max_iterations,
+    requestDefaults,
+    subProgress,
+    abortSignal,
+    pricing,
+  );
+  result = subResult.response;
+  // Emit sub-agent usage for the UI to add to total cost
+  if (subResult.usage.inputTokens > 0 || subResult.usage.outputTokens > 0) {
+    onEvent({
+      type: 'sub_agent_iteration',
+      subAgentUsage: subResult.usage,
+    });
+  }
+} else {
+  result = await handleToolCall(name, args, { sessionId, abortSignal });
+}
+```
+
+## Verification
+
+```bash
+npm run dev
+```
+
+Try a prompt that benefits from delegation:
+
+```text
+Investigate how the config system works in this project using a sub-agent and summarize the flow.
+```
+
+You should see:
+- A `sub_agent` tool call in the parent conversation
+- The spinner briefly showing `sub_agent → bash` (or whichever tool the sub-agent is using) — these are `sub_agent_iteration` events that update the spinner without adding entries to the parent's message history
+- Only the summary returned to the parent transcript
+
+```
+
+ █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+ █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █ 
+
+
+Model: OpenAI / gpt-5-mini
+[System prompt loaded]
+
+> use a subagent to understand this codebase
+Tool: todo_write({"todos":[{"id":"analyze-subagent","content":"Spawn sub-agent to 
+analyze the codebase: list files, r)
+TODO List Updated (2 items):
+[~] [high] Spawn sub-agent to analyze the codebase: list files, read package.json 
+and AGENTS.md, scan src/, summarize each module, identify entry points, build/test 
+script...
+Tool: sub_agent({"task":"Analyze the TypeScript codebase in 
+/Users/thomasgauvin/work-in-progress/2025/protoagent/pro)
+BEEP BEEP
+{
+  "files_listed": {
+    "root": [
+      ".env",
+      ".protoagent",
+      "agents.md",
+      "dist",
+      "node_modules",
+      "package-lock.json",
+      "package.json",
+      "src",
+  ...
+BEEP BEEP
+
+✅ Sub-agent completed analysis.
+
+Summary (concise):
+- I spawned a sub-agent that listed files, read package.json, AGENTS.md,
+tsconfig.json, and key source files.
+- The sub-agent produced per-file summaries, identified entry points (src/cli.tsx
+and dist/cli.js), listed scripts, and proposed follow-up tasks.
+
+Key findings:
+- package.json scripts: "build" (tsc), "dev" (tsx src/cli.tsx), "build:watch". No
+"test" script despite AGENTS.md recommending npm test.
+- TypeScript config: strict mode enabled, NodeNext module resolution, outDir dist,
+rootDir src.
+- Main entry: src/cli.tsx (dev) and compiled dist/cli.js (bin).
+- Notable modules: agentic-loop (core streaming logic), tools/index (tool registry),
+ skills (dynamic skill discovery), mcp (Model Context Protocol integration),
+sub-agent (spawns isolated agents), App.tsx (Ink UI).
+- Several modules silently swallow errors (skills, mcp, session load) — add
+logging/diagnostics.
+- Tests and CI are missing; add unit tests for streaming/tool-calls and
+runtime-config.
+
+Next recommended tasks (pick one and I'll proceed):
+- Add a test script and initial unit tests (I can scaffold tests for agentic-loop or
+ tools).
+- Improve error logging in skills loading and MCP initialization.
+- Create README and document build/test workflow.
+- Run project build (npm run build) to confirm compile status.
+
+Which follow-up task do you want me to take next?
+
+tokens: 7373↓ 352↑ | ctx: 1% | cost: $0.0043
+
+Session: 1h32x5xy
+╭────────────────────────────────────────────────────╮
+│ > Type your message...                             │
+╰────────────────────────────────────────────────────╯
+```
+
+## Resulting snapshot
+
+Your project should match `protoagent-tutorial-again-part-12`.
+
+## Core takeaway
+
+Sub-agents keep the main conversation clean by running noisy investigation work in an isolated context. The parent gets a focused summary instead of hundreds of intermediate tool calls polluting its history.

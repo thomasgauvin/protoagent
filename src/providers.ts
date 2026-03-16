@@ -13,6 +13,7 @@ export interface ModelDetails {
   contextWindow: number;
   pricingPerMillionInput: number;
   pricingPerMillionOutput: number;
+  pricingPerMillionCached?: number;
   defaultParams?: Record<string, unknown>;
 }
 
@@ -33,9 +34,9 @@ export const BUILTIN_PROVIDERS: ModelProvider[] = [
     name: 'OpenAI',
     apiKeyEnvVar: 'OPENAI_API_KEY',
     models: [
-      { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 200_000, pricingPerMillionInput: 6.0, pricingPerMillionOutput: 24.0 },
-      { id: 'gpt-5-mini', name: 'GPT-5 Mini', contextWindow: 200_000, pricingPerMillionInput: 0.15, pricingPerMillionOutput: 0.6 },
-      { id: 'gpt-4.1', name: 'GPT-4.1', contextWindow: 128_000, pricingPerMillionInput: 2.5, pricingPerMillionOutput: 10.0 },
+      { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 1_048_576, pricingPerMillionInput: 2.50, pricingPerMillionOutput: 15.00 },
+      { id: 'gpt-5-mini', name: 'GPT-5 Mini', contextWindow: 1_000_000, pricingPerMillionInput: 0.25, pricingPerMillionOutput: 2.00 },
+      { id: 'gpt-4.1', name: 'GPT-4.1', contextWindow: 1_048_576, pricingPerMillionInput: 2.0, pricingPerMillionOutput: 8.00 },
     ],
   },
   {
@@ -55,19 +56,10 @@ export const BUILTIN_PROVIDERS: ModelProvider[] = [
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
     apiKeyEnvVar: 'GEMINI_API_KEY',
     models: [
-      { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 0.075, pricingPerMillionOutput: 0.3 },
-      { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 1.25, pricingPerMillionOutput: 10.0 },
-      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1_000_000, pricingPerMillionInput: 0.075, pricingPerMillionOutput: 0.3 },
+      { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 0.50, pricingPerMillionOutput: 3.0 },
+      { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 2.0, pricingPerMillionOutput: 12.0 },
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1_000_000, pricingPerMillionInput: 0.30, pricingPerMillionOutput: 2.5 },
       { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', contextWindow: 1_000_000, pricingPerMillionInput: 1.25, pricingPerMillionOutput: 10.0 },
-    ],
-  },
-  {
-    id: 'cerebras',
-    name: 'Cerebras',
-    baseURL: 'https://api.cerebras.ai/v1',
-    apiKeyEnvVar: 'CEREBRAS_API_KEY',
-    models: [
-      { id: 'llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B', contextWindow: 128_000, pricingPerMillionInput: 0.0, pricingPerMillionOutput: 0.0 },
     ],
   },
 ];
@@ -91,6 +83,7 @@ function mergeModelLists(baseModels: ModelDetails[], overrideModels?: Record<str
       contextWindow: override.contextWindow ?? current?.contextWindow ?? 0,
       pricingPerMillionInput: override.inputPricePerMillion ?? current?.pricingPerMillionInput ?? 0,
       pricingPerMillionOutput: override.outputPricePerMillion ?? current?.pricingPerMillionOutput ?? 0,
+      pricingPerMillionCached: override.cachedPricePerMillion ?? current?.pricingPerMillionCached,
       defaultParams: sanitizeDefaultParams({
         ...(current?.defaultParams || {}),
         ...(override.defaultParams || {}),
@@ -138,6 +131,7 @@ export function getModelPricing(providerId: string, modelId: string) {
   return {
     inputPerToken: details.pricingPerMillionInput / 1_000_000,
     outputPerToken: details.pricingPerMillionOutput / 1_000_000,
+    cachedPerToken: details.pricingPerMillionCached != null ? details.pricingPerMillionCached / 1_000_000 : undefined,
     contextWindow: details.contextWindow,
   };
 }

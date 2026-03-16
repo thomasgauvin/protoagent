@@ -28,14 +28,14 @@ const program = new Command();
 program
   .description('ProtoAgent — a simple, hackable coding agent CLI')
   .version(packageJson.version)
-  .option('--dangerously-accept-all', 'Auto-approve all file writes and shell commands')
-  .option('--log-level <level>', 'Log level: TRACE, DEBUG, INFO, WARN, ERROR', 'INFO')
+  .option('--dangerously-skip-permissions', 'Auto-approve all file writes and shell commands')
+  .option('--log-level <level>', 'Log level: TRACE, DEBUG, INFO, WARN, ERROR', 'DEBUG')
   .option('--session <id>', 'Resume a previous session by ID')
   .action((options) => {
     // Default action - start the main app
     render(
       <App
-        dangerouslyAcceptAll={options.dangerouslyAcceptAll || false}
+        dangerouslySkipPermissions={options.dangerouslySkipPermissions || false}
         logLevel={options.logLevel}
         sessionId={options.session}
       />

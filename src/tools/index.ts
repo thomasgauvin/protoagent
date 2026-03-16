@@ -18,7 +18,7 @@ import { bashTool, runBash } from './bash.js';
 import { todoReadTool, todoWriteTool, readTodos, writeTodos } from './todo.js';
 import { webfetchTool, webfetch } from './webfetch.js';
 
-export { setDangerouslyAcceptAll, setApprovalHandler, clearApprovalHandler } from '../utils/approval.js';
+export { setDangerouslySkipPermissions, setApprovalHandler, clearApprovalHandler } from '../utils/approval.js';
 
 export interface ToolCallContext {
   sessionId?: string;

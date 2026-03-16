@@ -55,7 +55,6 @@ CLI (Commander)
 
 Inside the TUI, the current app supports:
 
-- `/clear`
 - `/collapse`
 - `/expand`
 - `/help`
@@ -95,15 +94,13 @@ This file remains intentionally small. It stores the selected provider, selected
 ProtoAgent also reads `protoagent.jsonc` from these locations:
 
 - `<process.cwd()>/.protoagent/protoagent.jsonc`
-- `~/.protoagent/protoagent.jsonc`
 - `~/.config/protoagent/protoagent.jsonc`
 
 All files are optional. If multiple files are present, they are merged in this order:
 
 1. built-in defaults from source
 2. `~/.config/protoagent/protoagent.jsonc`
-3. `~/.protoagent/protoagent.jsonc`
-4. `<process.cwd()>/.protoagent/protoagent.jsonc`
+3. `<process.cwd()>/.protoagent/protoagent.jsonc`
 
 Later entries win on conflict.
 
