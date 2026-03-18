@@ -179,31 +179,58 @@ Create the file:
 touch src/utils/format-message.tsx
 ```
 
-Converts markdown-style formatting to ANSI escape codes for terminal rendering.
+Adds support for markdown-style formatting (**bold**, *italic*, ***bold italic***) using Ink `<Text>` components with proper props.
 
 ```typescript
 // src/utils/format-message.tsx
 
-export function formatMessage(text: string): string {
-  const BOLD = '\x1b[1m';
-  const ITALIC = '\x1b[3m';
-  const RESET = '\x1b[0m';
+import React from 'react';
+import { Text } from 'ink';
 
-  let result = text;
+interface Segment {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+}
 
-  // Strip markdown hashtags (headers)
-  result = result.replace(/^#+\s+/gm, '');
+function parseSegments(text: string): Segment[] {
+  const segments: Segment[] = [];
+  const cleaned = text.replace(/^#+\s+/gm, '');
+  const pattern = /(\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^\s*][^*]*?\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
 
-  // Replace ***bold italic*** first
-  result = result.replace(/\*\*\*(.+?)\*\*\*/g, `${BOLD}${ITALIC}$1${RESET}`);
+  while ((match = pattern.exec(cleaned)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ text: cleaned.slice(lastIndex, match.index) });
+    }
+    const fullMatch = match[0];
+    const content = fullMatch.slice(fullMatch.startsWith('***') ? 3 : 2, fullMatch.startsWith('***') ? -3 : -2);
+    if (fullMatch.startsWith('***')) {
+      segments.push({ text: content, bold: true, italic: true });
+    } else if (fullMatch.startsWith('**')) {
+      segments.push({ text: content, bold: true });
+    } else {
+      segments.push({ text: content, italic: true });
+    }
+    lastIndex = pattern.lastIndex;
+  }
 
-  // Replace **bold**
-  result = result.replace(/\*\*(.+?)\*\*/g, `${BOLD}$1${RESET}`);
+  if (lastIndex < cleaned.length) {
+    segments.push({ text: cleaned.slice(lastIndex) });
+  }
+  return segments.length > 0 ? segments : [{ text: cleaned }];
+}
 
-  // Replace *italic*
-  result = result.replace(/\*(.+?)\*/g, `${ITALIC}$1${RESET}`);
-
-  return result;
+/** Render formatted text as Ink Text elements. */
+export function renderFormattedText(text: string): React.ReactNode {
+  const segments = parseSegments(text);
+  if (segments.length === 1 && !segments[0].bold && !segments[0].italic) {
+    return segments[0].text;
+  }
+  return segments.map((seg, i) => (
+    <Text key={i} bold={seg.bold} italic={seg.italic}>{seg.text}</Text>
+  ));
 }
 ```
 
@@ -500,7 +527,7 @@ Renders markdown tables as preformatted monospace text, code blocks with a left-
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import { formatMessage } from '../utils/format-message.js';
+import { renderFormattedText } from '../utils/format-message.js';
 import { LeftBar } from './LeftBar.js';
 
 interface FormattedMessageProps {
@@ -692,7 +719,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
         if (!block.content.trim()) return null;
         return (
           <Box key={index} marginBottom={0}>
-             <Text>{formatMessage(block.content)}</Text>
+             <Text>{renderFormattedText(block.content)}</Text>
           </Box>
         );
       })}
@@ -895,6 +922,7 @@ See `src/mcp.ts` in the source tree for the complete implementation.
 The final App brings together everything from Parts 1-12 plus:
 
 - **Archived vs live message rendering** — archived messages use `useMemo` for performance, live messages re-render during streaming
+- **Static items as React nodes** — `StaticItem` stores `node: React.ReactNode` instead of `text: string`; all `addStatic()` calls use `<Text>` components with Ink props (e.g., `<Text color="green">`, `<Text bold>`) instead of ANSI escape codes
 - **Grouped tool rendering** — tool calls and results are consolidated using `ConsolidatedToolMessage`
 - **Collapsible output** — system prompts and tool results use `CollapsibleBox`
 - **Left-bar indicators** — `LeftBar` replaces Box borders for callout-style content; the bar stretches to match content height via `measureElement` with no extra line overhead
@@ -1098,8 +1126,9 @@ The live source adds `logger` imports and debug calls throughout:
 **Why not in tutorial:** Model specs change frequently. The tutorial provides a working baseline; the live source stays current with actual provider offerings.
 
 ### Minor Code Cleanups
+- `App.tsx` — incremental line-flushing for streaming text: complete lines are flushed to `<Static>` immediately during streaming, leaving only the incomplete final line in the dynamic frame; prevents unbounded growth and enables real-time scrollback copying
 - `sub-agent.ts` — interface ordering, JSDoc header
-- `system-prompt.ts` — enhanced guidelines section (SUBAGENT STRATEGY), config path display
+- `system-prompt.ts` — enhanced guidelines section (SUBAGENT STRATEGY), config path display; now encourages tasteful use of **bold** and *italic* instead of prohibiting it
 - `write-file.ts` — records read after write to prevent staleness guard false positives
 - `compactor.ts` — protected skill message handling
 - `cli.tsx` — shebang, inline comments

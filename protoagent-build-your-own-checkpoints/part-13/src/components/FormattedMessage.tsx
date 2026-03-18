@@ -1,8 +1,6 @@
-// src/components/FormattedMessage.tsx
-
 import React from 'react';
 import { Box, Text } from 'ink';
-import { formatMessage } from '../utils/format-message.js';
+import { renderFormattedText } from '../utils/format-message.js';
 import { LeftBar } from './LeftBar.js';
 
 interface FormattedMessageProps {
@@ -94,6 +92,14 @@ function renderPreformattedTable(markdown: string): string {
   return [header, divider, ...body].join('\n');
 }
 
+/**
+ * FormattedMessage component
+ * 
+ * Parses a markdown string and renders:
+ * - Standard text with ANSI formatting
+ * - Markdown tables as preformatted monospace text
+ * - Code blocks (rendered in a box)
+ */
 export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, deferTables = false }) => {
   if (!content) return null;
 
@@ -110,6 +116,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
     // 1. Handle Code Blocks
     if (currentBlockType === 'code') {
       currentBlockContent.push(line);
+      // Check for end of code block
       if (trimmedLine.startsWith('```')) {
         blocks.push({ type: 'code', content: currentBlockContent.join('\n') });
         currentBlockContent = [];
@@ -120,6 +127,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
 
     // Start Code Block
     if (trimmedLine.startsWith('```')) {
+      // Finish pending text block
       if (currentBlockContent.length > 0) {
         blocks.push({ type: 'text', content: currentBlockContent.join('\n') });
       }
@@ -134,18 +142,23 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
         currentBlockContent.push(line);
         continue;
       } else {
+        // End of table block found (line doesn't start with |)
         blocks.push({ type: 'table', content: currentBlockContent.join('\n') });
+        
+        // Reset to text and fall through to re-process this line
         currentBlockContent = [];
         currentBlockType = 'text';
       }
     }
 
     // Start Table Block check
+    // A table start requires a pipe AND a subsequent separator line
     const isTableStart = trimmedLine.startsWith('|');
     const nextLine = lines[i+1];
     const isNextLineSeparator = nextLine && nextLine.trim().startsWith('|') && nextLine.includes('---');
 
     if (isTableStart && isNextLineSeparator) {
+      // Finish pending text block
       if (currentBlockContent.length > 0) {
         blocks.push({ type: 'text', content: currentBlockContent.join('\n') });
       }
@@ -181,7 +194,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
             </LeftBar>
           );
         }
-
+        
         if (block.type === 'code') {
            return (
              <LeftBar key={index} color="gray" marginTop={1} marginBottom={1}>
@@ -189,12 +202,12 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
              </LeftBar>
            );
         }
-
+        
         // Text Block
         if (!block.content.trim()) return null;
         return (
           <Box key={index} marginBottom={0}>
-             <Text>{formatMessage(block.content)}</Text>
+             <Text>{renderFormattedText(block.content)}</Text>
           </Box>
         );
       })}

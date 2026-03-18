@@ -1,23 +1,81 @@
-// src/utils/format-message.tsx
+import React from 'react';
+import { Text } from 'ink';
 
-export function formatMessage(text: string): string {
-  const BOLD = '\x1b[1m';
-  const ITALIC = '\x1b[3m';
-  const RESET = '\x1b[0m';
+/**
+ * Parse Markdown-style formatting and render as Ink Text elements.
+ *
+ * Supports:
+ * - **bold** → <Text bold>bold</Text>
+ * - *italic* → <Text italic>italic</Text>
+ * - ***bold italic*** → <Text bold italic>bold italic</Text>
+ */
 
-  let result = text;
+interface Segment {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+}
 
-  // Strip markdown hashtags (headers)
-  result = result.replace(/^#+\s+/gm, '');
+function parseSegments(text: string): Segment[] {
+  const segments: Segment[] = [];
 
-  // Replace ***bold italic*** first
-  result = result.replace(/\*\*\*(.+?)\*\*\*/g, `${BOLD}${ITALIC}$1${RESET}`);
+  // Strip markdown headers
+  const cleaned = text.replace(/^#+\s+/gm, '');
 
-  // Replace **bold**
-  result = result.replace(/\*\*(.+?)\*\*/g, `${BOLD}$1${RESET}`);
+  // Pattern to match ***bold italic***, **bold**, *italic*
+  const pattern = /(\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^\s*][^*]*?\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
 
-  // Replace *italic*
-  result = result.replace(/\*(.+?)\*/g, `${ITALIC}$1${RESET}`);
+  while ((match = pattern.exec(cleaned)) !== null) {
+    // Add plain text before match
+    if (match.index > lastIndex) {
+      segments.push({ text: cleaned.slice(lastIndex, match.index) });
+    }
 
-  return result;
+    const fullMatch = match[0];
+    let content: string;
+    let bold = false;
+    let italic = false;
+
+    if (fullMatch.startsWith('***')) {
+      content = fullMatch.slice(3, -3);
+      bold = true;
+      italic = true;
+    } else if (fullMatch.startsWith('**')) {
+      content = fullMatch.slice(2, -2);
+      bold = true;
+    } else {
+      content = fullMatch.slice(1, -1);
+      italic = true;
+    }
+
+    segments.push({ text: content, bold, italic });
+    lastIndex = pattern.lastIndex;
+  }
+
+  // Add remaining plain text
+  if (lastIndex < cleaned.length) {
+    segments.push({ text: cleaned.slice(lastIndex) });
+  }
+
+  return segments.length > 0 ? segments : [{ text: cleaned }];
+}
+
+/**
+ * Render formatted text as Ink Text elements.
+ * Returns an array of <Text> components that can be nested inside a parent <Text>.
+ */
+export function renderFormattedText(text: string): React.ReactNode {
+  const segments = parseSegments(text);
+
+  if (segments.length === 1 && !segments[0].bold && !segments[0].italic) {
+    return segments[0].text;
+  }
+
+  return segments.map((seg, i) => (
+    <Text key={i} bold={seg.bold} italic={seg.italic}>
+      {seg.text}
+    </Text>
+  ));
 }

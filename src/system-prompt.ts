@@ -141,7 +141,8 @@ GUIDELINES
 
 OUTPUT FORMAT:
 - You are running in a terminal. Be concise. Optimise for scannability.
-- Do NOT use Markdown formatting. No **bold**, no *italic*, no # headers, no --- dividers.
+- Use **bold** and *italic* formatting tastefully to highlight key points and structure your responses.
+- Do NOT use # headers, --- dividers, or other structural Markdown.
 - Do NOT use Markdown code fences (backticks) unless the content is actual code or a command.
 - For structured data, use plain text with aligned columns (spaces, not pipes/dashes).
 - Keep tables compact: narrower columns, minimal padding. Wrap cell content rather than making very wide tables.

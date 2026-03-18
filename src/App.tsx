@@ -83,6 +83,7 @@ import {
 import { clearTodos, getTodosForSession, setTodosForSession } from './tools/todo.js';
 import { initializeMcp, closeMcp, getConnectedMcpServers } from './mcp.js';
 import { generateSystemPrompt } from './system-prompt.js';
+import { renderFormattedText } from './utils/format-message.js';
 
 interface InlineThreadError {
   id: string;
@@ -94,10 +95,10 @@ interface InlineThreadError {
 // permanently flushed to the terminal scrollback by Ink's Static component.
 interface StaticItem {
   id: string;
-  text: string;
+  node: React.ReactNode;
 }
 
-type AddStaticFn = (text: string) => void;
+type AddStaticFn = (node: React.ReactNode) => void;
 
 // ─── Scrollback helpers ───
 // These functions append text to the permanent scrollback buffer via the
@@ -107,13 +108,14 @@ type AddStaticFn = (text: string) => void;
 
 
 function printBanner(addStatic: AddStaticFn): void {
-  const green = '\x1b[38;2;9;164;105m';
-  const reset = '\x1b[0m';
-  addStatic([
-    `${green}█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀${reset}`,
-    `${green}█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █${reset}`,
-    '',
-  ].join('\n'));
+  addStatic(
+    <Text>
+      <Text color="#09A469">█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀</Text>
+      {'\n'}
+      <Text color="#09A469">█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █</Text>
+      {'\n'}
+    </Text>
+  );
 }
 
 function printRuntimeHeader(addStatic: AddStaticFn, config: Config, session: Session | null, dangerouslySkipPermissions: boolean): void {
@@ -121,21 +123,28 @@ function printRuntimeHeader(addStatic: AddStaticFn, config: Config, session: Ses
   let line = `Model: ${provider?.name || config.provider} / ${config.model}`;
   if (dangerouslySkipPermissions) line += ' (auto-approve all)';
   if (session) line += ` | Session: ${session.id}`;
-  let text = `\x1b[2m${line}\x1b[0m\n`;
+  
+  const lines: React.ReactNode[] = [<Text key="model" dimColor>{line}</Text>];
+  
   const logFilePath = logger.getLogFilePath();
   if (logFilePath) {
-    text += `\x1b[2mDebug logs: ${logFilePath}\x1b[0m\n`;
+    lines.push(<Text key="log" dimColor>Debug logs: {logFilePath}</Text>);
   }
   const configPath = getActiveRuntimeConfigPath();
   if (configPath) {
-    text += `\x1b[2mConfig file: ${configPath}\x1b[0m\n`;
+    lines.push(<Text key="config" dimColor>Config file: {configPath}</Text>);
   }
   const mcpServers = getConnectedMcpServers();
   if (mcpServers.length > 0) {
-    text += `\x1b[2mMCPs: ${mcpServers.join(', ')}\x1b[0m\n`;
+    lines.push(<Text key="mcp" dimColor>MCPs: {mcpServers.join(', ')}</Text>);
   }
-  text += '\n';
-  addStatic(text);
+  
+  addStatic(
+    <Text>
+      {lines.map((l, i) => <React.Fragment key={i}>{l}{'\n'}</React.Fragment>)}
+      {'\n'}
+    </Text>
+  );
 }
 
 function normalizeTranscriptText(text: string): string {
@@ -149,14 +158,19 @@ function normalizeTranscriptText(text: string): string {
 function printMessageToScrollback(addStatic: AddStaticFn, role: 'user' | 'assistant', text: string): void {
   const normalized = normalizeTranscriptText(text);
   if (!normalized) {
-    addStatic('\n');
+    addStatic(<Text>{'\n'}</Text>);
     return;
   }
   if (role === 'user') {
-    addStatic(`\x1b[32m>\x1b[0m ${normalized}\n`);
+    addStatic(
+      <Text>
+        <Text color="green">{'>'}</Text> {normalized}{'\n'}
+      </Text>
+    );
     return;
   }
-  addStatic(`${normalized}\n\n`);
+  // Apply Markdown formatting (bold, italic) to assistant messages
+  addStatic(<Text>{renderFormattedText(normalized)}{'\n'}</Text>);
 }
 
 /**
@@ -236,11 +250,11 @@ function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[])
     if (message.role === 'tool') {
       const toolName = msgAny.name || 'tool';
       const compact = String(msgAny.content || '').replace(/\s+/g, ' ').trim().slice(0, 180);
-      addStatic(`\x1b[2m▶ ${toolName}: ${compact}\x1b[0m\n`);
+      addStatic(<Text dimColor>{'▶ '}{toolName}{': '}{compact}{'\n'}</Text>);
     }
   }
   if (messages.length > 0) {
-    addStatic('\n');
+    addStatic(<Text>{'\n'}</Text>);
   }
 }
 
@@ -492,10 +506,10 @@ export const App: React.FC<AppProps> = ({
   // collisions if multiple App instances ever coexist.
   const staticCounterRef = useRef(0);
   const [staticItems, setStaticItems] = useState<StaticItem[]>([]);
-  const addStatic = useCallback((text: string) => {
+  const addStatic = useCallback((node: React.ReactNode) => {
     staticCounterRef.current += 1;
     const id = `s${staticCounterRef.current}`;
-    setStaticItems((prev) => [...prev, { id, text }]);
+    setStaticItems((prev) => [...prev, { id, node }]);
   }, []);
 
   // Core state
@@ -550,6 +564,14 @@ export const App: React.FC<AppProps> = ({
 
   // Abort controller for cancelling the current completion
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Buffer for streaming text that accumulates content and flushes complete lines to static
+  // This prevents the live streaming area from growing unbounded - complete lines are
+  // immediately flushed to <Static>, only the incomplete final line stays in the dynamic frame
+  const streamingBufferRef = useRef<{ unflushedContent: string; hasFlushedAnyLine: boolean }>({
+    unflushedContent: '',
+    hasFlushedAnyLine: false,
+  });
 
   const didPrintIntroRef = useRef(false);
   const printedThreadErrorIdsRef = useRef<Set<string>>(new Set());
@@ -625,7 +647,7 @@ export const App: React.FC<AppProps> = ({
 
   useEffect(() => {
     if (error) {
-      addStatic(`\x1b[31mError: ${error}\x1b[0m\n\n`);
+      addStatic(<Text color="red">Error: {error}</Text>);
     }
   }, [error, addStatic]);
 
@@ -637,7 +659,7 @@ export const App: React.FC<AppProps> = ({
         continue;
       }
       printedThreadErrorIdsRef.current.add(threadError.id);
-      addStatic(`\x1b[31mError: ${threadError.message}\x1b[0m\n\n`);
+      addStatic(<Text color="red">Error: {threadError.message}</Text>);
     }
   }, [threadErrors, addStatic]);
 
@@ -759,8 +781,9 @@ export const App: React.FC<AppProps> = ({
     setHelpMessage(null);
     setThreadErrors([]);
 
-    // Reset turn tracking
+    // Reset turn tracking and streaming buffer
     assistantMessageRef.current = null;
+    streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
 
     // Print the user message directly to scrollback so it is selectable/copyable.
     // We still push it into completionMessages for session saving.
@@ -786,22 +809,66 @@ export const App: React.FC<AppProps> = ({
         (event: AgentEvent) => {
           switch (event.type) {
             case 'text_delta': {
-              // Accumulate tokens into streamingText React state — shown live in
-              // the dynamic Ink frame. The frame height stays constant (spinner +
-              // streaming box + input) so setState here does NOT trigger
-              // clearTerminal. At 'done' the full text is flushed to <Static>.
+              const deltaText = event.content || '';
+
+              // First text delta of this turn: initialize ref, show streaming indicator.
               if (!assistantMessageRef.current || assistantMessageRef.current.kind !== 'streaming_text') {
-                // First text delta of this turn: initialise ref, show streaming indicator.
-                const assistantMsg = { role: 'assistant', content: event.content || '', tool_calls: [] } as Message;
+                // Trim leading whitespace from first delta - LLMs often output leading \n or spaces
+                const trimmedDelta = deltaText.replace(/^\s+/, '');
+                const assistantMsg = { role: 'assistant', content: trimmedDelta, tool_calls: [] } as Message;
                 const idx = completionMessages.length + 1;
                 assistantMessageRef.current = { message: assistantMsg, index: idx, kind: 'streaming_text' };
                 setIsStreaming(true);
-                setStreamingText(event.content || '');
                 setCompletionMessages((prev) => [...prev, assistantMsg]);
+
+                // Initialize the streaming buffer and process the first chunk
+                // through the same split logic as subsequent deltas for consistency
+                const buffer = { unflushedContent: trimmedDelta, hasFlushedAnyLine: false };
+                streamingBufferRef.current = buffer;
+
+                // Process the first chunk: split on newlines and flush complete lines
+                const lines = buffer.unflushedContent.split('\n');
+                if (lines.length > 1) {
+                  const completeLines = lines.slice(0, -1);
+                  const textToFlush = completeLines.join('\n');
+                  if (textToFlush) {
+                    addStatic(renderFormattedText(textToFlush));
+                    buffer.hasFlushedAnyLine = true;
+                  }
+                  buffer.unflushedContent = lines[lines.length - 1];
+                }
+
+                setStreamingText(buffer.unflushedContent);
               } else {
-                // Subsequent deltas — append to ref AND to React state for live display.
-                assistantMessageRef.current.message.content += event.content || '';
-                setStreamingText((prev) => prev + (event.content || ''));
+                // Subsequent deltas — append to ref and buffer, then flush complete lines
+                assistantMessageRef.current.message.content += deltaText;
+
+                // Accumulate in buffer and flush complete lines to static
+                const buffer = streamingBufferRef.current;
+                buffer.unflushedContent += deltaText;
+
+                // Split on newlines to find complete lines
+                const lines = buffer.unflushedContent.split('\n');
+
+                // If we have more than 1 element, there were newlines
+                if (lines.length > 1) {
+                  // All lines except the last one are complete (ended with \n)
+                  const completeLines = lines.slice(0, -1);
+
+                  // Build the text to flush - each complete line gets a newline added back
+                  const textToFlush = completeLines.join('\n');
+
+                  if (textToFlush) {
+                    addStatic(renderFormattedText(textToFlush));
+                    buffer.hasFlushedAnyLine = true;
+                  }
+
+                  // Keep only the last (incomplete) line in the buffer
+                  buffer.unflushedContent = lines[lines.length - 1];
+                }
+
+                // Show the incomplete line (if any) in the dynamic frame
+                setStreamingText(buffer.unflushedContent);
               }
               break;
             }
@@ -825,14 +892,22 @@ export const App: React.FC<AppProps> = ({
                 setActiveTool(toolCall.name);
 
                 // If the model streamed some text before invoking this tool,
-                // flush it to <Static> now. Without this, streamingText is
-                // never cleared — the 'done' handler only flushes streaming_text
-                // when the turn ends with plain text, not with tool calls.
+                // flush any remaining unflushed content to <Static> now.
+                // The streaming buffer contains text that hasn't been flushed yet
+                // (the incomplete final line). We need to flush it before the tool call.
                 if (assistantMessageRef.current?.kind === 'streaming_text') {
-                  const precedingText = assistantMessageRef.current.message.content || '';
-                  if (precedingText) {
-                    addStatic(`${normalizeTranscriptText(precedingText)}\n\n`);
+                  const buffer = streamingBufferRef.current;
+
+                  // Flush any remaining unflushed content
+                  if (buffer.unflushedContent) {
+                    addStatic(renderFormattedText(buffer.unflushedContent));
                   }
+
+                  // Add spacing after the streamed text and before the tool call
+                  addStatic(renderFormattedText('\n'));
+
+                  // Reset streaming state and buffer
+                  streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
                   setIsStreaming(false);
                   setStreamingText('');
                   assistantMessageRef.current = null;
@@ -896,7 +971,7 @@ export const App: React.FC<AppProps> = ({
                   .replace(/\s+/g, ' ')
                   .trim()
                   .slice(0, 180);
-                addStatic(`\x1b[2m▶ ${toolCall.name}: ${compactResult}\x1b[0m\n`);
+                addStatic(<Text dimColor>{'▶ '}{toolCall.name}{': '}{compactResult}{'\n'}</Text>);
 
                 // Flush the assistant message + tool result into completionMessages
                 // for session saving.
@@ -965,14 +1040,34 @@ export const App: React.FC<AppProps> = ({
             case 'done':
               if (assistantMessageRef.current?.kind === 'streaming_text') {
                 const finalRef = assistantMessageRef.current;
-                // Flush the complete streamed text to <Static> (permanent scrollback),
-                // then clear the live streaming state from the dynamic Ink frame.
-                const normalized = normalizeTranscriptText(finalRef.message.content || '');
-                if (normalized) {
-                  addStatic(`${normalized}\n\n`);
+                const buffer = streamingBufferRef.current;
+
+                // Flush any remaining unflushed content from the buffer
+                // This is the final incomplete line that was being displayed live
+                if (buffer.unflushedContent) {
+                  // If we've already flushed some lines, just append the remainder
+                  // Otherwise, normalize and flush the full content
+                  if (buffer.hasFlushedAnyLine) {
+                    addStatic(renderFormattedText(buffer.unflushedContent));
+                  } else {
+                    // Nothing was flushed yet, normalize the full content
+                    const normalized = normalizeTranscriptText(finalRef.message.content || '');
+                    if (normalized) {
+                      addStatic(renderFormattedText(normalized));
+                    }
+                  }
                 }
+
+                // Add final spacing after the streamed text
+                // Always add one newline - the user message adds another for blank line separation
+                if (buffer.unflushedContent) {
+                  addStatic(renderFormattedText('\n'));
+                }
+
+                // Clear streaming state and buffer
                 setIsStreaming(false);
                 setStreamingText('');
+                streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
                 setCompletionMessages((prev) => {
                   const updated = [...prev];
                   updated[finalRef.index] = { ...finalRef.message };
@@ -1029,7 +1124,7 @@ export const App: React.FC<AppProps> = ({
       {/* Permanent scrollback — Ink flushes new items once within its render cycle */}
       <Static items={staticItems}>
         {(item) => (
-          <Text key={item.id}>{item.text}</Text>
+          <Text key={item.id}>{item.node}</Text>
         )}
       </Static>
 
@@ -1052,7 +1147,7 @@ export const App: React.FC<AppProps> = ({
       )}
 
       {isStreaming && (
-        <Text wrap="wrap">{clipToRows(streamingText, terminalRows)}<Text dimColor>▍</Text></Text>
+        <Text wrap="wrap">{renderFormattedText(clipToRows(streamingText, terminalRows))}<Text dimColor>▍</Text></Text>
       )}
 
       {threadErrors.filter((threadError) => threadError.transient).map((threadError) => (

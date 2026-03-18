@@ -1,6 +1,6 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { formatMessage } from '../utils/format-message.js';
+import { renderFormattedText } from '../utils/format-message.js';
 import { LeftBar } from './LeftBar.js';
 
 interface FormattedMessageProps {
@@ -207,7 +207,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, def
         if (!block.content.trim()) return null;
         return (
           <Box key={index} marginBottom={0}>
-             <Text>{formatMessage(block.content)}</Text>
+             <Text>{renderFormattedText(block.content)}</Text>
           </Box>
         );
       })}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useData } from 'vitepress'
 
 const { frontmatter } = useData()
@@ -8,11 +8,11 @@ const hero = computed(() => frontmatter.value.hero || {})
 const features = computed(() => frontmatter.value.features || [])
 
 const marqueeItems = [
-  'BUILD-IT-YOURSELF AI CODING AGENT',
-  'MULTI-STEP TOOL LOOPS',
-  'MCP + SKILLS SUPPORT',
-  'SESSION PERSISTENCE',
-  'SUB-AGENTS FOR CLEAN CONTEXT',
+  { desktop: 'BUILD-IT-YOURSELF AI CODING AGENT', mobile: 'DIY AI CODING AGENT' },
+  { desktop: 'MULTI-STEP TOOL LOOPS', mobile: 'TOOL LOOPS' },
+  { desktop: 'MCP + SKILLS SUPPORT', mobile: 'MCP + SKILLS' },
+  { desktop: 'SESSION PERSISTENCE', mobile: 'SESSIONS' },
+  { desktop: 'SUB-AGENTS FOR CLEAN CONTEXT', mobile: 'SUB-AGENTS' },
 ]
 
 const stats = [
@@ -21,30 +21,90 @@ const stats = [
   { label: '// use it in real projects', value: 'USABLE', width: '100%' },
 ]
 
-const terminalLines = [
+// Initial static lines (shown immediately for full height)
+const initialLines = [
   { type: 'dim', text: 'Model: OpenAI / gpt-5-mini' },
   { type: 'dim', text: '[System prompt loaded]' },
   { type: 'gap', text: '' },
+]
+
+// Lines to stream in (the conversation)
+const streamingLines = [
   { type: 'prompt', text: '> hi' },
   { type: 'dim', text: 'Hi — how can I help you today?' },
   { type: 'gap', text: '' },
   { type: 'prompt', text: '> create index.html with hello world' },
   { type: 'gap', text: '' },
-  { type: 'dim', text: 'Tool: write_file({"file_path":"index.html","content":"<!doctype html>...' },
+  { type: 'dim', text: 'Tool: write_file({"file_path":"index.html","content":"<!doctype html>...', instant: true },
   { type: 'gap', text: '' },
   { type: 'ok', text: 'Successfully wrote 12 lines to index.html' },
   { type: 'gap', text: '' },
   { type: 'dim', text: 'Done — I created index.html with "hello world".' },
   { type: 'dim', text: 'Would you like any styling or additional content?' },
 ]
+
+// Streaming animation state
+const displayedLines = ref<{ type: string; text: string; visible: boolean }[]>([
+  ...initialLines.map(line => ({ ...line, visible: true })),
+  ...streamingLines.map(line => ({ ...line, visible: false }))
+])
+const currentLineIndex = ref(initialLines.length)
+const currentCharIndex = ref(0)
+const isStreaming = ref(true)
+
+onMounted(() => {
+  const streamNextChar = () => {
+    const streamingStartIndex = initialLines.length
+    if (currentLineIndex.value >= displayedLines.value.length) {
+      isStreaming.value = false
+      return
+    }
+
+    const targetLine = streamingLines[currentLineIndex.value - streamingStartIndex]
+    const displayedLine = displayedLines.value[currentLineIndex.value]
+
+    // Make line visible if not already
+    if (!displayedLine.visible) {
+      displayedLine.visible = true
+    }
+
+    // Instant lines (tool calls) appear all at once
+    if ('instant' in targetLine && targetLine.instant) {
+      displayedLine.text = targetLine.text
+      currentLineIndex.value++
+      currentCharIndex.value = 0
+      setTimeout(streamNextChar, 300)
+      return
+    }
+
+    // Stream characters
+    if (currentCharIndex.value < targetLine.text.length) {
+      displayedLine.text = targetLine.text.slice(0, currentCharIndex.value + 1)
+      currentCharIndex.value++
+      const delay = targetLine.type === 'gap' ? 50 : Math.random() * 30 + 20
+      setTimeout(streamNextChar, delay)
+    } else {
+      // Move to next line
+      currentLineIndex.value++
+      currentCharIndex.value = 0
+      const lineDelay = targetLine.type === 'gap' ? 100 : 400
+      setTimeout(streamNextChar, lineDelay)
+    }
+  }
+
+  // Start streaming after a brief delay
+  setTimeout(streamNextChar, 600)
+})
 </script>
 
 <template>
   <div class="pa-home">
     <section class="pa-marquee" aria-label="ProtoAgent highlights">
       <div class="pa-marquee-track">
-        <span v-for="(item, index) in [...marqueeItems, ...marqueeItems]" :key="`${item}-${index}`" class="pa-marquee-item">
-          <span>★</span> {{ item }}
+        <span v-for="(item, index) in [...marqueeItems, ...marqueeItems]" :key="`${item.desktop}-${index}`" class="pa-marquee-item">
+          <span>★</span>
+          <span class="marquee-desktop">{{ item.desktop }}</span>
+          <span class="marquee-mobile">{{ item.mobile }}</span>
         </span>
       </div>
     </section>
@@ -95,16 +155,18 @@ const terminalLines = [
 █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █</pre>
           <div class="pa-terminal-line is-gap"></div>
           <div
-            v-for="line in terminalLines"
-            :key="`${line.type}-${line.text}`"
+            v-for="(line, index) in displayedLines"
+            :key="index"
             class="pa-terminal-line"
-            :class="`is-${line.type}`"
+            :class="[`is-${line.type}`, { 'is-hidden': !line.visible, 'is-cursor': index === currentLineIndex && isStreaming }]"
           >
-            {{ line.text }}
+            {{ line.text }}<span v-if="index === currentLineIndex && isStreaming && line.type !== 'gap'" class="pa-cursor"></span>
           </div>
           <div class="pa-terminal-line is-gap"></div>
           <div class="pa-terminal-line is-input-line">
-            <span class="pa-input-box">Type your message...</span>
+            <span class="pa-input-box" :class="{ 'is-active': !isStreaming }">
+              {{ isStreaming ? '' : 'Type your message...' }}<span v-if="isStreaming" class="pa-cursor"></span>
+            </span>
           </div>
         </div>
       </div>
@@ -358,6 +420,10 @@ const terminalLines = [
   min-height: 12px;
 }
 
+.pa-terminal-line.is-hidden {
+  opacity: 0;
+}
+
 .pa-terminal-line.is-input-line {
   color: var(--text-dim);
 }
@@ -373,13 +439,33 @@ const terminalLines = [
 
 .pa-cursor {
   display: inline-block;
-  width: 10px;
-  height: 16px;
-  margin-left: 4px;
+  width: 8px;
+  height: 14px;
+  margin-left: 2px;
   vertical-align: middle;
   background: var(--green);
   box-shadow: 0 0 10px var(--green-glow);
   animation: terminalBlink 0.9s step-end infinite;
+}
+
+/* Marquee text swap for mobile */
+.marquee-mobile {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .marquee-desktop {
+    display: none;
+  }
+  
+  .marquee-mobile {
+    display: inline;
+  }
+}
+
+@keyframes terminalBlink {
+  0%, 46%, 100% { opacity: 1; }
+  47%, 99% { opacity: 0; }
 }
 
 .pa-features {
