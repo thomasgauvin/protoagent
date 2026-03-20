@@ -367,8 +367,10 @@ export async function runAgenticLoop(
   let contextRetryCount = 0;
   let retriggerCount = 0;
   let truncateRetryCount = 0;
+  let continueRetryCount = 0;
   const MAX_RETRIGGERS = 3;
   const MAX_TRUNCATE_RETRIES = 5;
+  const MAX_CONTINUE_RETRIES = 1;
   const validToolNames = getValidToolNames();
 
   while (iterationCount < maxIterations) {
@@ -865,6 +867,22 @@ export async function runAgenticLoop(
             continue;
           }
         }
+
+        // After truncation retries exhausted, try adding a "continue" message
+        if (continueRetryCount < MAX_CONTINUE_RETRIES) {
+          continueRetryCount++;
+          updatedMessages.push({ role: 'user', content: 'continue' } as Message);
+          logger.warn('400 error: adding "continue" message to retry', {
+            continueRetryCount,
+            messageCount: updatedMessages.length,
+          });
+          onEvent({
+            type: 'error',
+            error: 'Request failed. Retrying with "continue"...',
+            transient: true,
+          });
+          continue;
+        }
       }
 
       // Handle context-window-exceeded (prompt too long) — attempt forced compaction
@@ -940,7 +958,7 @@ export async function runAgenticLoop(
       if (apiError?.status === 400) {
         onEvent({
           type: 'error',
-          error: 'The conversation history appears to be corrupted and could not be automatically repaired. Try /clear to start fresh.',
+          error: `Request failed: ${errMsg}\n\nThe conversation history could not be automatically repaired. Try /clear to start fresh.`,
           transient: false,
         });
         onEvent({ type: 'done' });
