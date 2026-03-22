@@ -18,10 +18,7 @@
     "prepack": "npm run build",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs",
-    "docs:worker:dev": "cd docs-with-worker && npm run docs:dev",
-    "docs:worker:build": "cd docs-with-worker && npm run docs:build",
-    "docs:worker:preview": "cd docs-with-worker && npm run docs:preview"
+    "docs:preview": "vitepress preview docs"
   },
   "author": "Thomas Gauvin",
   "license": "MIT",

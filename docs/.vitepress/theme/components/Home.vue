@@ -21,79 +21,18 @@ const stats = [
   { label: '// use it in real projects', value: 'USABLE', width: '100%' },
 ]
 
-// Initial static lines (shown immediately for full height)
-const initialLines = [
-  { type: 'dim', text: 'Model: OpenAI / gpt-5-mini' },
-  { type: 'dim', text: '[System prompt loaded]' },
-  { type: 'gap', text: '' },
-]
-
-// Lines to stream in (the conversation)
-const streamingLines = [
-  { type: 'prompt', text: '> hi' },
-  { type: 'dim', text: 'Hi — how can I help you today?' },
-  { type: 'gap', text: '' },
-  { type: 'prompt', text: '> create index.html with hello world' },
-  { type: 'gap', text: '' },
-  { type: 'dim', text: 'Tool: write_file({"file_path":"index.html","content":"<!doctype html>...', instant: true },
-  { type: 'gap', text: '' },
-  { type: 'ok', text: 'Successfully wrote 12 lines to index.html' },
-  { type: 'gap', text: '' },
-  { type: 'dim', text: 'Done — I created index.html with "hello world".' },
-  { type: 'dim', text: 'Would you like any styling or additional content?' },
-]
-
-// Streaming animation state
-const displayedLines = ref<{ type: string; text: string; visible: boolean }[]>([
-  ...initialLines.map(line => ({ ...line, visible: true })),
-  ...streamingLines.map(line => ({ ...line, visible: false }))
-])
-const currentLineIndex = ref(initialLines.length)
-const currentCharIndex = ref(0)
-const isStreaming = ref(true)
+// Generate a random session ID for the worker
+const sessionId = ref('')
+const workerUrl = computed(() => {
+  // Production worker URL
+  const baseUrl = 'https://demo.protoagent.dev'
+  // For local development, use: 'http://localhost:8787'
+  return `${baseUrl}/s/${sessionId.value}`
+})
 
 onMounted(() => {
-  const streamNextChar = () => {
-    const streamingStartIndex = initialLines.length
-    if (currentLineIndex.value >= displayedLines.value.length) {
-      isStreaming.value = false
-      return
-    }
-
-    const targetLine = streamingLines[currentLineIndex.value - streamingStartIndex]
-    const displayedLine = displayedLines.value[currentLineIndex.value]
-
-    // Make line visible if not already
-    if (!displayedLine.visible) {
-      displayedLine.visible = true
-    }
-
-    // Instant lines (tool calls) appear all at once
-    if ('instant' in targetLine && targetLine.instant) {
-      displayedLine.text = targetLine.text
-      currentLineIndex.value++
-      currentCharIndex.value = 0
-      setTimeout(streamNextChar, 300)
-      return
-    }
-
-    // Stream characters
-    if (currentCharIndex.value < targetLine.text.length) {
-      displayedLine.text = targetLine.text.slice(0, currentCharIndex.value + 1)
-      currentCharIndex.value++
-      const delay = targetLine.type === 'gap' ? 50 : Math.random() * 30 + 20
-      setTimeout(streamNextChar, delay)
-    } else {
-      // Move to next line
-      currentLineIndex.value++
-      currentCharIndex.value = 0
-      const lineDelay = targetLine.type === 'gap' ? 100 : 400
-      setTimeout(streamNextChar, lineDelay)
-    }
-  }
-
-  // Start streaming after a brief delay
-  setTimeout(streamNextChar, 600)
+  // Generate random session ID
+  sessionId.value = crypto.randomUUID().slice(0, 8)
 })
 </script>
 
@@ -143,30 +82,21 @@ onMounted(() => {
 
       <div class="pa-terminal">
         <div class="pa-terminal-head">
-          <span>TRY IT OUT</span>
-          <span>NPM INSTALL -G PROTOAGENT</span>
+          <span>TRY IT OUT - LIVE SESSION</span>
+          <span v-if="sessionId">SESSION: {{ sessionId }}</span>
+          <span v-else>INITIALIZING...</span>
         </div>
         <div class="pa-terminal-body">
-          <div class="pa-terminal-line is-shell">$ npm i -g protoagent</div>
-          <div class="pa-terminal-line is-shell">$ protoagent</div>
-          <div class="pa-terminal-line is-gap"></div>
-          <div class="pa-terminal-line is-gap"></div>
-          <pre class="pa-terminal-banner">█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
-█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █</pre>
-          <div class="pa-terminal-line is-gap"></div>
-          <div
-            v-for="(line, index) in displayedLines"
-            :key="index"
-            class="pa-terminal-line"
-            :class="[`is-${line.type}`, { 'is-hidden': !line.visible, 'is-cursor': index === currentLineIndex && isStreaming }]"
-          >
-            {{ line.text }}<span v-if="index === currentLineIndex && isStreaming && line.type !== 'gap'" class="pa-cursor"></span>
-          </div>
-          <div class="pa-terminal-line is-gap"></div>
-          <div class="pa-terminal-line is-input-line">
-            <span class="pa-input-box" :class="{ 'is-active': !isStreaming }">
-              {{ isStreaming ? '' : 'Type your message...' }}<span v-if="isStreaming" class="pa-cursor"></span>
-            </span>
+          <iframe
+            v-if="sessionId"
+            :src="workerUrl"
+            class="pa-terminal-iframe"
+            frameborder="0"
+            sandbox="allow-scripts allow-same-origin allow-forms"
+            title="ProtoAgent Worker Terminal"
+          ></iframe>
+          <div v-else class="pa-terminal-loading">
+            <span class="pa-cursor"></span> Initializing session...
           </div>
         </div>
       </div>
@@ -368,6 +298,9 @@ onMounted(() => {
   border: 2px solid var(--border-strong);
   background: linear-gradient(180deg, rgba(6, 14, 8, 0.97), rgba(3, 8, 5, 0.98));
   box-shadow: 0 0 32px rgba(114, 255, 140, 0.08), inset 0 0 44px rgba(114, 255, 140, 0.03);
+  display: flex;
+  flex-direction: column;
+  min-height: 500px;
 }
 
 .pa-terminal-head {
@@ -380,75 +313,52 @@ onMounted(() => {
   font-size: var(--text-sm);
   letter-spacing: 0.18em;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .pa-terminal-body {
-  min-height: 100%;
-  padding: clamp(16px, 2vw, 20px);
-  font-size: clamp(0.65rem, 0.85vw, 0.76rem);
-  line-height: 1.75;
-  overflow-wrap: anywhere;
-}
-
-.pa-terminal-banner {
-  margin: 0 0 8px;
-  color: var(--green);
-  font-family: monospace;
-  font-size: clamp(0.55rem, 0.75vw, 0.68rem);
-  line-height: 1.1;
-  text-shadow: 0 0 8px var(--green-glow), 0 0 20px rgba(114, 255, 140, 0.1);
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
   overflow: hidden;
 }
 
-.pa-terminal-line.is-prompt {
-  color: var(--green);
-}
-
-.pa-terminal-line.is-dim {
-  color: var(--text-dim);
-}
-
-.pa-terminal-line.is-shell {
-  color: var(--text);
-}
-
-.pa-terminal-line.is-ok {
-  color: var(--green-bright);
-}
-
-.pa-terminal-line.is-gap {
-  min-height: 12px;
-}
-
-.pa-terminal-line.is-hidden {
-  opacity: 0;
-}
-
-.pa-terminal-line.is-input-line {
-  color: var(--text-dim);
-}
-
-.pa-input-box {
-  display: inline-block;
-  border: 1px solid var(--border-strong);
-  background: rgba(0, 0, 0, 0.3);
-  padding: 6px 14px;
+.pa-terminal-iframe {
   width: 100%;
-  border-radius: 2px;
+  height: 100%;
+  min-height: 450px;
+  min-width: 320px;
+  display: block;
+  background: #030805;
+  border: none;
+}
+
+.pa-terminal-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 450px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  gap: 12px;
 }
 
 .pa-cursor {
   display: inline-block;
   width: 8px;
   height: 14px;
-  margin-left: 2px;
-  vertical-align: middle;
   background: var(--green);
   box-shadow: 0 0 10px var(--green-glow);
   animation: terminalBlink 0.9s step-end infinite;
 }
 
 /* Marquee text swap for mobile */
+.marquee-desktop {
+  display: inline;
+}
+
 .marquee-mobile {
   display: none;
 }
@@ -561,6 +471,15 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
+  .pa-terminal {
+    min-height: 400px;
+  }
+
+  .pa-terminal-iframe,
+  .pa-terminal-loading {
+    min-height: 350px;
+  }
+
   .pa-feature-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -666,15 +585,19 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
+  .pa-terminal {
+    min-height: 350px;
+  }
+
   .pa-terminal-head {
     padding: 10px 12px;
     font-size: 0.58rem;
     letter-spacing: 0.12em;
   }
 
-  .pa-terminal-body {
-    padding: 14px;
-    font-size: var(--text-sm);
+  .pa-terminal-iframe,
+  .pa-terminal-loading {
+    min-height: 300px;
   }
 }
 </style>
