@@ -295,31 +295,28 @@ if (isTouchDevice) {
   // When user types in mobile input, send to terminal and backend
   let currentLine = '';
   
-  mobileInput.addEventListener('input', (e) => {
-    const newValue = e.target.value;
-    const diff = newValue.length - currentLine.length;
-    
-    if (diff > 0) {
-      // Characters added - send them
-      const added = newValue.slice(currentLine.length);
-      term.write(added);
-      sendJSON({ type: 'input', data: added });
-    } else if (diff < 0) {
-       // Characters deleted - send backspace
-       for (let i = 0; i < Math.abs(diff); i++) {
-         term.write('\\b \\b'); // Backspace visually
-         sendJSON({ type: 'input', data: '\\x7f' }); // DEL key for backend
-       }
-    }
-    
-    currentLine = newValue;
-  });
+   mobileInput.addEventListener('input', (e) => {
+     const newValue = e.target.value;
+     const diff = newValue.length - currentLine.length;
+     
+     if (diff > 0) {
+       // Characters added - send them (don't write locally, backend will echo)
+       const added = newValue.slice(currentLine.length);
+       sendJSON({ type: 'input', data: added });
+     } else if (diff < 0) {
+        // Characters deleted - send backspace
+        for (let i = 0; i < Math.abs(diff); i++) {
+          sendJSON({ type: 'input', data: '\\x7f' }); // DEL key for backend
+        }
+     }
+     
+     currentLine = newValue;
+   });
   
   // Handle Enter key
   mobileInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      term.write('\\r\\n');
       sendJSON({ type: 'input', data: '\\r' });
       mobileInput.value = '';
       currentLine = '';
@@ -328,7 +325,6 @@ if (isTouchDevice) {
   
   // Send button
   mobileSend.addEventListener('click', () => {
-    term.write('\\r\\n');
     sendJSON({ type: 'input', data: '\\r' });
     mobileInput.value = '';
     currentLine = '';
