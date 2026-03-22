@@ -24,8 +24,8 @@ const stats = [
 // Generate a random session ID for the worker
 const sessionId = ref('')
 const workerUrl = computed(() => {
-  // Production worker URL - update this after deploying
-  const baseUrl = 'https://protoagent-worker.thomasgauvin.workers.dev'
+  // Production worker URL
+  const baseUrl = 'https://demo.protoagent.dev'
   // For local development, use: 'http://localhost:8787'
   return `${baseUrl}/s/${sessionId.value}`
 })
