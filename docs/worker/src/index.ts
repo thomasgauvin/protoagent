@@ -229,7 +229,9 @@ function renderFrontend(sessionId: string, origin: string): string {
 <script type="module">
 import { init, Terminal } from 'https://esm.sh/ghostty-web@latest';
 
+console.log('[Debug] Script starting...');
 await init();
+console.log('[Debug] Ghostty initialized');
 
 const term = new Terminal({
   fontSize: 13,
@@ -268,15 +270,19 @@ const term = new Terminal({
 });
 
 const container = document.getElementById('terminal');
-term.open(container);
-
-// Detect if we're on a touch device (mobile/tablet)
-const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-
-// Mobile input handling
 const mobileInputContainer = document.getElementById('mobile-input-container');
 const mobileInput = document.getElementById('mobile-input');
 const mobileSend = document.getElementById('mobile-send');
+const debugStatus = document.getElementById('debug-status');
+
+console.log('[Debug] Elements found:', { container: !!container, mobileInputContainer: !!mobileInputContainer, mobileInput: !!mobileInput, mobileSend: !!mobileSend });
+
+term.open(container);
+console.log('[Debug] Terminal opened');
+
+// Detect if we're on a touch device (mobile/tablet)
+const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+console.log('[Debug] isTouchDevice:', isTouchDevice);
 
 if (isTouchDevice) {
   // Show mobile input bar
@@ -379,7 +385,7 @@ let reconnectDelay = 1000;
 let ws;
 
 function sendJSON(obj) {
-  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
 function updateStatus(msg) {
