@@ -1,0 +1,11 @@
+# Generated stub files - created at deploy time
+stub-files/
+
+# Dependencies
+node_modules/
+
+# Wrangler
+.wrangler/
+
+# Build output
+*.log

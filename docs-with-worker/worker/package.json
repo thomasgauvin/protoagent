@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "predeploy": "node scripts/sync-protoagent-stubs.mjs",
     "deploy": "wrangler deploy",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "sync:stubs": "node scripts/sync-stub-files.mjs"
+    "sync:stubs": "node scripts/sync-stub-files.mjs",
+    "sync:protoagent": "node scripts/sync-protoagent-stubs.mjs"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.41"
