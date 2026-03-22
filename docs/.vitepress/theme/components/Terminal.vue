@@ -13,8 +13,15 @@ const terminalUrl = computed(() => {
 })
 
 onMounted(() => {
-  // Generate a random session ID
-  sessionId.value = Math.random().toString(36).substring(2, 10)
+  // Generate a random session ID - use fallback for non-secure contexts
+  const generateId = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID().slice(0, 8)
+    }
+    // Fallback for non-secure contexts (http://192.168.x.x)
+    return Math.random().toString(36).substring(2, 10)
+  }
+  sessionId.value = generateId()
   isLoading.value = false
 })
 </script>

@@ -28,12 +28,21 @@ const workerUrl = computed(() => {
   const hostname = typeof window !== 'undefined' ? window.location.hostname : ''
   const isLocal = hostname === 'localhost' || /^192\.168\./.test(hostname) || /^10\./.test(hostname)
   const baseUrl = isLocal ? `http://${hostname}:8787` : 'https://demo.protoagent.dev'
-  return `${baseUrl}/s/${sessionId.value}`
+  const url = `${baseUrl}/s/${sessionId.value}`
+  console.log('[Home.vue] Worker URL:', url, 'hostname:', hostname, 'isLocal:', isLocal)
+  return url
 })
 
 onMounted(() => {
-  // Generate random session ID
-  sessionId.value = crypto.randomUUID().slice(0, 8)
+  // Generate random session ID - use fallback for non-secure contexts
+  const generateId = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID().slice(0, 8)
+    }
+    // Fallback for non-secure contexts (http://192.168.x.x)
+    return Math.random().toString(36).substring(2, 10)
+  }
+  sessionId.value = generateId()
 })
 </script>
 

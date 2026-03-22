@@ -180,6 +180,7 @@ function renderFrontend(sessionId: string, origin: string): string {
 </head>
 <body>
 <div id="terminal"></div>
+<div id="debug-status" style="position:fixed; top:4px; right:4px; background:rgba(0,0,0,0.8); color:#72ff8c; font-size:11px; padding:4px 8px; z-index:10000; font-family:monospace;">Initializing...</div>
 
 <script type="module">
 import { init, Terminal } from 'https://esm.sh/ghostty-web@latest';
@@ -284,10 +285,21 @@ function sendJSON(obj) {
 }
 
 let ws;
+let connectionState = 'connecting';
+
+function updateStatus(msg) {
+  connectionState = msg;
+  console.log('[WebSocket]', msg);
+  const el = document.getElementById('debug-status');
+  if (el) el.textContent = msg;
+}
+
 function connect() {
+  updateStatus('connecting to ' + wsUrl);
   ws = new WebSocket(wsUrl);
   
   ws.onopen = () => {
+    updateStatus('connected');
     term.reset();
     reconnectDelay = 1000;
     
@@ -298,20 +310,23 @@ function connect() {
   };
   
   ws.onmessage = (event) => {
-    console.log('[WebSocketRecv]', typeof event.data, event.data.length || event.data.size, 'bytes');
     if (typeof event.data === 'string') {
       term.write(event.data);
     }
   };
   
-  ws.onclose = () => {
+  ws.onclose = (e) => {
+    updateStatus('closed (code: ' + e.code + ', wasClean: ' + e.wasClean + ')');
     setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 2, 10000);
       connect();
     }, reconnectDelay);
   };
   
-  ws.onerror = () => ws.close();
+  ws.onerror = (e) => {
+    updateStatus('error');
+    ws.close();
+  };
 }
 
 // Handle terminal input
