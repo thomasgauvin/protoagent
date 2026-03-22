@@ -224,6 +224,13 @@ const term = new Terminal({
 const container = document.getElementById('terminal');
 term.open(container);
 
+// Focus terminal for mobile input - xterm.js needs explicit focus on the hidden textarea
+term.focus();
+
+// Click/touch handlers to ensure focus works on mobile devices
+container.addEventListener('click', () => term.focus());
+container.addEventListener('touchstart', () => term.focus(), { passive: true });
+
 // Initial fit to set proper canvas size
 setTimeout(() => {
   fitTerminal();
