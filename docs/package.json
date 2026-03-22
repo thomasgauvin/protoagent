@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vitepress dev --port 5173",
+    "dev": "vitepress dev --port 5173 --host",
     "build": "vitepress build",
     "preview": "vitepress preview"
   },
