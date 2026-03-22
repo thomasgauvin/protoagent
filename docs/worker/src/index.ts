@@ -237,11 +237,15 @@ console.log('[Debug] Script starting...');
 await init();
 console.log('[Debug] Ghostty initialized');
 
+// Detect if we're on a touch device (mobile/tablet) - move before Terminal init
+const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+console.log('[Debug] isTouchDevice:', isTouchDevice);
+
 const term = new Terminal({
   fontSize: 13,
   fontFamily: "'Share Tech Mono', 'VT323', monospace",
-  cursorBlink: true,
-  cursorStyle: 'bar',
+  cursorBlink: !isTouchDevice,  // Hide cursor animation on mobile
+  cursorStyle: isTouchDevice ? 'underline' : 'bar',  // Minimal underline on mobile
   scrollback: 50000,
   convertEol: false,
   wordWrap: true,
@@ -250,7 +254,7 @@ const term = new Terminal({
   theme: {
     foreground: '#baf8c7',
     background: '#030805',
-    cursor: '#72ff8c',
+    cursor: isTouchDevice ? 'transparent' : '#72ff8c',  // Hide cursor on mobile
     cursorAccent: '#030805',
     selectionBackground: 'rgba(114, 255, 140, 0.18)',
     selectionForeground: '#ffffff',
@@ -284,9 +288,7 @@ console.log('[Debug] Elements found:', { container: !!container, mobileInputCont
 term.open(container);
 console.log('[Debug] Terminal opened');
 
-// Detect if we're on a touch device (mobile/tablet)
-const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-console.log('[Debug] isTouchDevice:', isTouchDevice);
+// isTouchDevice already detected above before Terminal init
 
 if (isTouchDevice) {
   // Show mobile input bar
