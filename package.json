@@ -17,8 +17,8 @@
     "build:watch": "tsc --watch",
     "prepack": "npm run build",
     "docs:dev": "concurrently \"npm run docs:dev:worker\" \"npm run docs:dev:docs\" --kill-others",
-    "docs:dev:worker": "cd docs/worker && npm exec wrangler -- dev --port 8787",
-    "docs:dev:docs": "vitepress dev docs --port 5173",
+    "docs:dev:worker": "cd docs/worker && npm exec wrangler -- dev --port 8787 --ip 0.0.0.0",
+    "docs:dev:docs": "vitepress dev docs --port 5173 --host",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
