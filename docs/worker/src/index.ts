@@ -392,6 +392,8 @@ function sendJSON(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
+let connectionState = 'initializing';
+
 function updateStatus(msg) {
   connectionState = msg;
   console.log('[WebSocket]', msg);
