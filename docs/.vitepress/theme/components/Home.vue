@@ -25,8 +25,9 @@ const stats = [
 const sessionId = ref('')
 const workerUrl = computed(() => {
   // Use local worker for development, production for deployed site
-  const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost'
-  const baseUrl = isLocal ? 'http://localhost:8787' : 'https://demo.protoagent.dev'
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : ''
+  const isLocal = hostname === 'localhost' || /^192\.168\./.test(hostname) || /^10\./.test(hostname)
+  const baseUrl = isLocal ? `http://${hostname}:8787` : 'https://demo.protoagent.dev'
   return `${baseUrl}/s/${sessionId.value}`
 })
 
