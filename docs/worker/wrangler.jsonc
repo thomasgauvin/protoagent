@@ -1,7 +1,6 @@
 {
   "name": "protoagent-worker",
   "main": "src/index.ts",
-  "account_id": "52de7a250cfe915013c13a7452254955",
   "compatibility_date": "2025-06-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
