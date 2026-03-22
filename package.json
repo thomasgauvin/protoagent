@@ -16,7 +16,9 @@
     "build": "npm run clean && tsc && node -e \"const fs=require('node:fs'); if (fs.existsSync('dist/cli.js')) fs.chmodSync('dist/cli.js', 0o755)\"",
     "build:watch": "tsc --watch",
     "prepack": "npm run build",
-    "docs:dev": "vitepress dev docs",
+    "docs:dev": "concurrently \"npm run docs:dev:worker\" \"npm run docs:dev:docs\" --kill-others",
+    "docs:dev:worker": "cd docs/worker && npm exec wrangler -- dev --port 8787",
+    "docs:dev:docs": "vitepress dev docs --port 5173",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
@@ -65,6 +67,7 @@
     "@types/node": "^24.5.2",
     "@types/react": "^19.1.15",
     "@types/turndown": "^5.0.6",
+    "concurrently": "^9.1.2",
     "eslint": "^9.36.0",
     "ink-testing-library": "^4.0.0",
     "tailwindcss": "^4.0.0",

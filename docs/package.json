@@ -3,12 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "docs:dev": "npm run docs:dev:worker & npm run docs:dev:docs",
-    "docs:dev:worker": "cd worker && npm exec wrangler -- dev",
-    "docs:dev:docs": "vitepress dev",
-    "docs:build": "vitepress build",
-    "docs:preview": "vitepress preview",
-    "docs:deploy": "npm run docs:build && cd worker && npm run deploy"
+    "dev": "vitepress dev --port 5173",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
   },
   "devDependencies": {
     "vitepress": "^1.6.4"
