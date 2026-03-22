@@ -3,7 +3,7 @@
  * Sync protoagent source files into worker stub-files.ts
  * Generates the TypeScript file with embedded file contents
  * 
- * Excludes: node_modules, docs-with-worker, protoagent-following-the-tutorial,
+ * Excludes: node_modules, docs, protoagent-following-the-tutorial,
  *           protoagent-build-your-own-checkpoints, tests, dist, .vscode, .claude
  */
 
@@ -18,7 +18,7 @@ const OUTPUT_FILE = join(__dirname, '..', 'src', 'stub-files.ts');
 
 const EXCLUDE_DIRS = [
   'node_modules',
-  'docs-with-worker',
+  'docs',
   'protoagent-following-the-tutorial',
   'protoagent-build-your-own-checkpoints',
   'tests',

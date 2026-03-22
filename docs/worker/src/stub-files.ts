@@ -13246,9 +13246,9 @@ Approval can be granted per-operation (one-time), per-type for the session, or g
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
-    "docs:worker:dev": "cd docs-with-worker && npm run docs:dev",
-    "docs:worker:build": "cd docs-with-worker && npm run docs:build",
-    "docs:worker:preview": "cd docs-with-worker && npm run docs:preview"
+    "docs:worker:dev": "cd docs && npm run docs:dev",
+    "docs:worker:build": "cd docs && npm run docs:build",
+    "docs:worker:preview": "cd docs && npm run docs:preview"
   },
   "author": "Thomas Gauvin",
   "license": "MIT",
