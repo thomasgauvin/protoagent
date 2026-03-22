@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 
-const terminalUrl = ref('')
+const sessionId = ref('')
 const isLoading = ref(true)
+
+const terminalUrl = computed(() => {
+  // Use local worker for development, production for deployed site
+  const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost'
+  const baseUrl = isLocal ? 'http://localhost:8787' : 'https://demo.protoagent.dev'
+  return `${baseUrl}/s/${sessionId.value}`
+})
 
 onMounted(() => {
   // Generate a random session ID
-  const sessionId = Math.random().toString(36).substring(2, 10)
-  // Use the worker URL - in production this should be your deployed worker
-  terminalUrl.value = `${window.location.origin}/s/${sessionId}`
+  sessionId.value = Math.random().toString(36).substring(2, 10)
   isLoading.value = false
 })
 </script>
