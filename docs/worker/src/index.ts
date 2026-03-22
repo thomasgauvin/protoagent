@@ -226,6 +226,10 @@ function renderFrontend(sessionId: string, origin: string): string {
 </div>
 <div id="debug-status" style="position:fixed; top:4px; right:4px; background:rgba(0,0,0,0.8); color:#72ff8c; font-size:11px; padding:4px 8px; z-index:10000; font-family:monospace;">Initializing...</div>
 
+<script>
+  window.PROTOAGENT_SESSION_ID = '${sessionId}';
+</script>
+
 <script type="module">
 import { init, Terminal } from 'https://esm.sh/ghostty-web@latest';
 
@@ -301,11 +305,11 @@ if (isTouchDevice) {
       term.write(added);
       sendJSON({ type: 'input', data: added });
     } else if (diff < 0) {
-      // Characters deleted - send backspace
-      for (let i = 0; i < Math.abs(diff); i++) {
-        term.write('\b \b'); // Backspace visually
-        sendJSON({ type: 'input', data: '\x7f' }); // DEL key for backend
-      }
+       // Characters deleted - send backspace
+       for (let i = 0; i < Math.abs(diff); i++) {
+         term.write('\\b \\b'); // Backspace visually
+         sendJSON({ type: 'input', data: '\\x7f' }); // DEL key for backend
+       }
     }
     
     currentLine = newValue;
@@ -315,8 +319,8 @@ if (isTouchDevice) {
   mobileInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      term.write('\r\n');
-      sendJSON({ type: 'input', data: '\r' });
+      term.write('\\r\\n');
+      sendJSON({ type: 'input', data: '\\r' });
       mobileInput.value = '';
       currentLine = '';
     }
@@ -324,8 +328,8 @@ if (isTouchDevice) {
   
   // Send button
   mobileSend.addEventListener('click', () => {
-    term.write('\r\n');
-    sendJSON({ type: 'input', data: '\r' });
+    term.write('\\r\\n');
+    sendJSON({ type: 'input', data: '\\r' });
     mobileInput.value = '';
     currentLine = '';
     mobileInput.focus();
@@ -380,7 +384,7 @@ window.getFrontendLogs = () => frontendLogs;
 window.clearFrontendLogs = () => { frontendLogs.length = 0; };
 
 const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsUrl = proto + '//' + location.host + '/ws/${sessionId}';
+const wsUrl = proto + '//' + location.host + '/ws/' + window.PROTOAGENT_SESSION_ID;
 let reconnectDelay = 1000;
 let ws;
 
