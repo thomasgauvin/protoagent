@@ -36,6 +36,7 @@ onMounted(() => {
       :src="terminalUrl"
       class="terminal-iframe"
       allow="fullscreen"
+      sandbox="allow-scripts allow-same-origin allow-forms"
     ></iframe>
   </div>
 </template>

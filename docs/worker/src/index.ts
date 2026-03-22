@@ -176,10 +176,54 @@ function renderFrontend(sessionId: string, origin: string): string {
     flex-direction: column !important;
     justify-content: flex-end !important;
   }
+  /* Mobile input bar - hidden by default, shown on touch devices */
+  #mobile-input-container {
+    display: none;
+    padding: 8px 12px;
+    background: var(--bg-soft);
+    border-top: 1px solid var(--border);
+  }
+  #mobile-input-container.active {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  #mobile-input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--green);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 14px;
+    padding: 8px 12px;
+    outline: none;
+  }
+  #mobile-input:focus {
+    border-color: var(--green);
+    box-shadow: 0 0 8px rgba(114, 255, 140, 0.3);
+  }
+  #mobile-send {
+    background: var(--green-deep);
+    border: 1px solid var(--green-dim);
+    border-radius: 4px;
+    color: var(--green);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+  #mobile-send:active {
+    background: var(--green-dim);
+  }
 </style>
 </head>
 <body>
 <div id="terminal"></div>
+<div id="mobile-input-container">
+  <input type="text" id="mobile-input" placeholder="Type command..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+  <button id="mobile-send">Enter</button>
+</div>
 <div id="debug-status" style="position:fixed; top:4px; right:4px; background:rgba(0,0,0,0.8); color:#72ff8c; font-size:11px; padding:4px 8px; z-index:10000; font-family:monospace;">Initializing...</div>
 
 <script type="module">
@@ -226,28 +270,81 @@ const term = new Terminal({
 const container = document.getElementById('terminal');
 term.open(container);
 
-// Mobile input fix: xterm.js creates a hidden textarea for input capture.
-// On mobile browsers, we need to ensure the textarea gets focused on tap.
-// We use touchend (not touchstart) to avoid interfering with scrolling,
-// and we don't preventDefault() to let xterm.js handle its own events.
-function focusTerminal() {
-  term.focus();
-  // Also try to focus the helper textarea directly if it exists
-  const helperTextarea = container.querySelector('.xterm-helper-textarea');
-  if (helperTextarea) {
-    helperTextarea.focus();
+// Detect if we're on a touch device (mobile/tablet)
+const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+
+// Mobile input handling
+const mobileInputContainer = document.getElementById('mobile-input-container');
+const mobileInput = document.getElementById('mobile-input');
+const mobileSend = document.getElementById('mobile-send');
+
+if (isTouchDevice) {
+  // Show mobile input bar
+  mobileInputContainer.classList.add('active');
+  
+  // When user types in mobile input, send to terminal and backend
+  let currentLine = '';
+  
+  mobileInput.addEventListener('input', (e) => {
+    const newValue = e.target.value;
+    const diff = newValue.length - currentLine.length;
+    
+    if (diff > 0) {
+      // Characters added - send them
+      const added = newValue.slice(currentLine.length);
+      term.write(added);
+      sendJSON({ type: 'input', data: added });
+    } else if (diff < 0) {
+      // Characters deleted - send backspace
+      for (let i = 0; i < Math.abs(diff); i++) {
+        term.write('\b \b'); // Backspace visually
+        sendJSON({ type: 'input', data: '\x7f' }); // DEL key for backend
+      }
+    }
+    
+    currentLine = newValue;
+  });
+  
+  // Handle Enter key
+  mobileInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      term.write('\r\n');
+      sendJSON({ type: 'input', data: '\r' });
+      mobileInput.value = '';
+      currentLine = '';
+    }
+  });
+  
+  // Send button
+  mobileSend.addEventListener('click', () => {
+    term.write('\r\n');
+    sendJSON({ type: 'input', data: '\r' });
+    mobileInput.value = '';
+    currentLine = '';
+    mobileInput.focus();
+  });
+  
+  // Focus mobile input when tapping terminal
+  container.addEventListener('click', () => {
+    mobileInput.focus();
+  });
+  
+  // Auto-focus on load
+  setTimeout(() => mobileInput.focus(), 100);
+  
+} else {
+  // Desktop: use normal xterm.js focus
+  function focusTerminal() {
+    term.focus();
+    const helperTextarea = container.querySelector('.xterm-helper-textarea');
+    if (helperTextarea) helperTextarea.focus();
   }
+  
+  setTimeout(focusTerminal, 100);
+  container.addEventListener('click', focusTerminal);
+  container.addEventListener('touchend', focusTerminal);
 }
-
-// Initial focus after a short delay to ensure DOM is ready
-setTimeout(focusTerminal, 100);
-
-// Tap handlers for mobile - use touchend for better UX (doesn't block scrolling)
-container.addEventListener('click', focusTerminal);
-container.addEventListener('touchend', (e) => {
-  // Only focus if touch didn't move much (was a tap, not a scroll)
-  focusTerminal();
-});
 
 // Initial fit to set proper canvas size
 setTimeout(() => {
@@ -279,13 +376,11 @@ window.clearFrontendLogs = () => { frontendLogs.length = 0; };
 const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = proto + '//' + location.host + '/ws/${sessionId}';
 let reconnectDelay = 1000;
+let ws;
 
 function sendJSON(obj) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
-
-let ws;
-let connectionState = 'connecting';
 
 function updateStatus(msg) {
   connectionState = msg;
