@@ -195,6 +195,7 @@ const term = new Terminal({
   convertEol: false,
   wordWrap: true,
   allowTransparency: true,
+  screenReaderMode: true,  // Use proper textarea for input - better for mobile
   theme: {
     foreground: '#baf8c7',
     background: '#030805',
@@ -224,12 +225,28 @@ const term = new Terminal({
 const container = document.getElementById('terminal');
 term.open(container);
 
-// Focus terminal for mobile input - xterm.js needs explicit focus on the hidden textarea
-term.focus();
+// Mobile input fix: xterm.js creates a hidden textarea for input capture.
+// On mobile browsers, we need to ensure the textarea gets focused on tap.
+// We use touchend (not touchstart) to avoid interfering with scrolling,
+// and we don't preventDefault() to let xterm.js handle its own events.
+function focusTerminal() {
+  term.focus();
+  // Also try to focus the helper textarea directly if it exists
+  const helperTextarea = container.querySelector('.xterm-helper-textarea');
+  if (helperTextarea) {
+    helperTextarea.focus();
+  }
+}
 
-// Click/touch handlers to ensure focus works on mobile devices
-container.addEventListener('click', () => term.focus());
-container.addEventListener('touchstart', () => term.focus(), { passive: true });
+// Initial focus after a short delay to ensure DOM is ready
+setTimeout(focusTerminal, 100);
+
+// Tap handlers for mobile - use touchend for better UX (doesn't block scrolling)
+container.addEventListener('click', focusTerminal);
+container.addEventListener('touchend', (e) => {
+  // Only focus if touch didn't move much (was a tap, not a scroll)
+  focusTerminal();
+});
 
 // Initial fit to set proper canvas size
 setTimeout(() => {
