@@ -1,0 +1,30 @@
+{
+  "name": "protoagent-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SESSIONS",
+        "class_name": "AgentSessionDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AgentSessionDO"]
+    }
+  ],
+  "vars": {
+    "MODEL": "@cf/zai-org/glm-4.7-flash",
+    "DAILY_MESSAGE_QUOTA": "50"
+  }
+}

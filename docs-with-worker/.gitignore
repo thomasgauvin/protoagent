@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+.vitepress/dist/
+.vitepress/cache/
+.vitepress/cache/deps/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
+# Worker specific
+worker/.wrangler/
+worker/node_modules/
+
+# Environment files
+.env
+.dev.vars
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.temp

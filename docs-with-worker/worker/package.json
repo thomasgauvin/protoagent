@@ -1,0 +1,24 @@
+{
+  "name": "protoagent-worker",
+  "version": "0.1.0",
+  "description": "ProtoAgent running on Cloudflare Workers with browser terminal UI",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "sync:stubs": "node scripts/sync-stub-files.mjs"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.41"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.13.3",
+    "@types/node": "^25.5.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.0.0"
+  },
+  "license": "MIT"
+}

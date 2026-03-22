@@ -5,6 +5,10 @@ node_modules
 *.tgz
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+docs-with-worker/.vitepress/cache/
+docs-with-worker/.vitepress/dist/
+docs-with-worker/docs/.vitepress/cache/
+docs-with-worker/docs/.vitepress/dist/
 .vscode/
 .claude/
 .protoagent/

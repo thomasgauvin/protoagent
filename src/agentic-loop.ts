@@ -307,6 +307,44 @@ function sanitizeMessagesForRetry(
   return { messages: sanitizedMessages, changed };
 }
 
+/**
+ * Remove orphaned tool result messages that don't have a matching tool_call_id
+ * in any assistant message. This happens when messages are truncated and the
+ * assistant's tool_calls are removed but the tool results remain.
+ */
+function removeOrphanedToolResults(messages: Message[]): { messages: Message[]; changed: boolean } {
+  // Collect all valid tool_call_ids from assistant messages
+  const validToolCallIds = new Set<string>();
+  for (const message of messages) {
+    const msgAny = message as any;
+    if (message.role === 'assistant' && Array.isArray(msgAny.tool_calls)) {
+      for (const tc of msgAny.tool_calls) {
+        if (tc.id) {
+          validToolCallIds.add(tc.id);
+        }
+      }
+    }
+  }
+
+  // Filter out tool messages with orphaned tool_call_ids
+  const filteredMessages = messages.filter((message) => {
+    const msgAny = message as any;
+    if (message.role === 'tool' && msgAny.tool_call_id) {
+      const isOrphaned = !validToolCallIds.has(msgAny.tool_call_id);
+      if (isOrphaned) {
+        logger.warn('Removing orphaned tool result', {
+          tool_call_id: msgAny.tool_call_id,
+          contentPreview: msgAny.content?.slice(0, 100),
+        });
+      }
+      return !isOrphaned;
+    }
+    return true;
+  });
+
+  return { messages: filteredMessages, changed: filteredMessages.length !== messages.length };
+}
+
 function getValidToolNames(): Set<string> {
   return new Set(
     [...getAllTools(), subAgentTool]
@@ -844,6 +882,16 @@ export async function runAgenticLoop(
             // Silently retry without showing error to user
             continue;
           }
+        }
+
+        // Try removing orphaned tool results
+        const orphanedRemoved = removeOrphanedToolResults(updatedMessages);
+        if (orphanedRemoved.changed) {
+          updatedMessages.length = 0;
+          updatedMessages.push(...orphanedRemoved.messages);
+          logger.warn('400 response after orphaned tool results; retrying with cleaned messages');
+          // Silently retry without showing error to user
+          continue;
         }
 
         // If sanitization didn't help, try removing messages one at a time (up to 5)
