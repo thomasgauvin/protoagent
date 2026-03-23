@@ -832,7 +832,7 @@ See `src/tools/edit-file.ts` in the source tree for the complete implementation.
 
 - Import `assertReadBefore` and `recordRead` from `../utils/file-time.js`
 - `findWithCascade()` tries 5 match strategies in order
-- `computeUnifiedDiff()` generates a diff for the tool result
+- Uses the `diff` library's `createPatch()` for unified diff generation
 - Re-reads the file after write and records the read time
 
 ## Step 6: Upgrade `src/tools/read-file.ts`
