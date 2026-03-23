@@ -46,8 +46,6 @@ const DANGEROUS_PATTERNS = [
   '> /dev/sda',           // Disk overwrite
   'of=/dev/sda',          // dd to disk
   ':(){ :|:& };:',        // Fork bomb
-  'curl.*\|.*sh',         // Pipe curl to shell (common exploit)
-  'wget.*\|.*sh',         // Pipe wget to shell
 ];
 
 // Security: Allowlist approach for safe commands

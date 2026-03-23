@@ -847,6 +847,8 @@ See `src/tools/read-file.ts` in the source tree for the complete implementation.
 
 The final version adds ripgrep (`rg`) support when available, falling back to the JS implementation. Ripgrep results are sorted by modification time (most recently changed files first).
 
+Note that even with ripgrep, search is not as fast as you might expect for large codebases. Cursor found that ripgrep alone wasn't sufficient for their needs and invested in custom indexing — see [their writeup](https://x.com/cursor_ai/status/2036122609931165985). For a tutorial project, ripgrep is plenty fast; for production, you may want to explore indexed search.
+
 See `src/tools/search-files.ts` in the source tree for the complete implementation.
 
 ## Step 8: Upgrade `src/agentic-loop.ts`

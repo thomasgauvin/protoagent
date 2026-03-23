@@ -101,7 +101,6 @@ interface RuntimeProviderConfig {
 
 interface RuntimeConfigFile {
   providers?: Record<string, RuntimeProviderConfig>;
-  mcp?: { servers?: Record<string, unknown> };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -188,7 +187,7 @@ export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd =
 
 export const writeConfig = (config: Config, target: InitConfigTarget = 'user', cwd = process.cwd()) => {
   const configPath = getInitConfigPath(target, cwd);
-  const runtimeConfig = readRuntimeConfigFileSync(configPath) || { providers: {}, mcp: { servers: {} } };
+  const runtimeConfig = readRuntimeConfigFileSync(configPath) || { providers: {} };
   const nextRuntimeConfig = upsertSelectedConfig(runtimeConfig, config);
   writeRuntimeConfigFile(configPath, nextRuntimeConfig);
   return configPath;

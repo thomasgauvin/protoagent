@@ -321,6 +321,13 @@ export async function editFile(
     if (staleError) return staleError;
   }
 
+  // Check file size before reading to avoid OOM on huge files
+  const stat = await fs.stat(validated);
+  const MAX_EDIT_FILE_SIZE = 2 * 1024 * 1024; // 2 MB
+  if (stat.size > MAX_EDIT_FILE_SIZE) {
+    return `Error: file is too large to edit (${(stat.size / 1024 / 1024).toFixed(1)} MB, limit is ${MAX_EDIT_FILE_SIZE / 1024 / 1024} MB).`;
+  }
+
   const content = await fs.readFile(validated, 'utf8');
 
   // Use fuzzy match cascade

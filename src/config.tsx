@@ -296,7 +296,6 @@ interface ResetPromptProps {
   setConfigWritten: (written: boolean) => void;
 }
 export const ResetPrompt: React.FC<ResetPromptProps> = ({ existingConfig, setStep, setConfigWritten }) => {
-  const [resetInput, setResetInput] = useState('');
   const provider = getProvider(existingConfig.provider);
 
   return (
