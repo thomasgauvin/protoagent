@@ -8,16 +8,10 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createPatch } from 'diff';
 import { validatePath } from '../utils/path-validation.js';
 import { findSimilarPaths } from '../utils/path-suggestions.js';
 import { requestApproval } from '../utils/approval.js';
 import { checkReadBefore, recordRead } from '../utils/file-time.js';
-import { atomicWriteFile } from '../utils/atomic-write.js';
-
-// Security: Size limits to prevent DoS via memory exhaustion
-const MAX_EDIT_STRING_LENGTH = 100_000;      // 100KB for old/new strings
-const MAX_EDIT_FILE_SIZE = 10_000_000;       // 10MB for target file
 
 export const editFileTool = {
   type: 'function' as const,
@@ -196,24 +190,101 @@ function findWithCascade(
 // ─── Unified Diff ───
 
 function computeUnifiedDiff(oldContent: string, newContent: string, filePath: string): string {
-  const patch = createPatch(filePath, oldContent, newContent, 'a/' + filePath, 'b/' + filePath);
-  // Remove the header lines we don't need and truncate if too large
-  const lines = patch.split('\n').slice(4); // Remove 'Index:', '===' and '---'/'+++' lines
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
 
-  // Truncate if too large (more than 50 changed lines)
-  const changedLines = lines.filter(l => l.startsWith('+') || l.startsWith('-')).length;
-  if (changedLines > 50) {
-    const truncatedIndex = lines.findIndex((line, idx) => {
-      if (idx < 10) return false;
-      const changedSoFar = lines.slice(0, idx).filter(l => l.startsWith('+') || l.startsWith('-')).length;
-      return changedSoFar >= 50;
-    });
-    if (truncatedIndex !== -1) {
-      return lines.slice(0, truncatedIndex).join('\n') + '\n... (truncated)';
+  // Find changed regions
+  const hunks: Array<{ oldStart: number; oldLines: string[]; newStart: number; newLines: string[] }> = [];
+  let i = 0;
+  let j = 0;
+
+  while (i < oldLines.length || j < newLines.length) {
+    // Skip matching lines
+    if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
+      i++;
+      j++;
+      continue;
+    }
+
+    // Found a difference — collect the changed region
+    const oldStart = i;
+    const newStart = j;
+    const hunkOld: string[] = [];
+    const hunkNew: string[] = [];
+
+    // Collect differing lines
+    while (i < oldLines.length && j < newLines.length && oldLines[i] !== newLines[j]) {
+      hunkOld.push(oldLines[i]);
+      hunkNew.push(newLines[j]);
+      i++;
+      j++;
+    }
+
+    // Handle remaining lines in either side
+    while (i < oldLines.length && (j >= newLines.length || oldLines[i] !== newLines[j])) {
+      hunkOld.push(oldLines[i]);
+      i++;
+    }
+    while (j < newLines.length && (i >= oldLines.length || oldLines[i] !== newLines[j])) {
+      hunkNew.push(newLines[j]);
+      j++;
+    }
+
+    hunks.push({ oldStart, oldLines: hunkOld, newStart, newLines: hunkNew });
+  }
+
+  if (hunks.length === 0) return '';
+
+  // Build unified diff output with 2 lines of context
+  const CONTEXT = 2;
+  const diffLines: string[] = [
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+  ];
+
+  let totalChanged = 0;
+  for (const hunk of hunks) {
+    totalChanged += hunk.oldLines.length + hunk.newLines.length;
+    if (totalChanged > 50) {
+      // Add what we have so far, then truncate
+      break;
+    }
+
+    const ctxBefore = Math.max(0, hunk.oldStart - CONTEXT);
+    const ctxAfterOld = Math.min(oldLines.length, hunk.oldStart + hunk.oldLines.length + CONTEXT);
+    const ctxAfterNew = Math.min(newLines.length, hunk.newStart + hunk.newLines.length + CONTEXT);
+
+    const oldHunkSize = (hunk.oldStart - ctxBefore) + hunk.oldLines.length + (ctxAfterOld - hunk.oldStart - hunk.oldLines.length);
+    const newHunkSize = (hunk.newStart - ctxBefore) + hunk.newLines.length + (ctxAfterNew - hunk.newStart - hunk.newLines.length);
+
+    diffLines.push(`@@ -${ctxBefore + 1},${oldHunkSize} +${ctxBefore + 1},${newHunkSize} @@`);
+
+    // Context before
+    for (let k = ctxBefore; k < hunk.oldStart; k++) {
+      diffLines.push(` ${oldLines[k]}`);
+    }
+
+    // Removed lines
+    for (const line of hunk.oldLines) {
+      diffLines.push(`-${line}`);
+    }
+
+    // Added lines
+    for (const line of hunk.newLines) {
+      diffLines.push(`+${line}`);
+    }
+
+    // Context after
+    for (let k = hunk.oldStart + hunk.oldLines.length; k < ctxAfterOld; k++) {
+      diffLines.push(` ${oldLines[k]}`);
     }
   }
 
-  return lines.join('\n');
+  if (totalChanged > 50) {
+    diffLines.push('... (truncated)');
+  }
+
+  return diffLines.join('\n');
 }
 
 // ─── Main editFile function ───
@@ -225,19 +296,8 @@ export async function editFile(
   expectedReplacements = 1,
   sessionId?: string,
 ): Promise<string> {
-  // Security: Validate size limits to prevent DoS attacks
-  // Naive approach: No validation - attacker can send multi-GB strings causing OOM
-  // Attack: oldString = 'A'.repeat(1e9) exhausts process memory during string comparison
   if (oldString.length === 0) {
     return 'Error: old_string cannot be empty.';
-  }
-
-  if (oldString.length > MAX_EDIT_STRING_LENGTH) {
-    return `Error: old_string too large (${oldString.length} chars, max ${MAX_EDIT_STRING_LENGTH})`;
-  }
-
-  if (newString.length > MAX_EDIT_STRING_LENGTH) {
-    return `Error: new_string too large (${newString.length} chars, max ${MAX_EDIT_STRING_LENGTH})`;
   }
 
   let validated: string;
@@ -262,13 +322,6 @@ export async function editFile(
   }
 
   const content = await fs.readFile(validated, 'utf8');
-
-  // Security: Validate file size after reading to prevent DoS
-  // Naive approach: Process any file size, causing O(n*m) memory exhaustion
-  // Attack: File with 10M lines and oldString targeting all of them
-  if (content.length > MAX_EDIT_FILE_SIZE) {
-    return `Error: file too large for editing (${content.length} chars, max ${MAX_EDIT_FILE_SIZE})`;
-  }
 
   // Use fuzzy match cascade
   const match = findWithCascade(content, oldString, expectedReplacements);
@@ -373,11 +426,13 @@ export async function editFile(
 
   // Perform replacement using the actual matched string (not the model's version)
   const newContent = content.split(actual).join(newString);
-
-  // Security: Use atomic write utility with O_CREAT|O_EXCL protection
-  const result = await atomicWriteFile(validated, newContent);
-  if (!result.success) {
-    return `Error writing file: ${result.error}`;
+  const directory = path.dirname(validated);
+  const tempPath = path.join(directory, `.protoagent-edit-${process.pid}-${Date.now()}-${path.basename(validated)}`);
+  try {
+    await fs.writeFile(tempPath, newContent, 'utf8');
+    await fs.rename(tempPath, validated);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
   }
 
   // Re-read file after write (captures any formatter changes)
