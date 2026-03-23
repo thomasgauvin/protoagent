@@ -198,62 +198,12 @@ async function htmlToMarkdown(html: string): Promise<string> {
 }
 
 /**
- * Check if URL points to private/internal IP (SSRF protection)
- */
-function isPrivateUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-
-    const hostname = parsed.hostname;
-
-    // Only allow http/https
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return true; // Treat non-http(s) as private/block (includes file://)
-    }
-
-    // Check for localhost variations
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('127.')) {
-      return true;
-    }
-
-    // Check for IPv6 localhost
-    if (hostname === '[::1]' || hostname === '::1') {
-      return true;
-    }
-
-    // Check for private IPv4 ranges
-    const parts = hostname.split('.').map(Number);
-    if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
-      // 10.0.0.0/8
-      if (parts[0] === 10) return true;
-      // 172.16.0.0/12
-      if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-      // 192.168.0.0/16
-      if (parts[0] === 192 && parts[1] === 168) return true;
-      // 169.254.0.0/16 (link-local)
-      if (parts[0] === 169 && parts[1] === 254) return true;
-    }
-
-    return false;
-  } catch {
-    return true; // Invalid URL = block
-  }
-}
-
-/**
- * Fetch with redirect limiting and SSRF protection
+ * Fetch with redirect limiting
  */
 async function fetchWithRedirectLimit(
   url: string,
   signal: AbortSignal,
 ): Promise<Response> {
-  // Security: Validate initial URL for SSRF
-  // Naive approach: Only check redirect count, not destination
-  // Attack: Redirect to file:///etc/passwd or http://localhost:22 to scan internal services
-  if (isPrivateUrl(url)) {
-    throw new Error(`SSRF protection: URL ${url} points to internal/private address`);
-  }
-
   let redirectCount = 0;
   let currentUrl = url;
 
@@ -274,14 +224,6 @@ async function fetchWithRedirectLimit(
         redirectCount++;
         // Resolve relative URLs
         currentUrl = new URL(location, currentUrl).href;
-
-        // Security: Validate redirect destination for SSRF
-        // Naive approach: Follow any redirect
-        // Attack: Legitimate site redirects to file://localhost/etc/passwd
-        if (isPrivateUrl(currentUrl)) {
-          throw new Error(`SSRF protection: Redirect to ${currentUrl} blocked (internal/private address)`);
-        }
-
         continue;
       }
     }
