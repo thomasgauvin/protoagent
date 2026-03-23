@@ -40,6 +40,7 @@ Every file tool resolves paths through this module. It ensures all operations st
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import isPathInside from 'is-path-inside';
 
 const workingDirectory = process.cwd();
 
@@ -48,16 +49,14 @@ export async function validatePath(requestedPath: string): Promise<string> {
   const normalized = path.normalize(resolved);
 
   // First check: is the normalised path within cwd?
-  const relative = path.relative(workingDirectory, normalized);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  if (!isPathInside(normalized, workingDirectory)) {
     throw new Error(`Path "${requestedPath}" is outside the working directory.`);
   }
 
   // Second check: resolve symlinks and re-check
   try {
     const realPath = await fs.realpath(normalized);
-    const realRelative = path.relative(workingDirectory, realPath);
-    if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
+    if (!isPathInside(realPath, workingDirectory)) {
       throw new Error(`Path "${requestedPath}" resolves (via symlink) outside the working directory.`);
     }
     return realPath;
@@ -67,8 +66,7 @@ export async function validatePath(requestedPath: string): Promise<string> {
       const parentDir = path.dirname(normalized);
       try {
         const realParent = await fs.realpath(parentDir);
-        const parentRelative = path.relative(workingDirectory, realParent);
-        if (parentRelative.startsWith('..') || path.isAbsolute(parentRelative)) {
+        if (!isPathInside(realParent, workingDirectory)) {
           throw new Error(`Parent directory of "${requestedPath}" resolves outside the working directory.`);
         }
         return path.join(realParent, path.basename(normalized));
@@ -173,6 +171,8 @@ export async function requestApproval(req: ApprovalRequest): Promise<boolean> {
       return true;
     case 'reject':
       return false;
+    default:
+      return false;
   }
 }
 ```
@@ -236,13 +236,28 @@ export async function writeFile(filePath: string, content: string, sessionId?: s
   // Ensure parent directory exists
   await fs.mkdir(path.dirname(validated), { recursive: true });
 
-  // Atomic write: write to temp file then rename
+  // Security: Atomic write with symlink protection
+  // Naive approach: Write directly to temp file, then rename
+  // Risk: TOCTOU race - attacker creates symlink at temp path between check and use
+  // Attack: ln -s /etc/passwd .protoagent-write-xxx-file.txt causes overwrite of /etc/passwd
+  // Fix: Use O_CREAT|O_EXCL ('wx' flag) - fails if file exists, preventing symlink attacks
   const tmpPath = path.join(path.dirname(validated), `.protoagent-write-${process.pid}-${Date.now()}-${path.basename(validated)}`);
+
+  let fd: number | undefined;
   try {
-    await fs.writeFile(tmpPath, content, 'utf8');
+    // Open with O_CREAT|O_EXCL - atomically creates or fails if exists
+    fd = await fs.open(tmpPath, 'wx', 0o600);
+    await fd.writeFile(content, 'utf8');
+    await fd.sync();  // Ensure data hits disk before rename
+    await fd.close();
+    fd = undefined;
     await fs.rename(tmpPath, validated);
-  } finally {
-    await fs.rm(tmpPath, { force: true }).catch(() => undefined);
+  } catch (err: any) {
+    if (fd !== undefined) {
+      try { await fd.close(); } catch { /* ignore */ }
+    }
+    try { await fs.unlink(tmpPath); } catch { /* ignore */ }
+    throw err;
   }
 
   const lines = content.split('\n').length;
@@ -416,12 +431,13 @@ Create the file:
 touch src/tools/search-files.ts
 ```
 
-Recursive text search. This version uses a pure JS directory walk. Ripgrep support is added in Part 13.
+Recursive text search with robustness features: mtime sorting (most recent files first), symlink cycle protection, ReDoS protection via pattern length limits, and expanded skip list for common cache/build directories. This version uses a pure JS directory walk — ripgrep support is added in Part 13.
 
 ```typescript
 // src/tools/search-files.ts
 
 import fs from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 
@@ -449,6 +465,35 @@ export const searchFilesTool = {
 };
 
 const MAX_RESULTS = 100;
+const MAX_PATTERN_LENGTH = 1000;
+
+// Directories to skip during recursive search
+const SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'coverage',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.tox',
+  '.nox',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.hypothesis',
+  '.next',
+  'out',
+  '.turbo',
+  '.cache',
+]);
+
+// Track visited inodes to detect symlink cycles
+interface SearchResult {
+  display: string;
+  mtime: number;
+}
 
 export async function searchFiles(
   searchTerm: string,
@@ -457,6 +502,11 @@ export async function searchFiles(
   fileExtensions?: string[]
 ): Promise<string> {
   const validated = await validatePath(directoryPath);
+
+  // Validate pattern length to prevent ReDoS
+  if (searchTerm.length > MAX_PATTERN_LENGTH) {
+    return `Error: Pattern too long (${searchTerm.length} chars, max ${MAX_PATTERN_LENGTH})`;
+  }
 
   const flags = caseSensitive ? 'g' : 'gi';
   let regex: RegExp;
@@ -467,7 +517,8 @@ export async function searchFiles(
     return `Error: invalid regex pattern "${searchTerm}": ${message}`;
   }
 
-  const results: string[] = [];
+  const results: SearchResult[] = [];
+  const visitedInodes = new Set<string>();
 
   async function search(dir: string): Promise<void> {
     if (results.length >= MAX_RESULTS) return;
@@ -478,13 +529,33 @@ export async function searchFiles(
 
       const fullPath = path.join(dir, entry.name);
 
+      // Skip symlinks to prevent cycles
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+
       // Skip common non-useful directories
       if (entry.isDirectory()) {
-        if (['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__'].includes(entry.name)) continue;
-        // Recurse into subdirectory
+        if (SKIP_DIRS.has(entry.name)) continue;
+
+        // Track inode to detect hardlink cycles
+        try {
+          const stats = await fs.stat(fullPath);
+          const inodeKey = `${stats.dev}:${stats.ino}`;
+          if (visitedInodes.has(inodeKey)) {
+            continue; // Already visited this directory
+          }
+          visitedInodes.add(inodeKey);
+        } catch {
+          // If we can't stat, skip to be safe
+          continue;
+        }
+
         await search(fullPath);
         continue;
       }
+
+      if (!entry.isFile()) continue;
 
       // Filter by extension
       if (fileExtensions && fileExtensions.length > 0) {
@@ -494,6 +565,7 @@ export async function searchFiles(
 
       try {
         const content = await fs.readFile(fullPath, 'utf8');
+        const stats = await fs.stat(fullPath);
         const lines = content.split('\n');
         for (let i = 0; i < lines.length && results.length < MAX_RESULTS; i++) {
           if (regex.test(lines[i])) {
@@ -504,7 +576,10 @@ export async function searchFiles(
               lineContent = lineContent.slice(0, 500) + '... (truncated)';
             }
 
-            results.push(`${relativePath}:${i + 1}: ${lineContent}`);
+            results.push({
+              display: `${relativePath}:${i + 1}: ${lineContent}`,
+              mtime: stats.mtimeMs,
+            });
           }
           regex.lastIndex = 0;
         }
@@ -520,8 +595,12 @@ export async function searchFiles(
     return `No matches found for "${searchTerm}" in ${directoryPath}`;
   }
 
+  // Sort by mtime descending (most recently modified first)
+  results.sort((a, b) => b.mtime - a.mtime);
+
+  const displayResults = results.map(r => r.display);
   const suffix = results.length >= MAX_RESULTS ? `\n(results truncated at ${MAX_RESULTS})` : '';
-  return `Found ${results.length} match(es) for "${searchTerm}":\n${results.join('\n')}${suffix}`;
+  return `Found ${results.length} match(es) for "${searchTerm}":\n${displayResults.join('\n')}${suffix}`;
 }
 ```
 
@@ -692,27 +771,33 @@ const TEXT_MIME_TYPES = [
   'application/typescript',
 ];
 
-// Lazy-loaded Turndown instance
-// Turndown is an HTML-to-Markdown converter library
-let _turndownService: any = null;
-async function getTurndownService() {
+// Lazy-loaded Turndown instance — converts HTML to Markdown
+// We lazy-load because Turndown is a CommonJS module; dynamic import keeps our
+// ESM output clean without forcing esbuild to bundle everything as CJS.
+// Why Turndown? HTML → Markdown preserves document structure (headings, lists,
+// links) in a readable format that LLMs handle better than raw HTML markup.
+let _turndownService: import('turndown').default | null = null;
+async function getTurndownService(): Promise<import('turndown').default> {
   if (!_turndownService) {
     const { default: TurndownService } = await import('turndown');
     _turndownService = new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
+      headingStyle: 'atx',       // # Heading, not underlined
+      codeBlockStyle: 'fenced',  // ```code```, not indented
       bulletListMarker: '-',
       emDelimiter: '*',
     });
+    // Remove noise that doesn't help LLM understanding
     _turndownService.remove(['script', 'style', 'meta', 'link']);
   }
   return _turndownService;
 }
 
-// Lazy-loaded he module
-// he is an HTML entity decoder library (e.g., &lt; becomes <)
-let _he: any = null;
-async function getHe() {
+// Lazy-loaded 'he' module — decodes HTML entities like &lt; &gt; &amp;
+// We lazy-load for the same CJS/ESM reason as Turndown.
+// Why 'he'? Browsers and node don't have built-in HTML entity decoding that
+// handles the full set (&nbsp;, &#x2713;, named entities, etc.) correctly.
+let _he: typeof import('he') | null = null;
+async function getHe(): Promise<typeof import('he')> {
   if (!_he) {
     const { default: he } = await import('he');
     _he = he;
@@ -878,6 +963,10 @@ export async function webfetch(
       throw new Error(`Content type '${contentType}' is not supported.`);
     }
 
+    // Use ArrayBuffer instead of response.text() so we can:
+    // 1. Check byte size before decoding (security limit)
+    // 2. Decode with the correct charset from Content-Type header
+    //    (response.text() always uses UTF-8, which corrupts legacy encodings)
     const arrayBuffer = await response.arrayBuffer();
 
     if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {
@@ -1534,3 +1623,101 @@ Your project should match `protoagent-build-your-own-checkpoints/part-5`.
 ## Core takeaway
 
 This is where ProtoAgent stops being a chat demo and becomes a real coding agent. The approval system ensures destructive operations are always gated, and path validation prevents the agent from escaping the project directory.
+
+---
+
+## Security Considerations
+
+This part introduces several critical security mechanisms. Understanding why they exist is as important as the code itself.
+
+### Symlink Attacks and TOCTOU Race Conditions
+
+**The Problem:**
+When writing files atomically, the naive approach is:
+1. Write to a temporary file
+2. Rename it to the target
+
+This seems safe, but there's a Time-of-Check to Time-of-Use (TOCTOU) race condition. An attacker could create a symlink at the temporary file path between our check and our write:
+
+```bash
+# Attacker runs this in the background:
+ln -s /etc/passwd .protoagent-write-123-456-myfile.txt
+
+# When the agent writes, it overwrites /etc/passwd instead!
+```
+
+**Why This Matters:**
+On multi-user systems or if the working directory is compromised, this could allow privilege escalation. The agent might overwrite system files or sensitive user data.
+
+**Our Solution:**
+We use `O_CREAT|O_EXCL` flags (the `'wx'` mode in Node.js):
+
+```typescript
+const fd = await fs.open(tmpPath, 'wx', 0o600);
+```
+
+This tells the OS: "Create this file only if it doesn't exist." If a symlink exists at that path, the open fails. This is an atomic operation—no race condition possible.
+
+### ReDoS (Regular Expression Denial of Service)
+
+**The Problem:**
+JavaScript regex engines can suffer from "catastrophic backtracking." Certain patterns with nested quantifiers can cause exponential execution time:
+
+```typescript
+// Dangerous pattern: (a+)+
+const regex = /(a+)+$/;
+regex.test('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!'); // Hangs for minutes!
+```
+
+The pattern `(a+)+` means "one or more 'a' characters, repeated one or more times." When the input doesn't match (ending with `!`), the engine tries exponentially many combinations before giving up.
+
+**Why This Matters:**
+An attacker could submit a malicious search pattern that hangs the agent process, causing denial of service.
+
+**Our Solution:**
+We use the `recheck` library to analyze regex patterns for ReDoS vulnerabilities:
+
+```typescript
+import { check } from 'recheck';
+
+async function isSafeRegex(pattern: string): Promise<boolean> {
+  const result = await check(pattern, 'g');
+  return result.status === 'safe';
+}
+```
+
+The `recheck` library uses formal analysis to detect exponential backtracking vulnerabilities. It's more reliable than custom pattern matching and is actively maintained by the security community.
+
+### Path Validation and Directory Traversal
+
+**The Problem:**
+File paths can contain `..` segments that traverse up the directory tree:
+
+```typescript
+// User provides: "../../../etc/passwd"
+const path = "../../../etc/passwd";
+// Resolves to /etc/passwd if not validated!
+```
+
+**Why This Matters:**
+Without validation, the agent could read or write files outside the intended working directory—system files, SSH keys, other users' data.
+
+**Our Solution:**
+The `validatePath()` function we created:
+1. Resolves the absolute path
+2. Checks it's within the working directory
+3. Resolves symlinks and re-checks
+4. Throws if validation fails
+
+This creates a security boundary that all file tools must respect.
+
+### Defense in Depth
+
+Notice that we use multiple layers of protection:
+
+1. **Path validation** prevents escaping the working directory
+2. **Atomic writes** prevent symlink attacks during file operations
+3. **Approval system** ensures user confirmation for destructive operations
+4. **ReDoS protection** prevents regex-based DoS attacks
+
+No single defense is perfect, but together they provide robust protection. This is the "defense in depth" principle—if one layer fails, others still protect the system.

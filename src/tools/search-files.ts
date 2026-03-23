@@ -6,9 +6,10 @@
  */
 
 import fs from 'node:fs/promises';
-import { statSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { check } from 'recheck';
 import { validatePath } from '../utils/path-validation.js';
 
 export const searchFilesTool = {
@@ -43,6 +44,42 @@ try {
 }
 
 const MAX_RESULTS = 100;
+const MAX_PATTERN_LENGTH = 1000;
+
+// Security: Use recheck library to detect ReDoS (Catastrophic Backtracking)
+// recheck analyzes regex patterns for exponential backtracking vulnerabilities
+async function isSafeRegex(pattern: string): Promise<boolean> {
+  const result = await check(pattern, 'g');
+  return result.status === 'safe';
+}
+
+// Directories to skip during recursive search
+const SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'coverage',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.tox',
+  '.nox',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.hypothesis',
+  '.next',
+  'out',
+  '.turbo',
+  '.cache',
+]);
+
+// Track visited inodes to detect symlink cycles
+interface SearchResult {
+  display: string;
+  mtime: number;
+}
 
 export async function searchFiles(
   searchTerm: string,
@@ -52,6 +89,18 @@ export async function searchFiles(
 ): Promise<string> {
   const validated = await validatePath(directoryPath);
 
+  // Security: Validate pattern to prevent ReDoS (Catastrophic Backtracking)
+  // Attack: Pattern (a+)+$ with input 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' causes exponential backtracking
+  // In JS fallback, this hangs the process for minutes/hours with 100% CPU
+  if (searchTerm.length > MAX_PATTERN_LENGTH) {
+    return `Error: Pattern too long (${searchTerm.length} chars, max ${MAX_PATTERN_LENGTH})`;
+  }
+
+  // Only validate complexity for JS fallback - ripgrep has its own protections
+  if (!hasRipgrep && !(await isSafeRegex(searchTerm))) {
+    return `Error: Pattern too complex (potential ReDoS attack). Avoid nested quantifiers like (a+)+ or (a*)*`;
+  }
+
   if (hasRipgrep) {
     return searchWithRipgrep(searchTerm, validated, directoryPath, caseSensitive, fileExtensions);
   }
@@ -60,19 +109,18 @@ export async function searchFiles(
 
 // ─── Ripgrep implementation ───
 
-function searchWithRipgrep(
+async function searchWithRipgrep(
   searchTerm: string,
   validated: string,
   directoryPath: string,
   caseSensitive: boolean,
   fileExtensions?: string[],
-): string {
+): Promise<string> {
   const args: string[] = [
     '--line-number',
     '--with-filename',
     '--no-heading',
     '--color=never',
-    '--max-count=1',
     '--max-filesize=1M',
   ];
 
@@ -104,10 +152,13 @@ function searchWithRipgrep(
     }
 
     // Parse rg output and sort by mtime
-    const parsed = lines.slice(0, MAX_RESULTS).map(line => {
+    const parsed: SearchResult[] = [];
+    for (const line of lines.slice(0, MAX_RESULTS)) {
       // rg output: filepath:linenum:content
       const firstColon = line.indexOf(':');
       const secondColon = line.indexOf(':', firstColon + 1);
+      if (firstColon === -1 || secondColon === -1) continue;
+
       const filePath = line.slice(0, firstColon);
       const lineNum = line.slice(firstColon + 1, secondColon);
       let content = line.slice(secondColon + 1).trim();
@@ -119,11 +170,12 @@ function searchWithRipgrep(
       const relativePath = path.relative(validated, filePath);
       let mtime = 0;
       try {
-        mtime = statSync(filePath).mtimeMs;
-      } catch { /* ignore */ }
+        const stats = await stat(filePath);
+        mtime = stats.mtimeMs;
+      } catch { /* ignore stat errors */ }
 
-      return { display: `${relativePath}:${lineNum}: ${content}`, mtime };
-    });
+      parsed.push({ display: `${relativePath}:${lineNum}: ${content}`, mtime });
+    }
 
     // Sort by mtime descending (most recently modified first)
     parsed.sort((a, b) => b.mtime - a.mtime);
@@ -143,7 +195,7 @@ function searchWithRipgrep(
       return `Error: ripgrep error: ${msg}`;
     }
     // Fall back to JS search on any other error
-    return `Error: ripgrep failed: ${err.message}`;
+    return searchWithJs(searchTerm, validated, directoryPath, caseSensitive, fileExtensions);
   }
 }
 
@@ -165,7 +217,8 @@ async function searchWithJs(
     return `Error: invalid regex pattern "${searchTerm}": ${message}`;
   }
 
-  const results: string[] = [];
+  const results: SearchResult[] = [];
+  const visitedInodes = new Set<string>();
 
   async function search(dir: string): Promise<void> {
     if (results.length >= MAX_RESULTS) return;
@@ -176,12 +229,33 @@ async function searchWithJs(
 
       const fullPath = path.join(dir, entry.name);
 
+      // Skip symlinks to prevent cycles
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+
       // Skip common non-useful directories
       if (entry.isDirectory()) {
-        if (['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__'].includes(entry.name)) continue;
+        if (SKIP_DIRS.has(entry.name)) continue;
+
+        // Track inode to detect hardlink cycles
+        try {
+          const stats = await fs.stat(fullPath);
+          const inodeKey = `${stats.dev}:${stats.ino}`;
+          if (visitedInodes.has(inodeKey)) {
+            continue; // Already visited this directory
+          }
+          visitedInodes.add(inodeKey);
+        } catch {
+          // If we can't stat, skip to be safe
+          continue;
+        }
+
         await search(fullPath);
         continue;
       }
+
+      if (!entry.isFile()) continue;
 
       // Filter by extension
       if (fileExtensions && fileExtensions.length > 0) {
@@ -191,6 +265,7 @@ async function searchWithJs(
 
       try {
         const content = await fs.readFile(fullPath, 'utf8');
+        const stats = await stat(fullPath);
         const lines = content.split('\n');
         for (let i = 0; i < lines.length && results.length < MAX_RESULTS; i++) {
           if (regex.test(lines[i])) {
@@ -202,7 +277,10 @@ async function searchWithJs(
               lineContent = lineContent.slice(0, 500) + '... (truncated)';
             }
 
-            results.push(`${relativePath}:${i + 1}: ${lineContent}`);
+            results.push({
+              display: `${relativePath}:${i + 1}: ${lineContent}`,
+              mtime: stats.mtimeMs,
+            });
           }
           regex.lastIndex = 0; // reset regex state
         }
@@ -218,6 +296,10 @@ async function searchWithJs(
     return `No matches found for "${searchTerm}" in ${directoryPath}`;
   }
 
+  // Sort by mtime descending (most recently modified first)
+  results.sort((a, b) => b.mtime - a.mtime);
+
+  const displayResults = results.map(r => r.display);
   const suffix = results.length >= MAX_RESULTS ? `\n(results truncated at ${MAX_RESULTS})` : '';
-  return `Found ${results.length} match(es) for "${searchTerm}":\n${results.join('\n')}${suffix}`;
+  return `Found ${results.length} match(es) for "${searchTerm}":\n${displayResults.join('\n')}${suffix}`;
 }

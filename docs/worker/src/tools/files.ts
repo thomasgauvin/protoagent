@@ -2,6 +2,7 @@
  * SQLite-backed file system tools with fuzzy matching for edit_file
  */
 
+import { createPatch } from 'diff';
 import type { ToolDefinition } from '../types.js';
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -191,84 +192,24 @@ function findWithCascade(
 }
 
 function computeUnifiedDiff(oldContent: string, newContent: string, filePath: string): string {
-  const oldLines = oldContent.split('\n');
-  const newLines = newContent.split('\n');
+  const patch = createPatch(filePath, oldContent, newContent, 'a/' + filePath, 'b/' + filePath);
+  // Remove the header lines we don't need and truncate if too large
+  const lines = patch.split('\n').slice(4); // Remove 'Index:', '===' and '---'/'+++' lines
 
-  const hunks: Array<{ oldStart: number; oldLines: string[]; newStart: number; newLines: string[] }> = [];
-  let i = 0;
-  let j = 0;
-
-  while (i < oldLines.length || j < newLines.length) {
-    if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
-      i++;
-      j++;
-      continue;
-    }
-
-    const oldStart = i;
-    const newStart = j;
-    const hunkOld: string[] = [];
-    const hunkNew: string[] = [];
-
-    while (i < oldLines.length && j < newLines.length && oldLines[i] !== newLines[j]) {
-      hunkOld.push(oldLines[i]);
-      hunkNew.push(newLines[j]);
-      i++;
-      j++;
-    }
-
-    while (i < oldLines.length && (j >= newLines.length || oldLines[i] !== newLines[j])) {
-      hunkOld.push(oldLines[i]);
-      i++;
-    }
-    while (j < newLines.length && (i >= oldLines.length || oldLines[i] !== newLines[j])) {
-      hunkNew.push(newLines[j]);
-      j++;
-    }
-
-    hunks.push({ oldStart, oldLines: hunkOld, newStart, newLines: hunkNew });
-  }
-
-  if (hunks.length === 0) return '';
-
-  const CONTEXT = 2;
-  const diffLines: string[] = [
-    `--- a/${filePath}`,
-    `+++ b/${filePath}`,
-  ];
-
-  let totalChanged = 0;
-  for (const hunk of hunks) {
-    totalChanged += hunk.oldLines.length + hunk.newLines.length;
-    if (totalChanged > 50) break;
-
-    const ctxBefore = Math.max(0, hunk.oldStart - CONTEXT);
-    const ctxAfterOld = Math.min(oldLines.length, hunk.oldStart + hunk.oldLines.length + CONTEXT);
-
-    const oldHunkSize = (hunk.oldStart - ctxBefore) + hunk.oldLines.length + (ctxAfterOld - hunk.oldStart - hunk.oldLines.length);
-    const newHunkSize = (hunk.newStart - ctxBefore) + hunk.newLines.length + (ctxAfterOld - hunk.oldStart - hunk.oldLines.length);
-
-    diffLines.push(`@@ -${ctxBefore + 1},${oldHunkSize} +${ctxBefore + 1},${newHunkSize} @@`);
-
-    for (let k = ctxBefore; k < hunk.oldStart; k++) {
-      diffLines.push(` ${oldLines[k]}`);
-    }
-    for (const line of hunk.oldLines) {
-      diffLines.push(`-${line}`);
-    }
-    for (const line of hunk.newLines) {
-      diffLines.push(`+${line}`);
-    }
-    for (let k = hunk.oldStart + hunk.oldLines.length; k < ctxAfterOld; k++) {
-      diffLines.push(` ${oldLines[k]}`);
+  // Truncate if too large (more than 50 changed lines)
+  const changedLines = lines.filter(l => l.startsWith('+') || l.startsWith('-')).length;
+  if (changedLines > 50) {
+    const truncatedIndex = lines.findIndex((line, idx) => {
+      if (idx < 10) return false;
+      const changedSoFar = lines.slice(0, idx).filter(l => l.startsWith('+') || l.startsWith('-')).length;
+      return changedSoFar >= 50;
+    });
+    if (truncatedIndex !== -1) {
+      return lines.slice(0, truncatedIndex).join('\n') + '\n... (truncated)';
     }
   }
 
-  if (totalChanged > 50) {
-    diffLines.push('... (truncated)');
-  }
-
-  return diffLines.join('\n');
+  return lines.join('\n');
 }
 
 // ───────────────────────────────────────────────────────────────────────────────

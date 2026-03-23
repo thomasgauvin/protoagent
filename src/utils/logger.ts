@@ -11,6 +11,8 @@
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import stripAnsi from 'strip-ansi';
+import { maskCredentials } from './credential-filter.js';
 
 export enum LogLevel {
   ERROR = 0,
@@ -78,7 +80,8 @@ function writeToFile(message: string): void {
   try {
     appendFileSync(logFilePath!, message);
   } catch (err) {
-    // Silently fail if we can't write to log file
+    // Emit to stderr since we can't write to log file
+    process.stderr.write(`Failed to write to log file: ${err}\n`);
   }
 }
 
@@ -91,16 +94,38 @@ function timestamp(): string {
   return `${hh}:${mm}:${ss}.${ms}`;
 }
 
+function safeStringify(obj: unknown): string {
+  try {
+    return JSON.stringify(obj);
+  } catch {
+    return '[Object with circular references]';
+  }
+}
+
 function log(level: LogLevel, label: string, message: string, context?: Record<string, unknown>): void {
   if (level > currentLevel) return;
   const ts = timestamp();
+
+  // Security: Redact credentials from log messages and context
+  // Naive approach: Log messages as-is
+  // Risk: API keys in error messages, tool outputs, or request data leak to log files
+  // Attack: If logs are exposed, attacker gets API keys from log files
+  const safeMessage = maskCredentials(message);
+  const safeContext = context
+    ? Object.fromEntries(
+        Object.entries(context).map(([k, v]) => [
+          k,
+          typeof v === 'string' ? maskCredentials(v) : v,
+        ])
+      )
+    : undefined;
 
   // Create log entry
   const entry: LogEntry = {
     timestamp: ts,
     level,
-    message,
-    context,
+    message: safeMessage,
+    context: safeContext,
   };
 
   // Add to buffer (keep last 100 entries)
@@ -113,8 +138,11 @@ function log(level: LogLevel, label: string, message: string, context?: Record<s
   logListeners.forEach(listener => listener(entry));
 
   // Write to file
-  const ctx = context ? ` ${JSON.stringify(context)}` : '';
-  writeToFile(`[${ts}] ${label.padEnd(5)} ${message}${ctx}\n`);
+  const ctx = safeContext ? ` ${safeStringify(safeContext)}` : '';
+  // Security: Strip ANSI escape codes to prevent terminal injection attacks
+  const sanitizedMessage = stripAnsi(safeMessage);
+  const sanitizedCtx = stripAnsi(ctx);
+  writeToFile(`[${ts}] ${label.padEnd(5)} ${sanitizedMessage}${sanitizedCtx}\n`);
 }
 
 export const logger = {

@@ -30,17 +30,13 @@ Skills live outside the project directory (e.g., `~/.config/protoagent/skills/`)
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import isPathInside from 'is-path-inside';
 
 const workingDirectory = process.cwd();
 let allowedRoots: string[] = [];
 
-function isWithinRoot(targetPath: string, rootPath: string): boolean {
-  const relative = path.relative(rootPath, targetPath);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
 function isAllowedPath(targetPath: string): boolean {
-  return isWithinRoot(targetPath, workingDirectory) || allowedRoots.some((root) => isWithinRoot(targetPath, root));
+  return isPathInside(targetPath, workingDirectory) || allowedRoots.some((root) => isPathInside(targetPath, root));
 }
 
 export async function setAllowedPathRoots(roots: string[]): Promise<void> {
@@ -124,7 +120,6 @@ import {
   unregisterDynamicTool,
 } from './tools/index.js';
 import { setAllowedPathRoots } from './utils/path-validation.js';
-import { logger } from './utils/logger.js';
 
 export interface Skill {
   name: string;
@@ -225,10 +220,8 @@ async function loadSkillFromDirectory(skillDir: string, source: 'project' | 'use
     const rawContent = await fs.readFile(location, 'utf8');
     const parsed = parseFrontmatter(rawContent);
     const skill = validateSkill(parsed, skillDir, source, location);
-    logger.debug(`Loaded skill: ${skill.name} (${source})`, { location });
     return skill;
   } catch (error) {
-    logger.warn(`Skipping invalid skill at ${location}`, { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
@@ -311,7 +304,9 @@ async function listSkillResources(skillDir: string): Promise<string[]> {
     }
   }
 
-  await Promise.all(['scripts', 'references', 'assets'].map((dir) => walk(dir)));
+  for (const dir of ['scripts', 'references', 'assets']) {
+    await walk(dir);
+  }
   return files.sort();
 }
 
