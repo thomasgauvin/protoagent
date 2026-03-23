@@ -138,7 +138,7 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
           if (delta?.tool_calls) {
             hasToolCalls = true;
             for (const tc of delta.tool_calls) {
-              const idx = tc.index || 0;
+              const idx = tc.index ?? 0;
               if (!assistantMessage.tool_calls[idx]) {
                 assistantMessage.tool_calls[idx] = {
                   id: '',

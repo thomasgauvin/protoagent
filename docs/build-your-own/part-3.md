@@ -170,7 +170,7 @@ export function getRequestDefaultParams(providerId: string, modelId: string): Re
 }
 ```
 
-Note: `getAllProviders()` just returns the built-in list for now. In Part 11 (MCP/Runtime Config), we add runtime config loading from the active `protoagent.jsonc` so users can add custom providers via that file.
+Note: `getAllProviders()` just returns the built-in list for now. In a later part, we'll add runtime config loading from the active `protoagent.jsonc` so users can add custom providers via that file.
 
 ## Step 3: Create `src/config.tsx`
 
@@ -286,7 +286,6 @@ interface RuntimeProviderConfig {
 
 interface RuntimeConfigFile {
   providers?: Record<string, RuntimeProviderConfig>;
-  mcp?: { servers?: Record<string, unknown> };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -373,7 +372,7 @@ export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd =
 
 export const writeConfig = (config: Config, target: InitConfigTarget = 'user', cwd = process.cwd()) => {
   const configPath = getInitConfigPath(target, cwd);
-  const runtimeConfig = readRuntimeConfigFileSync(configPath) || { providers: {}, mcp: { servers: {} } };
+  const runtimeConfig = readRuntimeConfigFileSync(configPath) || { providers: {} };
   const nextRuntimeConfig = upsertSelectedConfig(runtimeConfig, config);
   writeRuntimeConfigFile(configPath, nextRuntimeConfig);
   return configPath;
@@ -836,7 +835,7 @@ You should see a provider/model selector, then an API key prompt. After completi
 npm run dev
 ```
 
-The app should show your configured model name and stream responses. Your credentials are now stored in your `protoagent.jsonc` file. In `Part 11`, we will make it possible for the `protoagent.jsonc` to load your API keys from environment variables instead of having it in the file for a more secure setup.
+The app should show your configured model name and stream responses. Your credentials are now stored in your `protoagent.jsonc` file. In a later part, we'll make it possible for the `protoagent.jsonc` to load your API keys from environment variables instead of having it in the file for a more secure setup.
 
 ## Snapshot
 

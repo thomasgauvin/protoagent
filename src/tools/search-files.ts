@@ -9,7 +9,6 @@ import fs from 'node:fs/promises';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { check } from 'recheck';
 import { validatePath } from '../utils/path-validation.js';
 
 export const searchFilesTool = {
@@ -46,12 +45,7 @@ try {
 const MAX_RESULTS = 100;
 const MAX_PATTERN_LENGTH = 1000;
 
-// Security: Use recheck library to detect ReDoS (Catastrophic Backtracking)
-// recheck analyzes regex patterns for exponential backtracking vulnerabilities
-async function isSafeRegex(pattern: string): Promise<boolean> {
-  const result = await check(pattern, 'g');
-  return result.status === 'safe';
-}
+
 
 // Directories to skip during recursive search
 const SKIP_DIRS = new Set([
@@ -94,11 +88,6 @@ export async function searchFiles(
   // In JS fallback, this hangs the process for minutes/hours with 100% CPU
   if (searchTerm.length > MAX_PATTERN_LENGTH) {
     return `Error: Pattern too long (${searchTerm.length} chars, max ${MAX_PATTERN_LENGTH})`;
-  }
-
-  // Only validate complexity for JS fallback - ripgrep has its own protections
-  if (!hasRipgrep && !(await isSafeRegex(searchTerm))) {
-    return `Error: Pattern too complex (potential ReDoS attack). Avoid nested quantifiers like (a+)+ or (a*)*`;
   }
 
   if (hasRipgrep) {

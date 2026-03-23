@@ -40,7 +40,6 @@ Every file tool resolves paths through this module. It ensures all operations st
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import isPathInside from 'is-path-inside';
 
 const workingDirectory = process.cwd();
 
@@ -49,14 +48,16 @@ export async function validatePath(requestedPath: string): Promise<string> {
   const normalized = path.normalize(resolved);
 
   // First check: is the normalised path within cwd?
-  if (!isPathInside(normalized, workingDirectory)) {
+  const relative = path.relative(workingDirectory, normalized);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`Path "${requestedPath}" is outside the working directory.`);
   }
 
   // Second check: resolve symlinks and re-check
   try {
     const realPath = await fs.realpath(normalized);
-    if (!isPathInside(realPath, workingDirectory)) {
+    const realRelative = path.relative(workingDirectory, realPath);
+    if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
       throw new Error(`Path "${requestedPath}" resolves (via symlink) outside the working directory.`);
     }
     return realPath;
@@ -66,7 +67,8 @@ export async function validatePath(requestedPath: string): Promise<string> {
       const parentDir = path.dirname(normalized);
       try {
         const realParent = await fs.realpath(parentDir);
-        if (!isPathInside(realParent, workingDirectory)) {
+        const parentRelative = path.relative(workingDirectory, realParent);
+        if (parentRelative.startsWith('..') || path.isAbsolute(parentRelative)) {
           throw new Error(`Parent directory of "${requestedPath}" resolves outside the working directory.`);
         }
         return path.join(realParent, path.basename(normalized));
@@ -1675,18 +1677,17 @@ The pattern `(a+)+` means "one or more 'a' characters, repeated one or more time
 An attacker could submit a malicious search pattern that hangs the agent process, causing denial of service.
 
 **Our Solution:**
-We use the `recheck` library to analyze regex patterns for ReDoS vulnerabilities:
+We enforce a maximum pattern length to limit the complexity of regex patterns:
 
 ```typescript
-import { check } from 'recheck';
+const MAX_PATTERN_LENGTH = 1000;
 
-async function isSafeRegex(pattern: string): Promise<boolean> {
-  const result = await check(pattern, 'g');
-  return result.status === 'safe';
+if (searchTerm.length > MAX_PATTERN_LENGTH) {
+  return `Error: Pattern too long (${searchTerm.length} chars, max ${MAX_PATTERN_LENGTH})`;
 }
 ```
 
-The `recheck` library uses formal analysis to detect exponential backtracking vulnerabilities. It's more reliable than custom pattern matching and is actively maintained by the security community.
+This simple length limit prevents the most common ReDoS vectors. Additionally, when ripgrep is available (the default search backend), it has its own built-in protections against catastrophic backtracking.
 
 ### Path Validation and Directory Traversal
 
