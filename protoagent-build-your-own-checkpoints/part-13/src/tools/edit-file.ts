@@ -8,7 +8,8 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { validatePath, getWorkingDirectory } from '../utils/path-validation.js';
+import { validatePath } from '../utils/path-validation.js';
+import { findSimilarPaths } from '../utils/path-suggestions.js';
 import { requestApproval } from '../utils/approval.js';
 import { checkReadBefore, recordRead } from '../utils/file-time.js';
 
@@ -35,47 +36,6 @@ export const editFileTool = {
     },
   },
 };
-
-// ─── Path suggestion helper (mirrors read_file behaviour) ───
-
-async function findSimilarPaths(requestedPath: string): Promise<string[]> {
-  const cwd = getWorkingDirectory();
-  const segments = requestedPath.split('/').filter(Boolean);
-  const MAX_DEPTH = 6;
-  const MAX_ENTRIES = 200;
-  const MAX_SUGGESTIONS = 3;
-  const candidates: string[] = [];
-
-  async function walkSegments(dir: string, segIndex: number, currentPath: string): Promise<void> {
-    if (segIndex >= segments.length || segIndex >= MAX_DEPTH || candidates.length >= MAX_SUGGESTIONS) return;
-    const targetSegment = segments[segIndex].toLowerCase();
-    let entries: string[];
-    try {
-      entries = (await fs.readdir(dir, { withFileTypes: true })).slice(0, MAX_ENTRIES).map(e => e.name);
-    } catch {
-      return;
-    }
-    const isLastSegment = segIndex === segments.length - 1;
-    for (const entry of entries) {
-      if (candidates.length >= MAX_SUGGESTIONS) break;
-      const entryLower = entry.toLowerCase();
-      if (!entryLower.includes(targetSegment) && !targetSegment.includes(entryLower)) continue;
-      const entryPath = path.join(currentPath, entry);
-      const fullPath = path.join(dir, entry);
-      if (isLastSegment) {
-        try { await fs.stat(fullPath); candidates.push(entryPath); } catch { /* skip */ }
-      } else {
-        try {
-          const stat = await fs.stat(fullPath);
-          if (stat.isDirectory()) await walkSegments(fullPath, segIndex + 1, entryPath);
-        } catch { /* skip */ }
-      }
-    }
-  }
-
-  await walkSegments(cwd, 0, '');
-  return candidates;
-}
 
 // ─── Fuzzy Match Strategies ───
 

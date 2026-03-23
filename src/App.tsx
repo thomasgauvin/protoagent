@@ -105,8 +105,6 @@ type AddStaticFn = (node: React.ReactNode) => void;
 // <Static> component. Ink flushes new Static items within its own render
 // cycle, so there are no timing issues with write()/log-update.
 
-
-
 function printBanner(addStatic: AddStaticFn): void {
   addStatic(
     <Text>
@@ -236,6 +234,67 @@ function formatSubAgentActivity(tool: string, args?: Record<string, unknown>): s
   return `Sub-agent running ${tool}...`;
 }
 
+/**
+ * Format a tool call into a human-readable string showing the tool name and key argument.
+ * Shows what the tool is actually doing, e.g. "read_file src/App.tsx"
+ */
+function formatToolActivity(tool: string, args?: Record<string, unknown>): string {
+  if (!args || typeof args !== 'object') {
+    return tool;
+  }
+
+  let detail = '';
+
+  switch (tool) {
+    case 'read_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'write_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'edit_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'list_directory':
+      detail = typeof args.directory_path === 'string' ? args.directory_path : '(current)';
+      break;
+    case 'search_files':
+      detail = typeof args.search_term === 'string' ? `"${args.search_term}"` : '';
+      break;
+    case 'bash':
+      detail = typeof args.command === 'string'
+        ? args.command.split(/\s+/).slice(0, 3).join(' ') + (args.command.split(/\s+/).length > 3 ? '...' : '')
+        : '';
+      break;
+    case 'todo_write':
+      detail = Array.isArray(args.todos) ? `${args.todos.length} task(s)` : '';
+      break;
+    case 'todo_read':
+      detail = 'read';
+      break;
+    case 'webfetch':
+      detail = typeof args.url === 'string' ? new URL(args.url).hostname : '';
+      break;
+    case 'sub_agent':
+      detail = 'nested task...';
+      break;
+    default: {
+      // For unknown tools, use the first string argument
+      const firstEntry = Object.entries(args).find(([, v]) => typeof v === 'string');
+      if (firstEntry) {
+        const [, value] = firstEntry;
+        detail = String(value).length > 30 ? String(value).slice(0, 30) + '...' : String(value);
+      }
+    }
+  }
+
+  if (detail) {
+    return `${tool} ${detail}`;
+  }
+
+  return tool;
+}
+
 function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[]): void {  for (const message of messages) {
     const msgAny = message as any;
     if (message.role === 'system') continue;
@@ -250,7 +309,19 @@ function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[])
     if (message.role === 'tool') {
       const toolName = msgAny.name || 'tool';
       const compact = String(msgAny.content || '').replace(/\s+/g, ' ').trim().slice(0, 180);
-      addStatic(<Text dimColor>{'▶ '}{toolName}{': '}{compact}{'\n'}</Text>);
+      
+      // Format tool display with args if available
+      let toolDisplay = toolName;
+      if (msgAny.args) {
+        try {
+          const args = JSON.parse(msgAny.args);
+          toolDisplay = formatToolActivity(toolName, args);
+        } catch {
+          // If parsing fails, use the tool name
+        }
+      }
+      
+      addStatic(<Text dimColor>{'▶ '}{toolDisplay}{': '}{compact}{'\n'}</Text>);
     }
   }
   if (messages.length > 0) {
@@ -744,11 +815,7 @@ export const App: React.FC<AppProps> = ({
           setError(`Failed to save session before exit: ${err.message}`);
         }
         return true;
-      case '/expand':
-      case '/collapse':
-        // expand/collapse removed — transcript lives in scrollback
-        return true;
-       case '/help':
+      case '/help':
         setHelpMessage(HELP_TEXT);
         return true;
       default:
@@ -971,7 +1038,17 @@ export const App: React.FC<AppProps> = ({
                   .replace(/\s+/g, ' ')
                   .trim()
                   .slice(0, 180);
-                addStatic(<Text dimColor>{'▶ '}{toolCall.name}{': '}{compactResult}{'\n'}</Text>);
+                
+                // Parse tool args to show relevant parameter
+                let toolDisplay = toolCall.name;
+                try {
+                  const args = JSON.parse(toolCall.args || '{}');
+                  toolDisplay = formatToolActivity(toolCall.name, args);
+                } catch {
+                  // If parsing fails, just use the tool name
+                }
+                
+                addStatic(<Text dimColor>{'▶ '}{toolDisplay}{': '}{compactResult}{'\n'}</Text>);
 
                 // Flush the assistant message + tool result into completionMessages
                 // for session saving.
@@ -983,12 +1060,13 @@ export const App: React.FC<AppProps> = ({
                       ...assistantMessageRef.current.message,
                     };
                   }
-                  // Append tool result
+                  // Append tool result with args for replay
                   updated.push({
                     role: 'tool',
                     tool_call_id: toolCall.id,
                     content: toolCall.result || '',
                     name: toolCall.name,
+                    args: toolCall.args,
                   } as any);
                   return updated;
                 });

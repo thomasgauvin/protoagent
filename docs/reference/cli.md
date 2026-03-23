@@ -106,8 +106,6 @@ Prints the current version.
 |---|---|
 | `/quit` | save the session and exit |
 | `/exit` | alias for `/quit` |
-| `/collapse` | collapse all long messages |
-| `/expand` | expand all collapsed messages |
 | `/help` | show available slash commands |
 
 When quitting through `/quit` or `/exit`, ProtoAgent prints the exact `protoagent --session <id>` resume command.

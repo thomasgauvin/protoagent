@@ -87,5 +87,7 @@ export async function requestApproval(req: ApprovalRequest): Promise<boolean> {
       return true;
     case 'reject':
       return false;
+    default:
+      return false;
   }
 }

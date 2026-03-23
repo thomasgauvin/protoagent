@@ -68,6 +68,7 @@ export default defineConfig({
             { text: 'Part 11: MCP Integration', link: '/build-your-own/part-11' },
             { text: 'Part 12: Sub-agents', link: '/build-your-own/part-12' },
             { text: 'Part 13: Polish, Rendering & Logging', link: '/build-your-own/part-13' },
+            { text: 'Part 14: Where to Go From Here', link: '/build-your-own/part-14-conclusion' },
           ],
         },
       ],
@@ -84,7 +85,9 @@ export default defineConfig({
       ],
     },
 
-    socialLinks: [],
+    socialLinks: [
+      { icon: 'github', link: 'https://github.com/thomasgauvin/protoagent' },
+    ],
 
     footer: {
       message: 'Built to teach how production-style coding agents actually work.',

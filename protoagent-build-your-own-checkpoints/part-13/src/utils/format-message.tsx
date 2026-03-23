@@ -19,8 +19,8 @@ interface Segment {
 function parseSegments(text: string): Segment[] {
   const segments: Segment[] = [];
 
-  // Strip markdown headers
-  const cleaned = text.replace(/^#+\s+/gm, '');
+  // Strip markdown header lines (e.g., "# Title" or "## Section")
+  const cleaned = text.replace(/^#{1,6}\s+.*$/gm, '');
 
   // Pattern to match ***bold italic***, **bold**, *italic*
   const pattern = /(\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^\s*][^*]*?\*)/g;

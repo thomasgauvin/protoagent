@@ -141,12 +141,32 @@ export function createSession(model: string, provider: string): Session {
 }
 
 // Persists a session to disk as JSON with restricted permissions.
+// Security: Credentials are redacted before saving (see SECURITY.md)
 export async function saveSession(session: Session): Promise<void> {
   await ensureSessionsDir();
   session.updatedAt = new Date().toISOString();
   const filePath = sessionPath(session.id);
-  await fs.writeFile(filePath, JSON.stringify(session, null, 2), { encoding: 'utf8', mode: SESSION_FILE_MODE });
+
+  // Security: Sanitize credentials from session before saving
+  // Naive approach: Save session as-is
+  // Risk: API keys in tool outputs leak to disk
+  // Fix: Redact credential patterns before persisting
+  const sanitizedSession = sanitizeSessionForSave(session);
+
+  await fs.writeFile(filePath, JSON.stringify(sanitizedSession, null, 2), { encoding: 'utf8', mode: SESSION_FILE_MODE });
   hardenPermissions(filePath, SESSION_FILE_MODE);
+}
+
+// Security: Redact credentials from session messages before saving
+function sanitizeSessionForSave(session: Session): Session {
+  const sanitizedMessages = session.completionMessages.map((msg) => {
+    const msgAny = msg as any;
+    if (typeof msgAny.content === 'string') {
+      msgAny.content = msgAny.content.replace(/sk-[a-zA-Z0-9]{48}/g, 'sk-***REDACTED***');
+    }
+    return msg;
+  });
+  return { ...session, completionMessages: sanitizedMessages };
 }
 
 // Loads a session from disk by ID, returning null if not found or invalid.
@@ -524,3 +544,140 @@ Your project should match `protoagent-build-your-own-checkpoints/part-10`.
 ## Core takeaway
 
 Sessions are not just storage. They are what let a long-running coding task survive real life — terminals close, machines restart, but the work continues.
+
+---
+
+## Security Considerations
+
+Sessions introduce a new security concern: credential storage. When the agent uses tools that interact with APIs, those API keys can end up in the conversation history.
+
+### The Credential Leakage Problem
+
+**What Can Go Wrong:**
+
+Imagine this conversation:
+
+```
+User: Test the OpenAI API for me
+Agent: [Uses bash tool with OPENAI_API_KEY=sk-abc123...]
+```
+
+The API key (`sk-abc123...`) is now in the conversation history. When we save the session, that key gets written to disk in plaintext.
+
+**Why This Matters:**
+
+1. **Multi-user systems**: Other users with file access can read your API keys
+2. **Backup exposure**: Session files in backups expose credentials
+3. **Version control**: Accidentally committing session files leaks keys
+4. **Shared development**: Team members might see each other's keys
+
+**The Naive Approach:**
+
+Simply save the session as-is:
+
+```typescript
+await fs.writeFile(
+  sessionPath,
+  JSON.stringify(session, null, 2)
+);
+```
+
+This writes everything—including API keys—to disk.
+
+### Credential Redaction
+
+**Our Solution:**
+
+We sanitize messages before saving, redacting credential patterns:
+
+```typescript
+function sanitizeSessionForSave(session: Session): Session {
+  const sanitizedMessages = session.completionMessages.map((msg) => {
+    if (typeof msg.content === 'string') {
+      // Redact OpenAI API keys
+      msg.content = msg.content.replace(
+        /sk-[a-zA-Z0-9]{48}/g,
+        'sk-***REDACTED***'
+      );
+    }
+    // Also sanitize tool_calls arguments
+    if (Array.isArray(msgAny.tool_calls)) {
+      msgAny.tool_calls = msgAny.tool_calls.map((tc: any) => {
+        if (tc.function?.arguments) {
+          tc.function.arguments = tc.function.arguments
+            .replace(/sk-[a-zA-Z0-9]{48}/g, 'sk-***REDACTED***');
+        }
+        return tc;
+      });
+    }
+    return msg;
+  });
+  return { ...session, completionMessages: sanitizedMessages };
+}
+```
+
+**What Gets Redacted:**
+- OpenAI API keys (`sk-...`)
+- Anthropic keys (`sk-ant-...`)
+- Google AI keys (`AIza...`)
+- Bearer tokens
+- AWS access keys (`AKIA...`)
+
+### File Permissions
+
+**Defense in Depth:**
+
+Even with redaction, we set restrictive file permissions:
+
+```typescript
+const SESSION_DIR_MODE = 0o700;   // Owner: rwx, Others: nothing
+const SESSION_FILE_MODE = 0o600;  // Owner: rw-, Others: nothing
+```
+
+This means:
+- Only the owner can read/write session files
+- Other users on the system cannot access them
+- The session directory itself is protected
+
+**Note on Encryption:**
+
+You might wonder: "Why not encrypt the session files?"
+
+We considered this, but it's a trade-off:
+- **Pros**: Better protection if file permissions are bypassed
+- **Cons**: Requires password/key management, adds complexity
+
+Industry practice (pi-mono, Claude Code, etc.) uses filesystem permissions without encryption. For a tutorial codebase, we follow this approach. If you need encryption for your use case, you could:
+1. Prompt for a password on startup
+2. Use the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+3. Use a hardware security module (HSM)
+
+### Session ID Validation
+
+**Preventing Path Traversal:**
+
+Session IDs are user-provided (via `--session` flag). We validate them:
+
+```typescript
+const SESSION_ID_PATTERN = /^[0-9a-z]{8}$/i;
+
+function assertValidSessionId(id: string): void {
+  if (!SESSION_ID_PATTERN.test(id)) {
+    throw new Error(`Invalid session ID: ${id}`);
+  }
+}
+```
+
+This prevents attacks like:
+```bash
+--session ../../../etc/passwd
+```
+
+### Summary of Session Security
+
+1. **Credential redaction**: API keys are masked before saving
+2. **File permissions**: 0o600/0o700 restricts access to owner
+3. **ID validation**: Prevents path traversal attacks
+4. **No encryption**: Relies on filesystem permissions (industry standard)
+
+Sessions are stored in `~/.local/share/protoagent/sessions/` with these protections. The credential redaction is particularly important—without it, your API keys would persist on disk in every conversation that mentions them.

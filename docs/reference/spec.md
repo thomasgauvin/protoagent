@@ -51,8 +51,6 @@ Current entry points and flags:
 
 Current slash commands:
 
-- `/collapse`
-- `/expand`
 - `/help`
 - `/quit`
 - `/exit` (alias for `/quit`)

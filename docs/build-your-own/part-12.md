@@ -446,3 +446,76 @@ Your project should match `protoagent-build-your-own-checkpoints/part-12`.
 ## Core takeaway
 
 Sub-agents keep the main conversation clean by running noisy investigation work in an isolated context. The parent gets a focused summary instead of hundreds of intermediate tool calls polluting its history.
+
+---
+
+## Security Considerations
+
+Sub-agents inherit all the security properties of the main agent—but there are still important considerations.
+
+### Isolation Model
+
+**What Sub-Agents Can Access:**
+
+Sub-agents run within the same process as the parent agent. This means:
+- Same filesystem access (via `validatePath()`)
+- Same shell command restrictions
+- Same MCP servers (if initialized)
+- Same API keys (via environment)
+
+**Important:** Sub-agents are NOT sandboxed like Docker containers. They're isolated in terms of conversation history, not system resources.
+
+### Approval Inheritance
+
+**How Approvals Work:**
+
+When a sub-agent runs a tool:
+1. The sub-agent requests tool execution
+2. The parent agent handles the approval flow
+3. User sees approval prompts from the parent
+
+This means:
+- Sub-agents cannot bypass approval requirements
+- User still controls destructive operations
+- Session-scoped approvals work for sub-agents too
+
+### Resource Limits
+
+**Potential Risk:**
+
+Sub-agents could exhaust resources:
+- Spawn infinite sub-agents recursively
+- Run very long operations
+- Consume excessive tokens
+
+**Our Protections:**
+
+1. **Max iterations**: Sub-agents have their own iteration limit (default 30)
+2. **Parent oversight**: Sub-agent tool calls count toward parent's iteration limit
+3. **Timeout**: Sub-agents inherit the abort signal from parent
+4. **Cost tracking**: Sub-agent usage is reported to parent
+
+### Context Isolation as Privacy
+
+**The Privacy Benefit:**
+
+Sub-agents don't see the parent's full conversation history. This is actually a security feature—the sub-agent only knows what the parent explicitly tells it in the task description.
+
+### Best Practices for Sub-Agents
+
+**When Using Sub-Agents:**
+
+1. **Scope the task narrowly**: Give specific, bounded tasks
+2. **Don't pass sensitive data in task descriptions**: Remember results may be logged
+3. **Review sub-agent results**: Don't blindly trust the summary
+4. **Watch resource usage**: Sub-agents consume tokens and time
+
+### Summary
+
+Sub-agents provide **context isolation** (clean conversation history) but NOT **resource isolation** (same filesystem, same permissions). They inherit all parent security controls:
+- Path validation
+- Command filtering  
+- Approval requirements
+- MCP security
+
+Use sub-agents for focused tasks that would clutter the main conversation, but remember they're not a security sandbox—they're a context management tool.

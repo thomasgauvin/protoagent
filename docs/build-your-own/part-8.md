@@ -60,8 +60,8 @@ export function estimateMessageTokens(msg: OpenAI.Chat.Completions.ChatCompletio
   if ('content' in msg && typeof msg.content === 'string') {
     tokens += estimateTokens(msg.content);
   }
-  if ('tool_calls' in msg && Array.isArray((msg as any).tool_calls)) {
-    for (const tc of (msg as any).tool_calls) {
+  if ('tool_calls' in msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+    for (const tc of msg.tool_calls) {
       tokens += estimateTokens(tc.function?.name || '') + estimateTokens(tc.function?.arguments || '') + 10;
     }
   }
