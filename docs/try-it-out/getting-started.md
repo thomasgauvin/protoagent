@@ -53,8 +53,6 @@ Some good first prompts:
 Inside the app, you can use:
 
 - `/help` — show available slash commands
-- `/collapse` — collapse all long messages
-- `/expand` — expand all collapsed messages
 - `/quit` — save the session and exit (also accepts `/exit`)
 
 Useful shortcuts:

@@ -33,26 +33,33 @@ const TEXT_MIME_TYPES = [
 ];
 
 // Lazy-loaded Turndown instance
-// Turndown is an HTML-to-Markdown converter library
+// Lazy-loaded Turndown instance — converts HTML to Markdown
+// We lazy-load because Turndown is a CommonJS module; dynamic import keeps our
+// ESM output clean without forcing esbuild to bundle everything as CJS.
+// Why Turndown? HTML → Markdown preserves document structure (headings, lists,
+// links) in a readable format that LLMs handle better than raw HTML markup.
 let _turndownService: any = null;
-async function getTurndownService() {
+async function getTurndownService(): Promise<any> {
   if (!_turndownService) {
     const { default: TurndownService } = await import('turndown');
     _turndownService = new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
+      headingStyle: 'atx',       // # Heading, not underlined
+      codeBlockStyle: 'fenced',  // ```code```, not indented
       bulletListMarker: '-',
       emDelimiter: '*',
     });
+    // Remove noise that doesn't help LLM understanding
     _turndownService.remove(['script', 'style', 'meta', 'link']);
   }
   return _turndownService;
 }
 
-// Lazy-loaded he module
-// he is an HTML entity decoder library (e.g., &lt; becomes <)
-let _he: any = null;
-async function getHe() {
+// Lazy-loaded 'he' module — decodes HTML entities like &lt; &gt; &amp;
+// We lazy-load for the same CJS/ESM reason as Turndown.
+// Why 'he'? Browsers and node don't have built-in HTML entity decoding that
+// handles the full set (&nbsp;, &#x2713;, named entities, etc.) correctly.
+let _he: typeof import('he') | null = null;
+async function getHe(): Promise<typeof import('he')> {
   if (!_he) {
     const { default: he } = await import('he');
     _he = he;
@@ -220,6 +227,10 @@ export async function webfetch(
       throw new Error(`Content type '${contentType}' is not supported.`);
     }
 
+    // Use ArrayBuffer instead of response.text() so we can:
+    // 1. Check byte size before decoding (security limit)
+    // 2. Decode with the correct charset from Content-Type header
+    //    (response.text() always uses UTF-8, which corrupts legacy encodings)
     const arrayBuffer = await response.arrayBuffer();
 
     if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {

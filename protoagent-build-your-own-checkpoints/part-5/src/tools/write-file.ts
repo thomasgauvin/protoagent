@@ -1,6 +1,6 @@
 // src/tools/write-file.ts
 
-import fs from 'node:fs/promises';
+import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
@@ -46,13 +46,27 @@ export async function writeFile(filePath: string, content: string, sessionId?: s
   // Ensure parent directory exists
   await fs.mkdir(path.dirname(validated), { recursive: true });
 
-  // Atomic write: write to temp file then rename
+  // Security: Atomic write with symlink protection
+  // Naive approach: Write directly to temp file, then rename
+  // Risk: TOCTOU race - attacker creates symlink at temp path
+  // Fix: Use O_CREAT|O_EXCL ('wx' flag) - fails if file exists
   const tmpPath = path.join(path.dirname(validated), `.protoagent-write-${process.pid}-${Date.now()}-${path.basename(validated)}`);
+
+  let fd: FileHandle | undefined;
   try {
-    await fs.writeFile(tmpPath, content, 'utf8');
+    // Open with O_CREAT|O_EXCL - atomically creates or fails if exists
+    fd = await fs.open(tmpPath, 'wx', 0o600);
+    await fd.writeFile(content, 'utf8');
+    await fd.sync();  // Ensure data hits disk before rename
+    await fd.close();
+    fd = undefined;
     await fs.rename(tmpPath, validated);
-  } finally {
-    await fs.rm(tmpPath, { force: true }).catch(() => undefined);
+  } catch (err: any) {
+    if (fd !== undefined) {
+      try { await fd.close(); } catch { /* ignore */ }
+    }
+    try { await fs.unlink(tmpPath); } catch { /* ignore */ }
+    throw err;
   }
 
   const lines = content.split('\n').length;

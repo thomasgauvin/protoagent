@@ -118,12 +118,43 @@ export function createSession(model: string, provider: string): Session {
 }
 
 // Persists a session to disk as JSON with restricted permissions.
+// Security: Credentials are redacted before saving to prevent leakage
 export async function saveSession(session: Session): Promise<void> {
   await ensureSessionsDir();
   session.updatedAt = new Date().toISOString();
   const filePath = sessionPath(session.id);
-  await fs.writeFile(filePath, JSON.stringify(session, null, 2), { encoding: 'utf8', mode: SESSION_FILE_MODE });
+
+  // Security: Sanitize credentials from session before saving
+  // Naive approach: Save session as-is
+  // Risk: API keys, tokens, passwords in tool outputs leak to disk
+  // Fix: Redact credential patterns before persisting
+  const sanitizedSession = sanitizeSessionForSave(session);
+
+  await fs.writeFile(filePath, JSON.stringify(sanitizedSession, null, 2), { encoding: 'utf8', mode: SESSION_FILE_MODE });
   hardenPermissions(filePath, SESSION_FILE_MODE);
+}
+
+// Security: Redact credentials from session messages before saving
+// This prevents API keys from being stored in session files
+function sanitizeSessionForSave(session: Session): Session {
+  const sanitizedMessages = session.completionMessages.map((msg) => {
+    const msgAny = msg as any;
+    // Redact OpenAI API key pattern
+    if (typeof msgAny.content === 'string') {
+      msgAny.content = msgAny.content.replace(/sk-[a-zA-Z0-9]{48}/g, 'sk-***REDACTED***');
+    }
+    // Also sanitize tool_calls arguments if present
+    if (Array.isArray(msgAny.tool_calls)) {
+      msgAny.tool_calls = msgAny.tool_calls.map((tc: any) => {
+        if (tc.function?.arguments) {
+          tc.function.arguments = tc.function.arguments.replace(/sk-[a-zA-Z0-9]{48}/g, 'sk-***REDACTED***');
+        }
+        return tc;
+      });
+    }
+    return msg;
+  });
+  return { ...session, completionMessages: sanitizedMessages };
 }
 
 // Loads a session from disk by ID, returning null if not found or invalid.

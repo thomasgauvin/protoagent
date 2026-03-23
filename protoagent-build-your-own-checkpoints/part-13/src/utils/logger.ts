@@ -75,7 +75,8 @@ function writeToFile(message: string): void {
   try {
     appendFileSync(logFilePath!, message);
   } catch (err) {
-    // Silently fail if we can't write to log file
+    // Emit to stderr since we can't write to log file
+    process.stderr.write(`Failed to write to log file: ${err}\n`);
   }
 }
 
@@ -86,6 +87,14 @@ function timestamp(): string {
   const ss = String(d.getSeconds()).padStart(2, '0');
   const ms = String(d.getMilliseconds()).padStart(3, '0');
   return `${hh}:${mm}:${ss}.${ms}`;
+}
+
+function safeStringify(obj: unknown): string {
+  try {
+    return JSON.stringify(obj);
+  } catch {
+    return '[Object with circular references]';
+  }
 }
 
 function log(level: LogLevel, label: string, message: string, context?: Record<string, unknown>): void {
@@ -106,7 +115,7 @@ function log(level: LogLevel, label: string, message: string, context?: Record<s
 
   logListeners.forEach(listener => listener(entry));
 
-  const ctx = context ? ` ${JSON.stringify(context)}` : '';
+  const ctx = context ? ` ${safeStringify(context)}` : '';
   writeToFile(`[${ts}] ${label.padEnd(5)} ${message}${ctx}\n`);
 }
 

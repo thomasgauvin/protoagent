@@ -14,6 +14,8 @@ import { chmodSync } from 'node:fs';
 import type OpenAI from 'openai';
 import type { TodoItem } from './tools/todo.js';
 import { logger } from './utils/logger.js';
+import { maskCredentials } from './utils/credential-filter.js';
+import { atomicWriteFile } from './utils/atomic-write.js';
 
 const SESSION_DIR_MODE = 0o700;
 const SESSION_FILE_MODE = 0o600;
@@ -119,12 +121,64 @@ export function createSession(model: string, provider: string): Session {
   };
 }
 
+/**
+ * Sanitize session messages to remove credentials before saving.
+ * Security: Prevent credential leakage in session files
+ */
+function sanitizeSessionForSave(session: Session): Session {
+  // Deep clone and redact credentials from all message content
+  const sanitizedMessages = session.completionMessages.map((msg) => {
+    const msgAny = msg as any;
+
+    // Sanitize content field
+    if (typeof msgAny.content === 'string') {
+      msgAny.content = maskCredentials(msgAny.content);
+    }
+
+    // Sanitize tool_calls arguments
+    if (Array.isArray(msgAny.tool_calls)) {
+      msgAny.tool_calls = msgAny.tool_calls.map((tc: any) => {
+        if (tc.function?.arguments) {
+          tc.function.arguments = maskCredentials(tc.function.arguments);
+        }
+        return tc;
+      });
+    }
+
+    // Sanitize tool results
+    if (msgAny.tool_call_id && typeof msgAny.content === 'string') {
+      msgAny.content = maskCredentials(msgAny.content);
+    }
+
+    return msg;
+  });
+
+  return {
+    ...session,
+    completionMessages: sanitizedMessages,
+  };
+}
+
 /** Save a session to disk. */
 export async function saveSession(session: Session): Promise<void> {
   await ensureSessionsDir();
   session.updatedAt = new Date().toISOString();
+
+  // Security: Sanitize credentials from session before saving
+  // Naive approach: Save session as-is
+  // Risk: API keys, tokens, passwords in tool outputs leak to disk
+  // Attack: Session files are readable by other users on shared systems
+  const sanitizedSession = sanitizeSessionForSave(session);
+
   const filePath = sessionPath(session.id);
-  await fs.writeFile(filePath, JSON.stringify(session, null, 2), { encoding: 'utf8', mode: SESSION_FILE_MODE });
+
+  // Security: Use atomic write with symlink protection
+  const result = await atomicWriteFile(filePath, JSON.stringify(sanitizedSession, null, 2));
+  if (!result.success) {
+    logger.error(`Failed to save session: ${result.error}`);
+    throw new Error(`Failed to save session: ${result.error}`);
+  }
+
   hardenPermissions(filePath, SESSION_FILE_MODE);
   logger.debug(`Session saved: ${session.id}`);
 }

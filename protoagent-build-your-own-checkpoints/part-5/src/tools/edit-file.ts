@@ -1,6 +1,6 @@
 // src/tools/edit-file.ts
 
-import fs from 'node:fs/promises';
+import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 import { requestApproval } from '../utils/approval.js';
@@ -85,13 +85,29 @@ export async function editFile(
 
   // Perform replacement
   const newContent = content.split(oldString).join(newString);
+
+  // Security: Atomic write with symlink protection
+  // Naive approach: Write directly to temp file, then rename
+  // Risk: TOCTOU race - attacker creates symlink at temp path
+  // Fix: Use O_CREAT|O_EXCL ('wx' flag) - fails if file exists
   const directory = path.dirname(validated);
   const tempPath = path.join(directory, `.protoagent-edit-${process.pid}-${Date.now()}-${path.basename(validated)}`);
+
+  let fd: FileHandle | undefined;
   try {
-    await fs.writeFile(tempPath, newContent, 'utf8');
+    // Open with O_CREAT|O_EXCL - atomically creates or fails if exists
+    fd = await fs.open(tempPath, 'wx', 0o600);
+    await fd.writeFile(newContent, 'utf8');
+    await fd.sync();  // Ensure data hits disk before rename
+    await fd.close();
+    fd = undefined;
     await fs.rename(tempPath, validated);
-  } finally {
-    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+  } catch (err: any) {
+    if (fd !== undefined) {
+      try { await fd.close(); } catch { /* ignore */ }
+    }
+    try { await fs.unlink(tempPath); } catch { /* ignore */ }
+    throw err;
   }
 
   return `Successfully edited ${filePath}: ${count} replacement(s) made.`;

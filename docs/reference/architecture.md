@@ -37,7 +37,7 @@ Main implementation areas:
 - `src/runtime-config.ts` — Merged `protoagent.jsonc` from 3 locations with env var interpolation
 - `src/tools/index.ts` — 9 static tools + dynamic tool registry
 - `src/tools/*` — Individual tool implementations
-- `src/components/*` — Ink UI components: CollapsibleBox, ConsolidatedToolMessage, FormattedMessage, Table, LeftBar, ConfigDialog
+- `src/components/*` — Ink UI components: CollapsibleBox, LeftBar
 - `src/utils/logger.ts` — File-based logger with levels (ERROR/WARN/INFO/DEBUG/TRACE) and in-memory buffer (last 100 entries)
 - `src/utils/cost-tracker.ts` — Token estimation (~4 chars/token), cost calculation
 - `src/utils/compactor.ts` — Conversation compaction at 90% context utilization
@@ -150,7 +150,7 @@ If the API returns a 400 error indicating the prompt is too long (e.g. `prompt t
 
 `src/App.tsx` is both the visible UI layer and the runtime coordinator for:
 
-- slash commands (`/collapse`, `/expand`, `/help`, `/quit`, `/exit`)
+- slash commands (`/help`, `/quit`, `/exit`)
 - session lifecycle (create, save, resume, clear)
 - approvals (interactive prompt with approve-once, approve-session, reject)
 - config flows (inline first-run setup)

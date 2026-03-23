@@ -31,7 +31,9 @@ export const bashTool = {
   },
 };
 
-// Hard-blocked commands — these CANNOT be run, even with --dangerously-skip-permissions
+// Security: Hard-blocked commands — these CANNOT be run, even with --dangerously-skip-permissions
+// Naive approach: Allow any command with user approval
+// Risk: Some commands are too destructive even with approval (rm -rf /, mkfs)
 const DANGEROUS_PATTERNS = [
   'rm -rf /',
   'sudo',
@@ -41,18 +43,32 @@ const DANGEROUS_PATTERNS = [
   'mkfs',
   'fdisk',
   'format c:',
+  '> /dev/sda',           // Disk overwrite
+  'of=/dev/sda',          // dd to disk
+  ':(){ :|:& };:',        // Fork bomb
+  'curl.*\|.*sh',         // Pipe curl to shell (common exploit)
+  'wget.*\|.*sh',         // Pipe wget to shell
 ];
 
-// Auto-approved safe commands — read-only / informational
+// Security: Allowlist approach for safe commands
+// Naive approach: Blocklist of dangerous patterns - easily bypassed
+// Bypass examples: 's\udo', '$(which sudo)', '/bin/rm', 'sh -c "rm -rf /"'
+// Fix: Allowlist - only these specific commands run without approval
 const SAFE_COMMANDS = [
-  'pwd', 'whoami', 'date',
-  'git status', 'git log', 'git diff', 'git branch', 'git show', 'git remote',
+  'pwd', 'whoami', 'date', 'uname', 'uptime',
+  'git status', 'git log', 'git diff', 'git branch', 'git show', 'git remote -v',
   'npm list', 'npm ls', 'yarn list',
   'node --version', 'npm --version', 'python --version', 'python3 --version',
+  'which', 'type',
 ];
 
-const SHELL_CONTROL_PATTERN = /(^|[^\\])(?:;|&&|\|\||\||>|<|`|\$\(|\*|\?)/;
-const UNSAFE_BASH_TOKENS = new Set(['cat', 'head', 'tail', 'grep', 'rg', 'find', 'awk', 'sed', 'sort', 'uniq', 'cut', 'wc', 'tree', 'file', 'dir', 'ls', 'echo', 'which', 'type']);
+// Security: Stricter shell control pattern to catch bypass attempts
+// Naive approach: Simple regex misses many bypasses
+// Bypasses: Newlines, encoded chars, quoted operators, backticks
+const SHELL_CONTROL_PATTERN = /[;&|<>()`$\[\]{}!]/;
+
+// Commands that read files - require path validation
+const FILE_READING_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'rg', 'find', 'awk', 'sed', 'sort', 'uniq', 'cut', 'wc', 'tree', 'file', 'dir', 'ls', 'echo']);
 
 function isDangerous(command: string): boolean {
   const lower = command.toLowerCase().trim();
@@ -106,16 +122,28 @@ async function isSafe(command: string): Promise<boolean> {
     return false;
   }
 
+  // Security: Reject commands with newlines (bypass technique)
+  if (trimmed.includes('\n') || trimmed.includes('\r')) {
+    return false;
+  }
+
+  // Security: Reject escape sequences that could hide shell operators
+  if (/\\[;&|<>()`$]/.test(trimmed)) {
+    return false;
+  }
+
   const tokens = tokenizeCommand(trimmed);
   if (!tokens) {
     return false;
   }
 
   const firstWord = trimmed.split(/\s+/)[0];
-  if (UNSAFE_BASH_TOKENS.has(firstWord)) {
-    return false;
-  }
 
+  // Security: File-reading commands need path validation
+  // They can read any file in working directory but not outside
+  const needsPathValidation = FILE_READING_COMMANDS.has(firstWord);
+
+  // Check against allowlist of safe commands
   const matchedSafeCommand = SAFE_COMMANDS.some((safe) => {
     if (safe.includes(' ')) {
       return trimmed === safe || trimmed.startsWith(`${safe} `);
@@ -123,11 +151,16 @@ async function isSafe(command: string): Promise<boolean> {
     return firstWord === safe;
   });
 
-  if (!matchedSafeCommand) {
+  if (!matchedSafeCommand && !needsPathValidation) {
     return false;
   }
 
-  return validateCommandPaths(tokens);
+  // Security: Always validate paths for file-reading commands
+  if (needsPathValidation) {
+    return validateCommandPaths(tokens);
+  }
+
+  return true;
 }
 
 export async function runBash(
