@@ -14,7 +14,6 @@ Take a moment to appreciate what's running on your machine:
 - **MCP integration** that extends capabilities without core code changes
 - **Sub-agents** that keep your main context clean
 
-This isn't a toy. You could use ProtoAgent on real projects today.
 
 ## Extending ProtoAgent
 
