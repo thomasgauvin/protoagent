@@ -11,7 +11,7 @@ We will allow users to configure MCP servers via the `protoagent.jsonc` file. We
 Starting from Part 10, you add:
 
 - `src/runtime-config.ts` — active `protoagent.jsonc` configuration loader
-- Updated `src/config.tsx` — remove duplicated config paths/types
+- Updated `src/config.tsx` — remove duplicated config paths/types (now imported from runtime-config.ts)
 - `src/mcp.ts` — MCP client that connects to stdio and HTTP servers
 - Updated `src/providers.ts` — merges runtime config providers with built-in catalog
 - Updated `src/App.tsx` — initializes MCP on startup, closes on unmount
@@ -30,7 +30,9 @@ Create the file:
 touch src/runtime-config.ts
 ```
 
-This file will become the single source of truth for runtime configuration — handling config file discovery, parsing, caching, and type definitions.
+This file will become the single source of truth for runtime configuration — handling config file discovery, parsing, caching, and type definitions. This lets us remove duplicated logic from `config.tsx`.
+
+The runtime config system loads the active `protoagent.jsonc` file. If a project file (`.protoagent/protoagent.jsonc`) exists in the current working directory, ProtoAgent uses that; otherwise it falls back to the shared user file (`~/.config/protoagent/protoagent.jsonc`). There is no merging between the two — one file wins. This is where MCP servers are configured, and where custom providers/models can be added.
 
 ```typescript
 // src/runtime-config.ts
@@ -46,30 +48,44 @@ export interface RuntimeModelConfig {
   contextWindow?: number;
   inputPricePerMillion?: number;
   outputPricePerMillion?: number;
+  defaultParams?: Record<string, unknown>;
 }
+
+const RESERVED_DEFAULT_PARAM_KEYS = new Set([
+  'model',
+  'messages',
+  'tools',
+  'tool_choice',
+  'stream',
+  'stream_options',
+]);
 
 export interface RuntimeProviderConfig {
   name?: string;
   baseURL?: string;
+  apiKey?: string;
   apiKeyEnvVar?: string;
+  headers?: Record<string, string>;
+  defaultParams?: Record<string, unknown>;
   models?: Record<string, RuntimeModelConfig>;
-  requestDefaults?: Record<string, unknown>;
 }
 
-export interface StdioServerConfig {
+interface StdioServerConfig {
   type: 'stdio';
   command: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
   enabled?: boolean;
+  timeoutMs?: number;
 }
 
-export interface HttpServerConfig {
+interface HttpServerConfig {
   type: 'http';
   url: string;
   headers?: Record<string, string>;
   enabled?: boolean;
+  timeoutMs?: number;
 }
 
 export type RuntimeMcpServerConfig = StdioServerConfig | HttpServerConfig;
@@ -86,104 +102,197 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfigFile = {
   mcp: { servers: {} },
 };
 
-let cachedConfig: RuntimeConfigFile | null = null;
-let activeConfigPath: string | null = null;
+let runtimeConfigCache: RuntimeConfigFile | null = null;
 
-function getProjectConfigPath(cwd: string): string {
-  return path.join(cwd, '.protoagent', 'protoagent.jsonc');
+// Returns the path to the project-level runtime config file.
+function getProjectRuntimeConfigPath(): string {
+  return path.join(process.cwd(), '.protoagent', 'protoagent.jsonc');
 }
 
-function getUserConfigPath(): string {
-  const home = os.homedir();
+// Returns the path to the user-level runtime config file based on the OS.
+function getUserRuntimeConfigPath(): string {
+  const homeDir = os.homedir();
   if (process.platform === 'win32') {
-    return path.join(home, 'AppData', 'Local', 'protoagent', 'protoagent.jsonc');
+    return path.join(homeDir, 'AppData', 'Local', 'protoagent', 'protoagent.jsonc');
   }
-  return path.join(home, '.config', 'protoagent', 'protoagent.jsonc');
+  return path.join(homeDir, '.config', 'protoagent', 'protoagent.jsonc');
 }
 
-function getActiveRuntimeConfigPath(cwd: string): string {
-  const projectPath = getProjectConfigPath(cwd);
-  if (existsSync(projectPath)) {
-    return projectPath;
-  }
-  return getUserConfigPath();
+// Returns the active config path: project if it exists, otherwise user.
+export function getActiveRuntimeConfigPath(): string | null {
+  const projectPath = getProjectRuntimeConfigPath();
+  if (existsSync(projectPath)) return projectPath;
+  const userPath = getUserRuntimeConfigPath();
+  if (existsSync(userPath)) return userPath;
+  return null;
 }
 
-export function getActiveRuntimeConfigPathCached(): string | null {
-  return activeConfigPath;
+// Checks if a value is a plain object (not an array or null).
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-export async function loadRuntimeConfig(cwd?: string): Promise<RuntimeConfigFile> {
-  if (cachedConfig) {
-    return cachedConfig;
+// Replaces environment variable placeholders in a string with their values.
+function interpolateString(value: string, sourcePath: string): string {
+  return value.replace(/\$\{([A-Z0-9_]+)\}/gi, (_match, envVar: string) => {
+    const resolved = process.env[envVar];
+    if (resolved === undefined) {
+      return '';
+    }
+    return resolved;
+  });
+}
+
+// Recursively interpolates environment variables in any value type.
+function interpolateValue<T>(value: T, sourcePath: string): T {
+  if (typeof value === 'string') return interpolateString(value, sourcePath) as T;
+  if (Array.isArray(value)) return value.map((entry) => interpolateValue(entry, sourcePath)) as T;
+  if (isPlainObject(value)) {
+    const next: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      const interpolated = interpolateValue(entry, sourcePath);
+      if (key === 'headers' && isPlainObject(interpolated)) {
+        // Drop headers whose values were empty after interpolation
+        next[key] = Object.fromEntries(
+          Object.entries(interpolated).filter(([, v]) => typeof v !== 'string' || v.length > 0)
+        );
+        continue;
+      }
+      next[key] = interpolated;
+    }
+    return next as T;
   }
+  return value;
+}
 
-  const cwdPath = cwd ?? process.cwd();
-  activeConfigPath = getActiveRuntimeConfigPath(cwdPath);
+// Removes reserved parameter keys from provider and model defaultParams.
+function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfigFile {
+  const nextProviders = Object.fromEntries(
+    Object.entries(config.providers || {}).map(([providerId, provider]) => {
+      const providerDefaultParams = Object.fromEntries(
+        Object.entries(provider.defaultParams || {}).filter(([key]) => {
+          const allowed = !RESERVED_DEFAULT_PARAM_KEYS.has(key);
+          return allowed;
+        })
+      );
 
+      const nextModels = Object.fromEntries(
+        Object.entries(provider.models || {}).map(([modelId, model]) => {
+          const modelDefaultParams = Object.fromEntries(
+            Object.entries(model.defaultParams || {}).filter(([key]) => {
+              const allowed = !RESERVED_DEFAULT_PARAM_KEYS.has(key);
+              return allowed;
+            })
+          );
+          return [modelId, { ...model, ...(Object.keys(modelDefaultParams).length > 0 ? { defaultParams: modelDefaultParams } : {}) }];
+        })
+      );
+
+      return [providerId, { ...provider, ...(Object.keys(providerDefaultParams).length > 0 ? { defaultParams: providerDefaultParams } : {}), models: nextModels }];
+    })
+  );
+
+  return { ...config, providers: nextProviders };
+}
+
+// Merges two runtime configs, with overlay taking precedence.
+function mergeRuntimeConfig(base: RuntimeConfigFile, overlay: RuntimeConfigFile): RuntimeConfigFile {
+  const mergedProviders: Record<string, RuntimeProviderConfig> = { ...(base.providers || {}) };
+  for (const [providerId, providerConfig] of Object.entries(overlay.providers || {})) {
+    const current = mergedProviders[providerId] || {};
+    mergedProviders[providerId] = { ...current, ...providerConfig, models: { ...(current.models || {}), ...(providerConfig.models || {}) } };
+  }
+  const mergedServers: Record<string, RuntimeMcpServerConfig> = { ...(base.mcp?.servers || {}) };
+  for (const [name, serverConfig] of Object.entries(overlay.mcp?.servers || {})) {
+    const current = mergedServers[name];
+    mergedServers[name] = current && isPlainObject(current) ? { ...current, ...serverConfig } : serverConfig;
+  }
+  return { providers: mergedProviders, mcp: { servers: mergedServers } };
+}
+
+// Reads and parses a runtime config file with interpolation and validation.
+async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigFile | null> {
   try {
-    const content = await fs.readFile(activeConfigPath, 'utf-8');
-    const errors: import('jsonc-parser').ParseError[] = [];
-    const parsed = parse(content, errors, { allowTrailingComma: true });
-
+    const content = await fs.readFile(configPath, 'utf8');
+    const errors: Array<{ error: number; offset: number; length: number }> = [];
+    const parsed = parse(content, errors, { allowTrailingComma: true, disallowComments: false });
     if (errors.length > 0) {
-      const formattedErrors = errors.slice(0, 5).map((e) => {
-        const code = printParseErrorCode(e.error);
-        return `  - ${code} at offset ${e.offset}`;
-      }).join('\n');
-      throw new Error(`JSONC parse errors in ${activeConfigPath}:\n${formattedErrors}`);
+      const details = errors.map((e) => `${printParseErrorCode(e.error)} at offset ${e.offset}`).join(', ');
+      throw new Error(`Failed to parse ${configPath}: ${details}`);
     }
+    if (!isPlainObject(parsed)) throw new Error(`Failed to parse ${configPath}: top-level value must be an object`);
+    return sanitizeDefaultParamsInConfig(interpolateValue(parsed as RuntimeConfigFile, configPath));
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
 
-    cachedConfig = (parsed as RuntimeConfigFile) ?? DEFAULT_RUNTIME_CONFIG;
-  } catch (err: any) {
-    if (err.code === 'ENOENT') {
-      cachedConfig = DEFAULT_RUNTIME_CONFIG;
-    } else {
-      throw new Error(`Failed to load runtime config from ${activeConfigPath}: ${err.message}`);
+// Loads the runtime config from file or cache, merging with defaults.
+export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeConfigFile> {
+  if (!forceReload && runtimeConfigCache) return runtimeConfigCache;
+
+  const configPath = getActiveRuntimeConfigPath();
+  let loaded = DEFAULT_RUNTIME_CONFIG;
+
+  if (configPath) {
+    const fileConfig = await readRuntimeConfigFile(configPath);
+    if (fileConfig) {
+      loaded = mergeRuntimeConfig(DEFAULT_RUNTIME_CONFIG, fileConfig);
     }
   }
 
-  return cachedConfig;
+  runtimeConfigCache = loaded;
+  return loaded;
 }
 
+// Returns the cached runtime config or the default config.
 export function getRuntimeConfig(): RuntimeConfigFile {
-  if (!cachedConfig) {
-    throw new Error('Runtime config not loaded. Call loadRuntimeConfig() first.');
-  }
-  return cachedConfig;
+  return runtimeConfigCache || DEFAULT_RUNTIME_CONFIG;
 }
 
-export function clearRuntimeConfigCache(): void {
-  cachedConfig = null;
-  activeConfigPath = null;
+// Clears the runtime config cache for testing purposes.
+export function resetRuntimeConfigForTests(): void {
+  runtimeConfigCache = null;
 }
 ```
 
 ## Step 2: Clean up `src/config.tsx`
 
-Now that we have `src/runtime-config.ts`, we can remove the duplicated config path logic from `src/config.tsx`. Replace the path helper functions:
+Now that `runtime-config.ts` is the single source of truth for config paths and types, we need to remove the duplicated code from `config.tsx`. Replace the relevant sections:
 
+1. Add the import at the top:
 ```typescript
-// Replace these imports and functions in config.tsx:
-import {
-  getUserRuntimeConfigPath,
-  getProjectRuntimeConfigPath,
-  getActiveRuntimeConfigPath,
-} from './runtime-config.js';
-
-// Remove the old implementations of:
-// - getUserRuntimeConfigPath()
-// - getProjectRuntimeConfigPath()  
-// - getActiveRuntimeConfigPath()
+import { getActiveRuntimeConfigPath, type RuntimeConfigFile, type RuntimeProviderConfig } from './runtime-config.js';
 ```
+
+2. Remove these duplicate functions and interfaces:
+   - `getUserRuntimeConfigPath()` — now imported from runtime-config.ts
+   - `getProjectRuntimeConfigPath()` — now computed inline where needed  
+   - `getActiveRuntimeConfigPath()` — now imported from runtime-config.ts
+   - Inline `RuntimeProviderConfig` interface — now imported type
+   - Inline `RuntimeConfigFile` interface — now imported type
+
+3. Update `getInitConfigPath()` to compute paths directly:
+```typescript
+export const getInitConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
+  const projectPath = path.join(getProjectRuntimeConfigDirectory(cwd), 'protoagent.jsonc');
+  const userPath = path.join(getUserRuntimeConfigDirectory(), 'protoagent.jsonc');
+  return target === 'project' ? projectPath : userPath;
+};
+```
+
+4. Update `ConfigureComponent` Select options to use inline paths:
+```typescript
+options={[
+  { label: `Project config — ${path.join(getProjectRuntimeConfigDirectory(), 'protoagent.jsonc')}`, value: 'project' },
+  { label: `Shared user config — ${path.join(getUserRuntimeConfigDirectory(), 'protoagent.jsonc')}`, value: 'user' },
+]}
+```
+
+The `isPlainObject()` helper stays in config.tsx since it's still used by `readRuntimeConfigFileSync()`.
 
 ## Step 3: Create `src/mcp.ts`
-
-Create the file:
-
-```bash
-touch src/mcp.ts
-```
 
 The MCP client connects to configured servers, discovers their tools, and registers them as dynamic tools.
 
@@ -238,7 +347,7 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
     const response = await conn.client.listTools();
     const tools = response.tools || [];
 
-    console.log(`MCP [${conn.serverName}] discovered ${tools.length} tools`);
+    // Silent in part 11 - logger added in part 13
 
     for (const tool of tools) {
       const toolName = `mcp_${conn.serverName}_${tool.name}`;
@@ -260,18 +369,14 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
 
         if (Array.isArray(result.content)) {
           return result.content
-            .map((c: any) => {
-              if (c.type === 'text') return c.text;
-              return JSON.stringify(c);
-            })
+            .map((c: any) => (c.type === 'text' ? c.text : JSON.stringify(c)))
             .join('\n');
         }
-
         return JSON.stringify(result);
       });
     }
   } catch (err) {
-    console.error(`Failed to register tools for MCP [${conn.serverName}]: ${err}`);
+    // Silent error handling in part 11
   }
 }
 
@@ -282,11 +387,8 @@ export async function initializeMcp(): Promise<void> {
 
   if (Object.keys(servers).length === 0) return;
 
-  console.log('Loading MCP servers from merged runtime config');
-
   for (const [name, serverConfig] of Object.entries(servers)) {
     if (serverConfig.enabled === false) {
-      console.log(`Skipping disabled MCP server: ${name}`);
       continue;
     }
 
@@ -294,31 +396,28 @@ export async function initializeMcp(): Promise<void> {
       let conn: McpConnection;
 
       if (serverConfig.type === 'stdio') {
-        console.log(`Connecting to stdio MCP server: ${name}`);
         conn = await connectStdioServer(name, serverConfig);
       } else if (serverConfig.type === 'http') {
-        console.log(`Connecting to HTTP MCP server: ${name} (${serverConfig.url})`);
         conn = await connectHttpServer(name, serverConfig);
       } else {
-        console.error(`Unknown MCP server type for "${name}": ${(serverConfig as any).type}`);
         continue;
       }
 
       connections.set(name, conn);
       await registerMcpTools(conn);
     } catch (err) {
-      console.error(`Failed to connect to MCP server "${name}": ${err}`);
+      // Silent error handling in part 11
     }
   }
 }
 
 // Closes all active MCP connections and clears the connection map.
 export async function closeMcp(): Promise<void> {
-  for (const [name, conn] of connections) {
+  for (const [, conn] of connections) {
     try {
       await conn.client.close();
-    } catch (err) {
-      console.error(`Error closing MCP connection [${name}]: ${err}`);
+    } catch {
+      // Silent error handling in part 11
     }
   }
   connections.clear();
@@ -338,48 +437,99 @@ import { loadRuntimeConfig } from './runtime-config.js';
 await initializeMcp();
 ```
 
-Also add cleanup:
+Replace the init `useEffect`:
 
 ```typescript
-useEffect(() => {
-  return () => {
-    closeMcp();
-  };
-}, []);
+  useEffect(() => {
+    const init = async () => {
+      if (dangerouslySkipPermissions) {
+        setDangerouslySkipPermissions(true);
+      }
+
+      // Register interactive approval handler
+      setApprovalHandler(async (req: ApprovalRequest): Promise<ApprovalResponse> => {
+        return new Promise((resolve) => {
+          setPendingApproval({ request: req, resolve });
+        });
+      });
+
+      await loadRuntimeConfig();
+
+      const loadedConfig = readConfig();
+      if (!loadedConfig) {
+        setNeedsSetup(true);
+        return;
+      }
+
+      await initializeWithConfig(loadedConfig);
+    };
+
+    init().catch((err) => {
+      setError(`Initialization failed: ${err.message}`);
+    });
+
+    return () => {
+      clearApprovalHandler();
+      closeMcp();
+    };
+  }, []);
 ```
 
-## Step 5: Update `src/providers.ts`
+## Step 5: Configure MCP servers
 
-Merge runtime config providers with built-in providers:
+Create `.protoagent/protoagent.jsonc` in your project and configure a sample MCP server. 
 
-```typescript
-import { loadRuntimeConfig } from './runtime-config.js';
-
-export async function initializeProviders(): Promise<void> {
-  await loadRuntimeConfig();
-  // ... merge logic
-}
-```
-
-## Verification
-
-Configure an MCP server in your `protoagent.jsonc`:
-
-```json
+```jsonc
 {
+  // MCP server configuration
   "mcp": {
     "servers": {
-      "filesystem": {
+      "chrome-devtools": {
         "type": "stdio",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/files"]
+        "args": [
+          "-y",
+          "chrome-devtools-mcp@latest",
+        ]
       }
     }
   }
 }
 ```
 
-Start ProtoAgent and you should see the MCP tools registered.
+## Verification
+
+```bash
+npm run dev
+```
+
+If you have MCP servers configured, you should see them connecting during startup (visible in debug logs). The discovered tools will be available to the model alongside the built-in tools.
+
+```
+ █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀
+ █▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █ 
+
+
+Model: OpenAI / gpt-5-mini
+[System prompt loaded]
+
+> open hacker news with chrome mcp
+Tool: mcp_chrome-devtools_new_page({"url":"https://news.ycombinator.com","background
+":false})
+## Pages
+1: about:blank
+2: https://news.ycombinator.com/ [selected]
+BEEP BEEP
+
+✅ Opened Hacker News in a new Chrome tab (page 2).
+
+tokens: 3216↓ 16↑ | ctx: 0% | cost: $0.0017
+
+Session: k7pyp4ua
+╭────────────────────────────────────────────────────────────╮
+│ > Type your message...                                     │
+╰────────────────────────────────────────────────────────────╯
+```
 
 ## Resulting snapshot
 
@@ -388,12 +538,3 @@ Your project should match `protoagent-build-your-own-checkpoints/part-11`.
 ## Core takeaway
 
 MCP is the bridge between ProtoAgent and external tool ecosystems. Built-in tools handle the common cases, but MCP means the agent can grow to use any tool that speaks the protocol.
-
-## Security Note
-
-MCP servers execute code on your machine. Only connect to servers you trust. The configuration lives in your `protoagent.jsonc` — review it carefully. Future hardening could include:
-- Environment variable filtering (to prevent credential theft)
-- Command validation (blocking shell interpreters)
-- User approval before connecting to new servers
-
-These are left as exercises — the foundation is solid for personal use.
