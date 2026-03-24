@@ -7,7 +7,7 @@ A minimal, educational AI coding agent CLI written in TypeScript. It stays small
 
 ## Features
 
-- **Multi-provider chat** — OpenAI, Anthropic, Google Gemini, and Cerebras via the OpenAI SDK
+- **Multi-provider chat** — OpenAI, Anthropic, Google Gemini via the OpenAI SDK
 - **Built-in tools** — Read, write, edit, list, search, run shell commands, manage todos, and fetch web pages with `webfetch`
 - **Approval system** — Inline confirmation for file writes, file edits, and non-safe shell commands
 - **Session persistence** — Conversations and TODO state are saved automatically and can be resumed with `--session`
@@ -134,9 +134,6 @@ The codebase is organized so each part is easy to trace:
 - Gemini 3 Pro (Preview)
 - Gemini 2.5 Flash
 - Gemini 2.5 Pro
-
-### Cerebras
-- Cerebras — Llama 4 Scout 17B
 
 ## Why ProtoAgent?
 
