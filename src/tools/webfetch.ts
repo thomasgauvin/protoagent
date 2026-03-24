@@ -13,7 +13,7 @@
  * - Charset-aware content decoding
  */
 
-import { convert } from 'html-to-text';
+import { convert } from "html-to-text";
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024; // 5MB
 const MAX_OUTPUT_SIZE = 2 * 1024 * 1024; // 2MB
@@ -21,48 +21,56 @@ const MAX_REDIRECTS = 10;
 const MAX_URL_LENGTH = 4096;
 
 const FETCH_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Accept-Encoding': 'gzip, deflate',
-  'DNT': '1',
-  'Connection': 'keep-alive',
-  'Upgrade-Insecure-Requests': '1',
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate",
+  DNT: "1",
+  Connection: "keep-alive",
+  "Upgrade-Insecure-Requests": "1",
 };
 
 // Text-based MIME types that are safe to process
 const TEXT_MIME_TYPES = [
-  'text/',
-  'application/json',
-  'application/xml',
-  'application/x-www-form-urlencoded',
-  'application/atom+xml',
-  'application/rss+xml',
-  'application/javascript',
-  'application/typescript',
+  "text/",
+  "application/json",
+  "application/xml",
+  "application/x-www-form-urlencoded",
+  "application/atom+xml",
+  "application/rss+xml",
+  "application/javascript",
+  "application/typescript",
 ];
 
-// Lazy-loaded Turndown instance (CJS module — dynamic import avoids forcing esbuild CJS output)
+// Lazy-loaded Turndown instance — converts HTML to Markdown
+// We lazy-load because Turndown is a CommonJS module; dynamic import keeps our
+// ESM output clean without forcing esbuild to bundle everything as CJS.
+// Why Turndown? HTML → Markdown preserves document structure (headings, lists,
+// links) in a readable format that LLMs handle better than raw HTML markup.
 let _turndownService: any = null;
-async function getTurndownService() {
+async function getTurndownService(): Promise<any> {
   if (!_turndownService) {
-    const { default: TurndownService } = await import('turndown');
+    const { default: TurndownService } = await import("turndown");
     _turndownService = new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
-      bulletListMarker: '-',
-      emDelimiter: '*',
+      headingStyle: "atx",       // # Heading, not underlined
+      codeBlockStyle: "fenced",  // ```code```, not indented
+      bulletListMarker: "-",
+      emDelimiter: "*",
     });
-    _turndownService.remove(['script', 'style', 'meta', 'link']);
+    // Remove noise that doesn't help LLM understanding
+    _turndownService.remove(["script", "style", "meta", "link"]);
   }
   return _turndownService;
 }
 
-// Lazy-loaded he module (CJS module)
+// Lazy-loaded 'he' module — decodes HTML entities like &lt; &gt; &amp;
+// We lazy-load for the same CJS/ESM reason as Turndown.
+// Why 'he'? Browsers and node don't have built-in HTML entity decoding that
+// handles the full set (&nbsp;, &#x2713;, named entities, etc.) correctly.
 let _he: any = null;
-async function getHe() {
+async function getHe(): Promise<any> {
   if (!_he) {
-    const { default: he } = await import('he');
+    const { default: he } = await import("he");
     _he = he;
   }
   return _he;
@@ -80,7 +88,7 @@ function isTextMimeType(mimeType: string): boolean {
  */
 function detectHTML(content: string, contentType: string): boolean {
   // Header says HTML
-  if (contentType.includes('text/html')) {
+  if (contentType.includes("text/html")) {
     return true;
   }
 
@@ -95,16 +103,16 @@ function detectHTML(content: string, contentType: string): boolean {
 function parseCharset(contentType: string): string {
   const match = contentType.match(/charset=([^\s;]+)/i);
   if (match) {
-    const charset = match[1].replace(/['"]/g, '');
+    const charset = match[1].replace(/['"]/g, "");
     // Validate charset is supported by TextDecoder
     try {
       new TextDecoder(charset);
       return charset;
     } catch {
-      return 'utf-8';
+      return "utf-8";
     }
   }
-  return 'utf-8';
+  return "utf-8";
 }
 
 /**
@@ -122,28 +130,31 @@ function truncateOutput(output: string, maxSize: number): string {
 }
 
 export const webfetchTool = {
-  type: 'function' as const,
+  type: "function" as const,
   function: {
-    name: 'webfetch',
-    description: 'Fetch and process content from a web URL. Supports text (plain text extraction), markdown (HTML to markdown conversion), or html (raw HTML) output formats.',
+    name: "webfetch",
+    description:
+      "Fetch and process content from a web URL. Supports text (plain text extraction), markdown (HTML to markdown conversion), or html (raw HTML) output formats.",
     parameters: {
-      type: 'object',
+      type: "object",
       properties: {
         url: {
-          type: 'string',
-          description: 'HTTP(S) URL to fetch (must start with http:// or https://)',
+          type: "string",
+          description:
+            "HTTP(S) URL to fetch (must start with http:// or https://)",
         },
         format: {
-          type: 'string',
-          enum: ['text', 'markdown', 'html'],
-          description: 'Output format: text (plain text), markdown (HTML to markdown), or html (raw HTML)',
+          type: "string",
+          enum: ["text", "markdown", "html"],
+          description:
+            "Output format: text (plain text), markdown (HTML to markdown), or html (raw HTML)",
         },
         timeout: {
-          type: 'number',
-          description: 'Timeout in seconds (default 30, min 1, max 120)',
+          type: "number",
+          description: "Timeout in seconds (default 30, min 1, max 120)",
         },
       },
-      required: ['url', 'format'],
+      required: ["url", "format"],
     },
   },
 };
@@ -156,20 +167,20 @@ function htmlToText(html: string): string {
     return convert(html, {
       wordwrap: 120,
       selectors: [
-        { selector: 'img', options: { ignoreHref: true } },
-        { selector: 'a', options: { ignoreHref: true } },
+        { selector: "img", options: { ignoreHref: true } },
+        { selector: "a", options: { ignoreHref: true } },
       ],
     });
   } catch (error) {
     // Fallback: basic regex if library fails
     return html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .split('\n')
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-      .join('\n');
+      .join("\n");
   }
 }
 
@@ -203,12 +214,12 @@ async function fetchWithRedirectLimit(
     const response = await originalFetch(currentUrl, {
       signal,
       headers: FETCH_HEADERS,
-      redirect: 'manual', // Handle redirects manually to count them
+      redirect: "manual", // Handle redirects manually to count them
     });
 
     // Check for redirect status
     if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
+      const location = response.headers.get("location");
       if (location) {
         redirectCount++;
         // Resolve relative URLs
@@ -234,27 +245,33 @@ async function fetchWithRedirectLimit(
  */
 export async function webfetch(
   url: string,
-  format: 'text' | 'markdown' | 'html',
+  format: "text" | "markdown" | "html",
   timeout?: number,
-): Promise<{ output: string; title: string; metadata: Record<string, unknown> }> {
+): Promise<{
+  output: string;
+  title: string;
+  metadata: Record<string, unknown>;
+}> {
   // Validate URL
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    throw new Error('Invalid URL format. Must start with http:// or https://');
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    throw new Error("Invalid URL format. Must start with http:// or https://");
   }
 
   if (url.length > MAX_URL_LENGTH) {
-    throw new Error(`URL too long (${url.length} characters, max ${MAX_URL_LENGTH})`);
+    throw new Error(
+      `URL too long (${url.length} characters, max ${MAX_URL_LENGTH})`,
+    );
   }
 
   // Validate format
-  if (!['text', 'markdown', 'html'].includes(format)) {
+  if (!["text", "markdown", "html"].includes(format)) {
     throw new Error("Invalid format. Must be 'text', 'markdown', or 'html'");
   }
 
   // Validate timeout
   const timeoutSeconds = Math.min(timeout ?? 30, 120);
   if (timeoutSeconds < 1) {
-    throw new Error('Timeout must be between 1 and 120 seconds');
+    throw new Error("Timeout must be between 1 and 120 seconds");
   }
 
   // Setup timeout for entire operation
@@ -273,7 +290,7 @@ export async function webfetch(
     }
 
     // Validate response size by header
-    const contentLength = response.headers.get('content-length');
+    const contentLength = response.headers.get("content-length");
     if (contentLength && parseInt(contentLength) > MAX_RESPONSE_SIZE) {
       throw new Error(
         `Response too large (exceeds 5MB limit). Content-Length: ${contentLength}`,
@@ -281,7 +298,7 @@ export async function webfetch(
     }
 
     // Get content type
-    const contentType = response.headers.get('content-type') ?? 'text/plain';
+    const contentType = response.headers.get("content-type") ?? "text/plain";
 
     // Check if content type is text-based
     if (!isTextMimeType(contentType)) {
@@ -290,7 +307,12 @@ export async function webfetch(
       );
     }
 
-    // Get response as ArrayBuffer
+    // Get response as ArrayBuffer (not .text() or .blob()) because:
+    // 1. response.text() always decodes as UTF-8 — would corrupt non-UTF-8 pages
+    //    (e.g., Shift_JIS, GB2312, windows-1251 sites)
+    // 2. ArrayBuffer preserves raw bytes so we can use TextDecoder with the
+    //    CORRECT charset from the Content-Type header
+    // 3. We can check byteLength BEFORE decoding for security (5MB limit)
     const arrayBuffer = await response.arrayBuffer();
 
     // Check actual response size
@@ -311,17 +333,19 @@ export async function webfetch(
 
     // Format content based on requested format
     let output: string;
-    if (format === 'text') {
+    if (format === "text") {
       output = isHTML ? htmlToText(content) : content;
-    } else if (format === 'markdown') {
-      output = isHTML ? await htmlToMarkdown(content) : `\`\`\`\n${content}\n\`\`\``;
+    } else if (format === "markdown") {
+      output = isHTML
+        ? await htmlToMarkdown(content)
+        : `\`\`\`\n${content}\n\`\`\``;
     } else {
       // format === 'html'
       output = content;
     }
 
     // Decode HTML entities ONLY for text/markdown formats (not for raw HTML)
-    if (format !== 'html') {
+    if (format !== "html") {
       const he = await getHe();
       output = he.decode(output);
     }
@@ -344,7 +368,7 @@ export async function webfetch(
     return { output, title, metadata };
   } catch (error) {
     // Handle AbortError (timeout or cancellation)
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`Fetch timeout after ${timeoutSeconds} seconds`);
     }
 

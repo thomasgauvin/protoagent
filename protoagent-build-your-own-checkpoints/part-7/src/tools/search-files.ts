@@ -1,6 +1,7 @@
 // src/tools/search-files.ts
 
 import fs from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 
@@ -28,6 +29,35 @@ export const searchFilesTool = {
 };
 
 const MAX_RESULTS = 100;
+const MAX_PATTERN_LENGTH = 1000;
+
+// Directories to skip during recursive search
+const SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'coverage',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.tox',
+  '.nox',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.hypothesis',
+  '.next',
+  'out',
+  '.turbo',
+  '.cache',
+]);
+
+// Track visited inodes to detect symlink cycles
+interface SearchResult {
+  display: string;
+  mtime: number;
+}
 
 export async function searchFiles(
   searchTerm: string,
@@ -36,6 +66,11 @@ export async function searchFiles(
   fileExtensions?: string[]
 ): Promise<string> {
   const validated = await validatePath(directoryPath);
+
+  // Validate pattern length to prevent ReDoS
+  if (searchTerm.length > MAX_PATTERN_LENGTH) {
+    return `Error: Pattern too long (${searchTerm.length} chars, max ${MAX_PATTERN_LENGTH})`;
+  }
 
   const flags = caseSensitive ? 'g' : 'gi';
   let regex: RegExp;
@@ -46,7 +81,8 @@ export async function searchFiles(
     return `Error: invalid regex pattern "${searchTerm}": ${message}`;
   }
 
-  const results: string[] = [];
+  const results: SearchResult[] = [];
+  const visitedInodes = new Set<string>();
 
   async function search(dir: string): Promise<void> {
     if (results.length >= MAX_RESULTS) return;
@@ -57,13 +93,33 @@ export async function searchFiles(
 
       const fullPath = path.join(dir, entry.name);
 
+      // Skip symlinks to prevent cycles
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+
       // Skip common non-useful directories
       if (entry.isDirectory()) {
-        if (['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__'].includes(entry.name)) continue;
-        // Recurse into subdirectory
+        if (SKIP_DIRS.has(entry.name)) continue;
+
+        // Track inode to detect hardlink cycles
+        try {
+          const stats = await fs.stat(fullPath);
+          const inodeKey = `${stats.dev}:${stats.ino}`;
+          if (visitedInodes.has(inodeKey)) {
+            continue; // Already visited this directory
+          }
+          visitedInodes.add(inodeKey);
+        } catch {
+          // If we can't stat, skip to be safe
+          continue;
+        }
+
         await search(fullPath);
         continue;
       }
+
+      if (!entry.isFile()) continue;
 
       // Filter by extension
       if (fileExtensions && fileExtensions.length > 0) {
@@ -73,6 +129,7 @@ export async function searchFiles(
 
       try {
         const content = await fs.readFile(fullPath, 'utf8');
+        const stats = await stat(fullPath);
         const lines = content.split('\n');
         for (let i = 0; i < lines.length && results.length < MAX_RESULTS; i++) {
           if (regex.test(lines[i])) {
@@ -83,7 +140,10 @@ export async function searchFiles(
               lineContent = lineContent.slice(0, 500) + '... (truncated)';
             }
 
-            results.push(`${relativePath}:${i + 1}: ${lineContent}`);
+            results.push({
+              display: `${relativePath}:${i + 1}: ${lineContent}`,
+              mtime: stats.mtimeMs,
+            });
           }
           regex.lastIndex = 0;
         }
@@ -99,6 +159,10 @@ export async function searchFiles(
     return `No matches found for "${searchTerm}" in ${directoryPath}`;
   }
 
+  // Sort by mtime descending (most recently modified first)
+  results.sort((a, b) => b.mtime - a.mtime);
+
+  const displayResults = results.map(r => r.display);
   const suffix = results.length >= MAX_RESULTS ? `\n(results truncated at ${MAX_RESULTS})` : '';
-  return `Found ${results.length} match(es) for "${searchTerm}":\n${results.join('\n')}${suffix}`;
+  return `Found ${results.length} match(es) for "${searchTerm}":\n${displayResults.join('\n')}${suffix}`;
 }

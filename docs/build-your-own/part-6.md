@@ -63,7 +63,9 @@ export const bashTool = {
   },
 };
 
-// Hard-blocked commands — these CANNOT be run, even with --dangerously-skip-permissions
+// Security: Hard-blocked commands — these CANNOT be run, even with --dangerously-skip-permissions
+// Naive approach: Allow any command with user approval
+// Risk: Some commands are too destructive even with approval
 const DANGEROUS_PATTERNS = [
   'rm -rf /',
   'sudo',
@@ -75,7 +77,7 @@ const DANGEROUS_PATTERNS = [
   'format c:',
 ];
 
-// Auto-approved safe commands — read-only / informational
+// Security: Auto-approved safe commands — read-only / informational
 const SAFE_COMMANDS = [
   'pwd', 'whoami', 'date',
   'git status', 'git log', 'git diff', 'git branch', 'git show', 'git remote',
@@ -422,3 +424,166 @@ Your project should match `protoagent-build-your-own-checkpoints/part-6`.
 ## Core takeaway
 
 The shell layer is conservative on purpose. Hard-blocked commands cannot run regardless of flags. Auto-approved commands are narrowly scoped to read-only operations. Everything else requires explicit user consent. This layered approach gives the agent useful power without treating shell access as harmless.
+
+---
+
+## Security Considerations
+
+Shell access is one of the most dangerous capabilities a coding agent can have. This part introduces a three-tier security model that balances utility with safety.
+
+### The Dangers of Shell Access
+
+**Why Shell Commands Are Risky:**
+
+Shell commands can:
+- Delete or modify arbitrary files (`rm -rf /`, `dd if=/dev/zero of=/dev/sda`)
+- Escalate privileges (`sudo`, `su`)
+- Exfiltrate data or execute remote code
+- Exhaust system resources
+
+**The Blocklist Problem:**
+
+A naive approach tries to block dangerous commands:
+
+```typescript
+const BLOCKED = ['sudo', 'rm -rf /', 'dd'];
+```
+
+But this is easily bypassed:
+- `'s' + 'udo'` - string concatenation
+- `$(which sudo)` - command substitution
+- `/bin/rm` - full path
+- `bash -c "rm -rf /"` - indirect execution
+
+Blocklists don't work for shell commands because the shell is too expressive.
+
+### Our Three-Tier Security Model
+
+**Tier 1: Hard-Blocked Commands**
+
+These commands are blocked regardless of user approval or flags:
+
+```typescript
+const DANGEROUS_PATTERNS = [
+  'rm -rf /',
+  'sudo',
+  'su ',
+  'chmod 777',
+  'dd if=',
+  'mkfs',
+  'fdisk',
+  'format c:',
+];
+```
+
+Why these specifically?
+- `rm -rf /` - Deletes entire filesystem
+- `sudo`/`su` - Privilege escalation
+- `mkfs`/`fdisk`/`dd` - Disk destruction
+- `format c:` - Windows disk format
+
+Note that these are checked with `String.includes()`, not regex. This means patterns need to be literal substrings that appear in dangerous commands.
+
+**Tier 2: Auto-Approved Safe Commands**
+
+Read-only commands that are safe to run automatically:
+
+```typescript
+const SAFE_COMMANDS = [
+  'pwd', 'whoami', 'date',
+  'git status', 'git log', 'git diff',
+  'npm list', 'node --version',
+  // ...
+];
+```
+
+These are carefully chosen:
+- No file modification
+- No network access
+- No privilege escalation
+- Read-only information gathering
+
+**Tier 3: Everything Else Requires Approval**
+
+Any command not in the safe list goes through user approval.
+
+### Shell Control Operators
+
+**The Hidden Danger:**
+
+Even "safe" commands become dangerous with shell operators:
+
+```bash
+# Seems safe...
+git status; rm -rf /     # ; executes second command
+git status && rm -rf /   # && executes if first succeeds
+git status | cat /etc/passwd  # | pipes output to another command
+`rm -rf /`               # Backticks execute command
+$(rm -rf /)              # $() executes command
+```
+
+**Our Solution:**
+
+We detect and block shell control operators:
+
+```typescript
+const SHELL_CONTROL_PATTERN = /[;&|<>()`$\[\]{}!]/;
+
+// Rejects: cmd; evil, cmd && evil, cmd | evil, $(evil), etc.
+```
+
+We also block:
+- Newlines (can separate commands)
+- Escape sequences (can hide operators)
+
+### Allowlist vs Blocklist Philosophy
+
+**The Lesson:**
+
+For shell commands, we use an **allowlist** approach (specify what's allowed) rather than a **blocklist** (try to block everything dangerous).
+
+Blocklists fail because:
+1. The shell is too expressive
+2. New bypass techniques are discovered constantly
+3. It's impossible to enumerate all dangerous patterns
+
+Allowlists work because:
+1. We define a small, known-safe set of operations
+2. Everything else requires explicit approval
+3. Users make informed decisions about unknown commands
+
+### The `--dangerously-skip-permissions` Flag
+
+**Why It Exists:**
+
+In trusted environments (Docker containers, VMs, test projects), the approval prompts can slow down development. This flag bypasses the approval layer.
+
+**Why It's Named That Way:**
+
+The flag name is intentionally scary. It should make you think twice before using it. Hard-blocked commands are still blocked—this flag only affects the approval layer.
+
+**When To Use It:**
+- Docker containers that will be destroyed
+- VMs with snapshots
+- Test projects with no sensitive data
+- CI/CD pipelines
+
+**When NOT To Use It:**
+- Production systems
+- Machines with sensitive data
+- Multi-user systems
+- Your main development machine
+
+### Defense in Depth for Shell Access
+
+Our shell security has multiple layers:
+
+1. **Hard blocks** - Cannot be bypassed by any flag
+2. **Safe command allowlist** - Auto-approved read-only commands
+3. **Control operator detection** - Prevents command chaining
+4. **Path validation** - File operations stay within working directory
+5. **Approval system** - User confirmation for everything else
+6. **Timeout limits** - Commands can't run forever
+7. **Output limits** - Prevents memory exhaustion from huge outputs
+
+No single layer is perfect, but together they provide robust protection. The approval system is your last line of defense—review commands carefully before approving.

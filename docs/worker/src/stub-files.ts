@@ -114,13 +114,11 @@ At runtime, the user interacts only with the Ink UI. The UI delegates model/tool
 
 ### UI components and formatting helpers
 
-- \`src/components/CollapsibleBox.tsx\`
-- \`src/components/ConsolidatedToolMessage.tsx\`
 - \`src/components/FormattedMessage.tsx\`
-- \`src/components/Table.tsx\`
+- \`src/components/LeftBar.tsx\`
 - \`src/utils/format-message.tsx\`
 
-These handle collapsible long output, grouped tool rendering, Markdown-ish formatting, and table rendering.
+These handle Markdown-ish formatting, left-bar indicators for callouts, and structured message rendering.
 
 ### Shared utilities
 
@@ -426,12 +424,10 @@ The output is a rebuilt message list with a synthetic summary system message.
 
 ### Rendering helpers
 
-- \`CollapsibleBox\` truncates long system/tool output with \`/expand\` and \`/collapse\`
-- \`ConsolidatedToolMessage\` groups assistant tool calls with following tool results
 - \`FormattedMessage\` parses mixed text/table/code output
-- \`Table\` renders JSON or Markdown-table data with terminal-width-aware wrapping
-- \`formatMessage()\` applies simple Markdown-style bold/italic formatting
 - \`LeftBar\` renders a bold green \`│\` bar on the left side of callout content (tool calls, approvals, errors, code blocks)
+
+Tool results are rendered as compact one-line summaries: \`▶ tool_name: result...\`
 
 ### LeftBar: why not Box borders
 
@@ -1222,210 +1218,6 @@ Those are reasonable extension points, but they are outside the current scope of
 `,
   },
   {
-    path: "discoveries.md",
-    content: `# Discoveries
-
-Notes from building a production-style Ink CLI and reverse-engineering how Gemini CLI and Claude Code solve the same problems.
-
----
-
-## Ink fundamentals
-
-### What Ink actually does
-
-Ink renders a React tree to a string on every state change, then uses \`log-update\` to erase the previous output and write the new string. The "managed region" is the last N lines of the terminal — Ink tracks the line count and moves the cursor up by that many lines to overwrite.
-
-Yoga (the CSS layout engine from React Native) handles layout. The root node's width is set to \`process.stdout.columns\` at render time and recalculated on resize.
-
-### The \`<Static>\` component
-
-\`<Static>\` renders children _once_, writes them directly above Ink's managed region into the scrollback buffer, and never touches them again. Ink removes them from the live re-render cycle entirely.
-
-This is the right tool for completed/immutable items: finished messages, log lines, past commands. It is **not** compatible with \`rerender()\` — static content doesn't update and leaves ghost lines.
-
-### The stdout/Ink split pattern
-
-The cleanest pattern for a streaming agent UI:
-
-- Completed messages → print directly to \`process.stdout\` (plain ANSI, lands in scrollback, always selectable)
-- Active stream → render inside Ink (small live region)
-- On stream complete → flush to stdout, clear Ink state
-
-This is what real tools use. Ink's managed region stays small; scrollback history is always accessible.
-
----
-
-## Resize and ghosting
-
-### Why \`width="100%"\` doesn't reflow
-
-Yoga caches the terminal width at startup. \`width="100%"\` resolves at mount time and stays fixed. To reflow on resize you must re-trigger layout, either by calling Ink's internal \`resized()\` method (which calls \`calculateLayout()\` then \`onRender()\`) or by storing \`process.stdout.columns\` in React state and updating it on resize.
-
-### The ghosting problem
-
-Ink clears only the lines it thinks it owns, based on its internal line count. If a re-render produces fewer lines than the previous one, old lines below the new output are not erased — they ghost. This is a fundamental consequence of Ink's erase-by-line-count strategy.
-
-### Adding your own resize listener is dangerous
-
-Ink registers its own \`stdout.on('resize')\` listener internally. Adding a second listener from user code creates a race condition. The ccmanager project (PR #209) documented this breaking \`useInput\` raw mode — Ink's resize handler and the user's fire in an undefined order, and whichever runs second can corrupt terminal state.
-
-The safe pattern: add resize listeners inside a \`useEffect\` so they are registered after Ink is mounted, and always clean up with \`process.stdout.off('resize', handler)\` on unmount.
-
-### The unmount/clear/re-render workaround
-
-Before using a fork with real alternate buffer support, the workaround was:
-
-\`\`\`js
-instance.unmount();
-process.stdout.write('\\x1b[2J\\x1b[H'); // clear screen, cursor home
-instance = render(<App />, options);
-\`\`\`
-
-This fully resets Ink's internal line counter and avoids ghosting. The cost is a flash on every resize. Not production-quality.
-
----
-
-## Alternate screen buffer
-
-### What it is
-
-Two separate terminal buffers exist: the main buffer (your shell, scrollback history) and the alternate buffer (a clean slate, no scrollback). Switching is done with ANSI escape sequences:
-
-- Enter: \`\\x1b[?1049h\`
-- Exit: \`\\x1b[?1049l\`
-
-Most full-screen TUI programs (vim, less, htop) use the alternate buffer. When they exit, the main buffer is restored exactly as it was.
-
-### \`altScreenBuffer: true\` in Ink 4.x does nothing
-
-Ink 4.4.1 (the latest published version as of this writing) does not have an \`alternateBuffer\` or \`altScreenBuffer\` option. The option is silently ignored. Any alternate screen behavior in older code was either a placebo or implemented manually outside of Ink.
-
-### Published Ink versions and alternate buffer support
-
-| Version              | React peer | alternateBuffer | incrementalRendering |
-| -------------------- | ---------- | --------------- | -------------------- |
-| 4.4.1                | >=18       | no              | no                   |
-| 5.2.1                | >=18       | no              | no                   |
-| 6.8.0                | >=19       | no              | no                   |
-| @jrichman/ink 6.4.11 | >=19       | yes             | yes                  |
-
-These features exist on Ink's \`master\` branch (as \`alternateScreen: true\` and \`useWindowSize\`) but have not been published to npm.
-
----
-
-## @jrichman/ink — the Gemini CLI fork
-
-Gemini CLI uses \`ink@npm:@jrichman/ink@6.4.11\` — a fork by a Google engineer (GitHub: \`jacob314/ink\`), published under a separate npm scope.
-
-Install:
-
-\`\`\`
-npm install ink@npm:@jrichman/ink@6.4.11 react@^19
-\`\`\`
-
-### What the fork adds
-
-**\`alternateBuffer: true\`** in \`render()\` options — real alternate screen entry/exit via ANSI escapes, managed by \`log-update.js\`.
-
-**\`incrementalRendering: true\`** in \`render()\` options — instead of erasing and rewriting the full output on every render, diffs the new frame against the previous one and emits only the changed cells. Same concept as what Claude Code built from scratch in their custom renderer.
-
-**The final frame trick** — on \`unmount()\`, after exiting the alternate screen, the fork immediately re-writes the last rendered frame into the main buffer:
-
-\`\`\`js
-const exitAlternateBuffer = (stream, lastFrame) => {
-	stream.write('\\u001B[?7h'); // re-enable line wrap
-	stream.write(ansiEscapes.exitAlternativeScreen);
-	stream.write(lastFrame); // reprint last frame into scrollback
-};
-\`\`\`
-
-This means: when the app quits, the alternate buffer disappears and the last frame appears in the main scrollback — readable, selectable, copyable. No history is lost.
-
-**DEC mode 2026 (synchronized output)** — the fork wraps every render in \`\\x1b[?2026h\` / \`\\x1b[?2026l\` (begin/end synchronized update). Terminals that support this hold off painting until the full frame is ready, eliminating flicker at the terminal level.
-
-### How Gemini CLI uses it
-
-\`\`\`ts
-// interactiveCli.tsx
-render(<AppWrapper />, {
-	alternateBuffer: useAlternateBuffer,
-	incrementalRendering:
-		settings.merged.ui.incrementalRendering !== false &&
-		useAlternateBuffer &&
-		!isShpool,
-	exitOnCtrlC: false,
-});
-\`\`\`
-
-\`incrementalRendering\` is only enabled in alternate buffer mode — it doesn't make sense in scrollback mode where lines are already committed.
-
-### The quit-path pattern (AlternateBufferQuittingDisplay)
-
-When the user quits while in alternate buffer mode, Gemini renders the entire chat history as the final frame before unmounting:
-
-\`\`\`tsx
-// App.tsx
-if (uiState.quittingMessages) {
-	if (isAlternateBuffer) {
-		return <AlternateBufferQuittingDisplay />; // full history as last frame
-	}
-	return <QuittingDisplay />;
-}
-\`\`\`
-
-Because of the final frame trick, this history ends up in scrollback after exit. Users get clean rendering during the session _and_ a readable transcript after.
-
----
-
-## useTerminalSize
-
-Gemini's \`useTerminalSize.ts\`, copied verbatim:
-
-\`\`\`js
-import {useEffect, useState} from 'react';
-
-export function useTerminalSize() {
-	const [size, setSize] = useState({
-		columns: process.stdout.columns || 80,
-		rows: process.stdout.rows || 24,
-	});
-
-	useEffect(() => {
-		function updateSize() {
-			setSize({
-				columns: process.stdout.columns || 80,
-				rows: process.stdout.rows || 24,
-			});
-		}
-		process.stdout.on('resize', updateSize);
-		return () => {
-			process.stdout.off('resize', updateSize);
-		};
-	}, []);
-
-	return size;
-}
-\`\`\`
-
-Use this instead of reading \`process.stdout.columns\` directly in render — that value is stale after a resize. The \`useEffect\` listener fires after Ink's own resize handler, so there is no race condition.
-
----
-
-## Claude Code's renderer
-
-From a HN thread with Anthropic engineer \`chrislloyd\`:
-
-- Started with Ink, then rewrote the renderer from scratch while keeping React
-- Pipeline: React scene graph → Yoga layout → rasterize to 2D screen buffer → **diff against previous frame** → emit only changed ANSI sequences
-- Removed \`<Static>\` entirely — everything re-renders, but with memoization to reduce churn
-- Uses scrollback (not alternate buffer) so users can copy history — flickering is the tradeoff
-- Contributed DEC mode 2026 (synchronized output) patches to VSCode xterm.js and tmux to eliminate flickering at the terminal level
-- Converted screen buffers to TypedArrays to reduce GC pressure
-
-The incremental rendering in \`@jrichman/ink\` is the same idea, implemented as a layer on top of Ink rather than a full rewrite.
-`,
-  },
-  {
     path: "package.json",
     content: `{
   "name": "protoagent",
@@ -1446,8 +1238,8 @@ The incremental rendering in \`@jrichman/ink\` is the same idea, implemented as 
     "build:watch": "tsc --watch",
     "prepack": "npm run build",
     "docs:dev": "concurrently \\"npm run docs:dev:worker\\" \\"npm run docs:dev:docs\\" --kill-others",
-    "docs:dev:worker": "cd docs/worker && npm exec wrangler -- dev --port 8787",
-    "docs:dev:docs": "vitepress dev docs --port 5173",
+    "docs:dev:worker": "cd docs/worker && npm exec wrangler -- dev --port 8787 --ip 0.0.0.0",
+    "docs:dev:docs": "vitepress dev docs --port 5173 --host",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
@@ -1477,20 +1269,23 @@ The incremental rendering in \`@jrichman/ink\` is the same idea, implemented as 
     "@inkjs/ui": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "commander": "^14.0.1",
+    "diff": "^8.0.4",
     "he": "^1.2.0",
     "html-to-text": "^9.0.5",
     "ink": "^6.8.0",
-    "ink-big-text": "^2.0.0",
+    "is-path-inside": "^4.0.0",
     "jsonc-parser": "^3.3.1",
+    "leven": "^4.1.0",
     "openai": "^5.23.1",
     "react": "^19.1.1",
+    "strip-ansi": "^7.2.0",
     "turndown": "^7.2.2",
-    "yaml": "^2.8.2",
-    "yoga-layout": "^3.2.1"
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
     "@tailwindcss/postcss": "^4.1.18",
+    "@types/diff": "^7.0.2",
     "@types/he": "^1.2.3",
     "@types/html-to-text": "^9.0.4",
     "@types/node": "^24.5.2",
@@ -1626,8 +1421,6 @@ type AddStaticFn = (node: React.ReactNode) => void;
 // <Static> component. Ink flushes new Static items within its own render
 // cycle, so there are no timing issues with write()/log-update.
 
-
-
 function printBanner(addStatic: AddStaticFn): void {
   addStatic(
     <Text>
@@ -1757,6 +1550,67 @@ function formatSubAgentActivity(tool: string, args?: Record<string, unknown>): s
   return \`Sub-agent running \${tool}...\`;
 }
 
+/**
+ * Format a tool call into a human-readable string showing the tool name and key argument.
+ * Shows what the tool is actually doing, e.g. "read_file src/App.tsx"
+ */
+function formatToolActivity(tool: string, args?: Record<string, unknown>): string {
+  if (!args || typeof args !== 'object') {
+    return tool;
+  }
+
+  let detail = '';
+
+  switch (tool) {
+    case 'read_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'write_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'edit_file':
+      detail = typeof args.file_path === 'string' ? args.file_path : '';
+      break;
+    case 'list_directory':
+      detail = typeof args.directory_path === 'string' ? args.directory_path : '(current)';
+      break;
+    case 'search_files':
+      detail = typeof args.search_term === 'string' ? \`"\${args.search_term}"\` : '';
+      break;
+    case 'bash':
+      detail = typeof args.command === 'string'
+        ? args.command.split(/\\s+/).slice(0, 3).join(' ') + (args.command.split(/\\s+/).length > 3 ? '...' : '')
+        : '';
+      break;
+    case 'todo_write':
+      detail = Array.isArray(args.todos) ? \`\${args.todos.length} task(s)\` : '';
+      break;
+    case 'todo_read':
+      detail = 'read';
+      break;
+    case 'webfetch':
+      detail = typeof args.url === 'string' ? new URL(args.url).hostname : '';
+      break;
+    case 'sub_agent':
+      detail = 'nested task...';
+      break;
+    default: {
+      // For unknown tools, use the first string argument
+      const firstEntry = Object.entries(args).find(([, v]) => typeof v === 'string');
+      if (firstEntry) {
+        const [, value] = firstEntry;
+        detail = String(value).length > 30 ? String(value).slice(0, 30) + '...' : String(value);
+      }
+    }
+  }
+
+  if (detail) {
+    return \`\${tool} \${detail}\`;
+  }
+
+  return tool;
+}
+
 function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[]): void {  for (const message of messages) {
     const msgAny = message as any;
     if (message.role === 'system') continue;
@@ -1771,7 +1625,19 @@ function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[])
     if (message.role === 'tool') {
       const toolName = msgAny.name || 'tool';
       const compact = String(msgAny.content || '').replace(/\\s+/g, ' ').trim().slice(0, 180);
-      addStatic(<Text dimColor>{'▶ '}{toolName}{': '}{compact}{'\\n'}</Text>);
+      
+      // Format tool display with args if available
+      let toolDisplay = toolName;
+      if (msgAny.args) {
+        try {
+          const args = JSON.parse(msgAny.args);
+          toolDisplay = formatToolActivity(toolName, args);
+        } catch {
+          // If parsing fails, use the tool name
+        }
+      }
+      
+      addStatic(<Text dimColor>{'▶ '}{toolDisplay}{': '}{compact}{'\\n'}</Text>);
     }
   }
   if (messages.length > 0) {
@@ -2265,11 +2131,7 @@ export const App: React.FC<AppProps> = ({
           setError(\`Failed to save session before exit: \${err.message}\`);
         }
         return true;
-      case '/expand':
-      case '/collapse':
-        // expand/collapse removed — transcript lives in scrollback
-        return true;
-       case '/help':
+      case '/help':
         setHelpMessage(HELP_TEXT);
         return true;
       default:
@@ -2492,7 +2354,17 @@ export const App: React.FC<AppProps> = ({
                   .replace(/\\s+/g, ' ')
                   .trim()
                   .slice(0, 180);
-                addStatic(<Text dimColor>{'▶ '}{toolCall.name}{': '}{compactResult}{'\\n'}</Text>);
+                
+                // Parse tool args to show relevant parameter
+                let toolDisplay = toolCall.name;
+                try {
+                  const args = JSON.parse(toolCall.args || '{}');
+                  toolDisplay = formatToolActivity(toolCall.name, args);
+                } catch {
+                  // If parsing fails, just use the tool name
+                }
+                
+                addStatic(<Text dimColor>{'▶ '}{toolDisplay}{': '}{compactResult}{'\\n'}</Text>);
 
                 // Flush the assistant message + tool result into completionMessages
                 // for session saving.
@@ -2504,12 +2376,13 @@ export const App: React.FC<AppProps> = ({
                       ...assistantMessageRef.current.message,
                     };
                   }
-                  // Append tool result
+                  // Append tool result with args for replay
                   updated.push({
                     role: 'tool',
                     tool_call_id: toolCall.id,
                     content: toolCall.result || '',
                     name: toolCall.name,
+                    args: toolCall.args,
                   } as any);
                   return updated;
                 });
@@ -3900,380 +3773,6 @@ program.parse(process.argv);
 `,
   },
   {
-    path: "src/components/CollapsibleBox.tsx",
-    content: `/**
- * CollapsibleBox — A component that hides long content with expand/collapse controls
- *
- * Used for system prompts, tool results, and other verbose output.
- * Use /expand and /collapse commands to toggle visibility.
- */
-
-import React from 'react';
-import { Box, Text } from 'ink';
-import { LeftBar } from './LeftBar.js';
-
-export interface CollapsibleBoxProps {
-  title: string;
-  content: string;
-  titleColor?: string;
-  dimColor?: boolean;
-  maxPreviewLines?: number;
-  maxPreviewChars?: number;
-  expanded?: boolean;
-  marginBottom?: number;
-}
-
-export const CollapsibleBox: React.FC<CollapsibleBoxProps> = ({
-  title,
-  content,
-  titleColor,
-  dimColor = false,
-  maxPreviewLines = 3,
-  maxPreviewChars = 500,
-  expanded = false,
-  marginBottom = 0,
-}) => {
-  const lines = content.split('\\n');
-  const isTooManyLines = lines.length > maxPreviewLines;
-  const isTooManyChars = content.length > maxPreviewChars;
-  const isLong = isTooManyLines || isTooManyChars;
-
-  // If content is short, always show it
-  if (!isLong) {
-    return (
-      <LeftBar color={titleColor ?? 'white'} marginBottom={marginBottom}>
-        <Text color={titleColor} dimColor={dimColor} bold>
-          {title}
-        </Text>
-        <Text dimColor={dimColor}>{content}</Text>
-      </LeftBar>
-    );
-  }
-
-  // For long content, show preview or full content
-  let preview: string;
-  if (expanded) {
-    preview = content;
-  } else {
-    // Truncate by lines first, then by characters
-    const linesTruncated = lines.slice(0, maxPreviewLines).join('\\n');
-    preview = linesTruncated.length > maxPreviewChars
-      ? linesTruncated.slice(0, maxPreviewChars)
-      : linesTruncated;
-  }
-  const hasMore = !expanded;
-
-  return (
-    <LeftBar color={titleColor ?? 'white'} marginBottom={marginBottom}>
-      <Text color={titleColor} dimColor={dimColor} bold>
-        {expanded ? '▼' : '▶'} {title}
-      </Text>
-      <Text dimColor={dimColor}>{preview}</Text>
-      {hasMore && <Text dimColor={true}>... (use /expand to see all)</Text>}
-    </LeftBar>
-  );
-};
-`,
-  },
-  {
-    path: "src/components/ConsolidatedToolMessage.tsx",
-    content: `/**
- * ConsolidatedToolMessage — Displays a tool call and its result together
- *
- * Groups a tool call (from assistant message) with its corresponding
- * tool result message into a single consolidated view.
- */
-
-import React from 'react';
-import { Box, Text } from 'ink';
-import { FormattedMessage } from './FormattedMessage.js';
-import { LeftBar } from './LeftBar.js';
-
-export interface ConsolidatedToolMessageProps {
-  toolCalls: Array<{ id: string; name: string }>;
-  toolResults: Map<string, { content: string; name: string }>;
-  expanded?: boolean;
-}
-
-export const ConsolidatedToolMessage: React.FC<ConsolidatedToolMessageProps> = ({
-  toolCalls,
-  toolResults,
-  expanded = false,
-}) => {
-  const toolNames = toolCalls.map((toolCall) => toolCall.name);
-  const title = \`Called: \${toolNames.join(', ')}\`;
-  const containsTodoTool = toolCalls.some((toolCall) => toolCall.name === 'todo_read' || toolCall.name === 'todo_write');
-  const titleColor = containsTodoTool ? 'green' : 'cyan';
-  const isExpanded = expanded || containsTodoTool;
-
-  if (isExpanded) {
-    return (
-      <LeftBar color={titleColor}>
-        <Text color={titleColor} bold>▼ {title}</Text>
-        {toolCalls.map((toolCall, idx) => {
-          const result = toolResults.get(toolCall.id);
-          if (!result) return null;
-
-          return (
-            <Box key={idx} flexDirection="column">
-              <Text color="cyan" bold>[{result.name}]:</Text>
-              <FormattedMessage content={result.content} />
-            </Box>
-          );
-        })}
-      </LeftBar>
-    );
-  }
-
-  const compactLines = toolCalls.flatMap((toolCall) => {
-    const result = toolResults.get(toolCall.id);
-    if (!result) return [];
-
-    const compactContent = result.content
-      .replace(/\\s+/g, ' ')
-      .trim();
-
-    return [\`[\${result.name}] \${compactContent}\`];
-  });
-
-  const compactPreview = compactLines.join(' | ');
-  const previewLimit = 180;
-  const preview = compactPreview.length > previewLimit
-    ? \`\${compactPreview.slice(0, previewLimit).trimEnd()}... (use /expand)\`
-    : compactPreview;
-
-  return (
-    <LeftBar color="white">
-      <Text color={titleColor} dimColor bold>
-        ▶ {title}
-      </Text>
-      <Text dimColor>{preview}</Text>
-    </LeftBar>
-  );
-};
-`,
-  },
-  {
-    path: "src/components/FormattedMessage.tsx",
-    content: `import React from 'react';
-import { Box, Text } from 'ink';
-import { renderFormattedText } from '../utils/format-message.js';
-import { LeftBar } from './LeftBar.js';
-
-interface FormattedMessageProps {
-  content: string;
-  deferTables?: boolean;
-}
-
-export const DEFERRED_TABLE_PLACEHOLDER = 'table loading';
-
-const graphemeSegmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
-  ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-  : null;
-
-const COMBINING_MARK_PATTERN = /\\p{Mark}/u;
-const ZERO_WIDTH_PATTERN = /[\\u200B-\\u200D\\uFE0E\\uFE0F]/u;
-const DOUBLE_WIDTH_PATTERN = /[\\u1100-\\u115F\\u2329\\u232A\\u2E80-\\uA4CF\\uAC00-\\uD7A3\\uF900-\\uFAFF\\uFE10-\\uFE19\\uFE30-\\uFE6F\\uFF00-\\uFF60\\uFFE0-\\uFFE6\\u{1F300}-\\u{1FAFF}\\u{1F900}-\\u{1F9FF}\\u{1F1E6}-\\u{1F1FF}]/u;
-
-function splitGraphemes(text: string): string[] {
-  if (!text) return [];
-  if (graphemeSegmenter) {
-    return Array.from(graphemeSegmenter.segment(text), (segment) => segment.segment);
-  }
-  return Array.from(text);
-}
-
-function getGraphemeWidth(grapheme: string): number {
-  if (!grapheme) return 0;
-  if (ZERO_WIDTH_PATTERN.test(grapheme)) return 0;
-  if (COMBINING_MARK_PATTERN.test(grapheme)) return 0;
-  if (/^[\\u0000-\\u001F\\u007F-\\u009F]\$/.test(grapheme)) return 0;
-  if (DOUBLE_WIDTH_PATTERN.test(grapheme)) return 2;
-  return 1;
-}
-
-function getTextWidth(text: string): number {
-  return splitGraphemes(text).reduce((width, grapheme) => width + getGraphemeWidth(grapheme), 0);
-}
-
-function padToWidth(text: string, width: number): string {
-  const padding = Math.max(0, width - getTextWidth(text));
-  return text + ' '.repeat(padding);
-}
-
-function parseMarkdownTableToRows(markdown: string): string[][] | null {
-  const lines = markdown.trim().split('\\n');
-  if (lines.length < 3) return null;
-
-  const parseRow = (row: string) =>
-    row.split('|')
-      .map((cell) => cell.trim())
-      .filter((cell, index, array) => {
-        if (index === 0 && cell === '') return false;
-        if (index === array.length - 1 && cell === '') return false;
-        return true;
-      });
-
-  const header = parseRow(lines[0]);
-  const separator = parseRow(lines[1]);
-  if (header.length === 0 || separator.length === 0) return null;
-  if (!separator.every((cell) => /^:?-{3,}:?\$/.test(cell.replace(/\\s+/g, '')))) return null;
-
-  const rows = lines.slice(2).map(parseRow);
-  return [header, ...rows];
-}
-
-function renderPreformattedTable(markdown: string): string {
-  const rows = parseMarkdownTableToRows(markdown);
-  if (!rows || rows.length === 0) {
-    return markdown.trim();
-  }
-
-  const columnCount = Math.max(...rows.map((row) => row.length));
-  const normalizedRows = rows.map((row) =>
-    Array.from({ length: columnCount }, (_, index) => row[index] ?? '')
-  );
-  const widths = Array.from({ length: columnCount }, (_, index) =>
-    Math.max(...normalizedRows.map((row) => getTextWidth(row[index])))
-  );
-
-  const formatRow = (row: string[]) => row
-    .map((cell, index) => padToWidth(cell, widths[index]))
-    .join('  ')
-    .trimEnd();
-
-  const header = formatRow(normalizedRows[0]);
-  const divider = widths.map((width) => '-'.repeat(width)).join('  ');
-  const body = normalizedRows.slice(1).map(formatRow);
-
-  return [header, divider, ...body].join('\\n');
-}
-
-/**
- * FormattedMessage component
- * 
- * Parses a markdown string and renders:
- * - Standard text with ANSI formatting
- * - Markdown tables as preformatted monospace text
- * - Code blocks (rendered in a box)
- */
-export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content, deferTables = false }) => {
-  if (!content) return null;
-
-  const lines = content.split('\\n');
-  const blocks: Array<{ type: 'text' | 'table' | 'code'; content: string }> = [];
-
-  let currentBlockContent: string[] = [];
-  let currentBlockType: 'text' | 'table' | 'code' = 'text';
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmedLine = line.trim();
-
-    // 1. Handle Code Blocks
-    if (currentBlockType === 'code') {
-      currentBlockContent.push(line);
-      // Check for end of code block
-      if (trimmedLine.startsWith('\`\`\`')) {
-        blocks.push({ type: 'code', content: currentBlockContent.join('\\n') });
-        currentBlockContent = [];
-        currentBlockType = 'text';
-      }
-      continue;
-    }
-
-    // Start Code Block
-    if (trimmedLine.startsWith('\`\`\`')) {
-      // Finish pending text block
-      if (currentBlockContent.length > 0) {
-        blocks.push({ type: 'text', content: currentBlockContent.join('\\n') });
-      }
-      currentBlockContent = [line];
-      currentBlockType = 'code';
-      continue;
-    }
-
-    // 2. Handle Tables
-    if (currentBlockType === 'table') {
-      if (trimmedLine.startsWith('|')) {
-        currentBlockContent.push(line);
-        continue;
-      } else {
-        // End of table block found (line doesn't start with |)
-        blocks.push({ type: 'table', content: currentBlockContent.join('\\n') });
-        
-        // Reset to text and fall through to re-process this line
-        currentBlockContent = [];
-        currentBlockType = 'text';
-      }
-    }
-
-    // Start Table Block check
-    // A table start requires a pipe AND a subsequent separator line
-    const isTableStart = trimmedLine.startsWith('|');
-    const nextLine = lines[i+1];
-    const isNextLineSeparator = nextLine && nextLine.trim().startsWith('|') && nextLine.includes('---');
-
-    if (isTableStart && isNextLineSeparator) {
-      // Finish pending text block
-      if (currentBlockContent.length > 0) {
-        blocks.push({ type: 'text', content: currentBlockContent.join('\\n') });
-      }
-      currentBlockContent = [line];
-      currentBlockType = 'table';
-      continue;
-    }
-
-    // 3. Handle Text
-    currentBlockContent.push(line);
-  }
-
-  // Push final block
-  if (currentBlockContent.length > 0) {
-    blocks.push({ type: currentBlockType, content: currentBlockContent.join('\\n') });
-  }
-
-  return (
-    <Box flexDirection="column">
-      {blocks.map((block, index) => {
-        if (block.type === 'table') {
-          if (!block.content.trim()) return null;
-          if (deferTables) {
-            return (
-              <Box key={index} marginY={1}>
-                <Text dimColor>{DEFERRED_TABLE_PLACEHOLDER}</Text>
-              </Box>
-            );
-          }
-          return (
-            <LeftBar key={index} color="gray" marginTop={1} marginBottom={1}>
-              <Text>{renderPreformattedTable(block.content)}</Text>
-            </LeftBar>
-          );
-        }
-        
-        if (block.type === 'code') {
-           return (
-             <LeftBar key={index} color="gray" marginTop={1} marginBottom={1}>
-               <Text dimColor>{block.content}</Text>
-             </LeftBar>
-           );
-        }
-        
-        // Text Block
-        if (!block.content.trim()) return null;
-        return (
-          <Box key={index} marginBottom={0}>
-             <Text>{renderFormattedText(block.content)}</Text>
-          </Box>
-        );
-      })}
-    </Box>
-  );
-};
-`,
-  },
-  {
     path: "src/components/LeftBar.tsx",
     content: `/**
  * LeftBar — renders a bold green vertical bar (│) on the left side of
@@ -4631,7 +4130,6 @@ interface ResetPromptProps {
   setConfigWritten: (written: boolean) => void;
 }
 export const ResetPrompt: React.FC<ResetPromptProps> = ({ existingConfig, setStep, setConfigWritten }) => {
-  const [resetInput, setResetInput] = useState('');
   const provider = getProvider(existingConfig.provider);
 
   return (
@@ -6054,7 +5552,9 @@ async function listSkillResources(skillDir: string): Promise<string[]> {
     }
   }
 
-  await Promise.all(['scripts', 'references', 'assets'].map((dir) => walk(dir)));
+  for (const dir of ['scripts', 'references', 'assets']) {
+    await walk(dir);
+  }
   return files.sort();
 }
 
@@ -6251,7 +5751,7 @@ Do NOT ask the user questions — work autonomously with the tools available.\`;
           if (delta?.tool_calls) {
             hasToolCalls = true;
             for (const tc of delta.tool_calls) {
-              const idx = tc.index || 0;
+              const idx = tc.index ?? 0;
               if (!assistantMessage.tool_calls[idx]) {
                 assistantMessage.tool_calls[idx] = {
                   id: '',
@@ -6616,7 +6116,9 @@ export const bashTool = {
   },
 };
 
-// Hard-blocked commands — these CANNOT be run, even with --dangerously-skip-permissions
+// Security: Hard-blocked commands — these CANNOT be run, even with --dangerously-skip-permissions
+// Naive approach: Allow any command with user approval
+// Risk: Some commands are too destructive even with approval (rm -rf /, mkfs)
 const DANGEROUS_PATTERNS = [
   'rm -rf /',
   'sudo',
@@ -6626,18 +6128,30 @@ const DANGEROUS_PATTERNS = [
   'mkfs',
   'fdisk',
   'format c:',
+  '> /dev/sda',           // Disk overwrite
+  'of=/dev/sda',          // dd to disk
+  ':(){ :|:& };:',        // Fork bomb
 ];
 
-// Auto-approved safe commands — read-only / informational
+// Security: Allowlist approach for safe commands
+// Naive approach: Blocklist of dangerous patterns - easily bypassed
+// Bypass examples: 's\\udo', '\$(which sudo)', '/bin/rm', 'sh -c "rm -rf /"'
+// Fix: Allowlist - only these specific commands run without approval
 const SAFE_COMMANDS = [
-  'pwd', 'whoami', 'date',
-  'git status', 'git log', 'git diff', 'git branch', 'git show', 'git remote',
+  'pwd', 'whoami', 'date', 'uname', 'uptime',
+  'git status', 'git log', 'git diff', 'git branch', 'git show', 'git remote -v',
   'npm list', 'npm ls', 'yarn list',
   'node --version', 'npm --version', 'python --version', 'python3 --version',
+  'which', 'type',
 ];
 
-const SHELL_CONTROL_PATTERN = /(^|[^\\\\])(?:;|&&|\\|\\||\\||>|<|\`|\\\$\\(|\\*|\\?)/;
-const UNSAFE_BASH_TOKENS = new Set(['cat', 'head', 'tail', 'grep', 'rg', 'find', 'awk', 'sed', 'sort', 'uniq', 'cut', 'wc', 'tree', 'file', 'dir', 'ls', 'echo', 'which', 'type']);
+// Security: Stricter shell control pattern to catch bypass attempts
+// Naive approach: Simple regex misses many bypasses
+// Bypasses: Newlines, encoded chars, quoted operators, backticks
+const SHELL_CONTROL_PATTERN = /[;&|<>()\`\$\\[\\]{}!]/;
+
+// Commands that read files - require path validation
+const FILE_READING_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'rg', 'find', 'awk', 'sed', 'sort', 'uniq', 'cut', 'wc', 'tree', 'file', 'dir', 'ls', 'echo']);
 
 function isDangerous(command: string): boolean {
   const lower = command.toLowerCase().trim();
@@ -6691,16 +6205,28 @@ async function isSafe(command: string): Promise<boolean> {
     return false;
   }
 
+  // Security: Reject commands with newlines (bypass technique)
+  if (trimmed.includes('\\n') || trimmed.includes('\\r')) {
+    return false;
+  }
+
+  // Security: Reject escape sequences that could hide shell operators
+  if (/\\\\[;&|<>()\`\$]/.test(trimmed)) {
+    return false;
+  }
+
   const tokens = tokenizeCommand(trimmed);
   if (!tokens) {
     return false;
   }
 
   const firstWord = trimmed.split(/\\s+/)[0];
-  if (UNSAFE_BASH_TOKENS.has(firstWord)) {
-    return false;
-  }
 
+  // Security: File-reading commands need path validation
+  // They can read any file in working directory but not outside
+  const needsPathValidation = FILE_READING_COMMANDS.has(firstWord);
+
+  // Check against allowlist of safe commands
   const matchedSafeCommand = SAFE_COMMANDS.some((safe) => {
     if (safe.includes(' ')) {
       return trimmed === safe || trimmed.startsWith(\`\${safe} \`);
@@ -6708,11 +6234,16 @@ async function isSafe(command: string): Promise<boolean> {
     return firstWord === safe;
   });
 
-  if (!matchedSafeCommand) {
+  if (!matchedSafeCommand && !needsPathValidation) {
     return false;
   }
 
-  return validateCommandPaths(tokens);
+  // Security: Always validate paths for file-reading commands
+  if (needsPathValidation) {
+    return validateCommandPaths(tokens);
+  }
+
+  return true;
 }
 
 export async function runBash(
@@ -6830,7 +6361,8 @@ export async function runBash(
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { validatePath, getWorkingDirectory } from '../utils/path-validation.js';
+import { validatePath } from '../utils/path-validation.js';
+import { findSimilarPaths } from '../utils/path-suggestions.js';
 import { requestApproval } from '../utils/approval.js';
 import { checkReadBefore, recordRead } from '../utils/file-time.js';
 
@@ -6857,47 +6389,6 @@ export const editFileTool = {
     },
   },
 };
-
-// ─── Path suggestion helper (mirrors read_file behaviour) ───
-
-async function findSimilarPaths(requestedPath: string): Promise<string[]> {
-  const cwd = getWorkingDirectory();
-  const segments = requestedPath.split('/').filter(Boolean);
-  const MAX_DEPTH = 6;
-  const MAX_ENTRIES = 200;
-  const MAX_SUGGESTIONS = 3;
-  const candidates: string[] = [];
-
-  async function walkSegments(dir: string, segIndex: number, currentPath: string): Promise<void> {
-    if (segIndex >= segments.length || segIndex >= MAX_DEPTH || candidates.length >= MAX_SUGGESTIONS) return;
-    const targetSegment = segments[segIndex].toLowerCase();
-    let entries: string[];
-    try {
-      entries = (await fs.readdir(dir, { withFileTypes: true })).slice(0, MAX_ENTRIES).map(e => e.name);
-    } catch {
-      return;
-    }
-    const isLastSegment = segIndex === segments.length - 1;
-    for (const entry of entries) {
-      if (candidates.length >= MAX_SUGGESTIONS) break;
-      const entryLower = entry.toLowerCase();
-      if (!entryLower.includes(targetSegment) && !targetSegment.includes(entryLower)) continue;
-      const entryPath = path.join(currentPath, entry);
-      const fullPath = path.join(dir, entry);
-      if (isLastSegment) {
-        try { await fs.stat(fullPath); candidates.push(entryPath); } catch { /* skip */ }
-      } else {
-        try {
-          const stat = await fs.stat(fullPath);
-          if (stat.isDirectory()) await walkSegments(fullPath, segIndex + 1, entryPath);
-        } catch { /* skip */ }
-      }
-    }
-  }
-
-  await walkSegments(cwd, 0, '');
-  return candidates;
-}
 
 // ─── Fuzzy Match Strategies ───
 
@@ -7181,6 +6672,13 @@ export async function editFile(
   if (sessionId) {
     const staleError = checkReadBefore(sessionId, validated);
     if (staleError) return staleError;
+  }
+
+  // Check file size before reading to avoid OOM on huge files
+  const stat = await fs.stat(validated);
+  const MAX_EDIT_FILE_SIZE = 2 * 1024 * 1024; // 2 MB
+  if (stat.size > MAX_EDIT_FILE_SIZE) {
+    return \`Error: file is too large to edit (\${(stat.size / 1024 / 1024).toFixed(1)} MB, limit is \${MAX_EDIT_FILE_SIZE / 1024 / 1024} MB).\`;
   }
 
   const content = await fs.readFile(validated, 'utf8');
@@ -7494,14 +6992,15 @@ import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import readline from 'node:readline';
 import path from 'node:path';
-import { validatePath, getWorkingDirectory } from '../utils/path-validation.js';
+import { validatePath } from '../utils/path-validation.js';
+import { findSimilarPaths } from '../utils/path-suggestions.js';
 import { recordRead } from '../utils/file-time.js';
 
 export const readFileTool = {
   type: 'function' as const,
   function: {
     name: 'read_file',
-    description: 'Read the contents of a file. Returns the file content with line numbers. Use offset and limit to read specific sections of large files.',
+    description: 'Read the contents of a file. Use offset and limit to read specific sections of large files.',
     parameters: {
       type: 'object',
       properties: {
@@ -7513,72 +7012,6 @@ export const readFileTool = {
     },
   },
 };
-
-/**
- * Find similar paths when a requested file doesn't exist.
- * Walks from the repo root, matching segments case-insensitively.
- */
-async function findSimilarPaths(requestedPath: string): Promise<string[]> {
-  const cwd = getWorkingDirectory();
-  const segments = requestedPath.split('/').filter(Boolean);
-  const MAX_DEPTH = 6;
-  const MAX_ENTRIES = 200;
-  const MAX_SUGGESTIONS = 3;
-
-  const candidates: string[] = [];
-
-  async function walkSegments(dir: string, segIndex: number, currentPath: string): Promise<void> {
-    if (segIndex >= segments.length || segIndex >= MAX_DEPTH || candidates.length >= MAX_SUGGESTIONS) return;
-
-    const targetSegment = segments[segIndex].toLowerCase();
-    let entries: string[];
-
-    try {
-      const dirEntries = await fs.readdir(dir, { withFileTypes: true });
-      entries = dirEntries
-        .slice(0, MAX_ENTRIES)
-        .map(e => e.name);
-    } catch {
-      return;
-    }
-
-    const isLastSegment = segIndex === segments.length - 1;
-
-    for (const entry of entries) {
-      if (candidates.length >= MAX_SUGGESTIONS) break;
-      const entryLower = entry.toLowerCase();
-
-      // Match if entry contains the target segment as a substring (case-insensitive)
-      if (!entryLower.includes(targetSegment) && !targetSegment.includes(entryLower)) continue;
-
-      const entryPath = path.join(currentPath, entry);
-      const fullPath = path.join(dir, entry);
-
-      if (isLastSegment) {
-        // Check if this file/dir actually exists
-        try {
-          await fs.stat(fullPath);
-          candidates.push(entryPath);
-        } catch {
-          // skip
-        }
-      } else {
-        // Continue walking deeper
-        try {
-          const stat = await fs.stat(fullPath);
-          if (stat.isDirectory()) {
-            await walkSegments(fullPath, segIndex + 1, entryPath);
-          }
-        } catch {
-          // skip
-        }
-      }
-    }
-  }
-
-  await walkSegments(cwd, 0, '');
-  return candidates;
-}
 
 export async function readFile(filePath: string, offset = 0, limit = 2000, sessionId?: string): Promise<string> {
   let validated: string;
@@ -7643,7 +7076,7 @@ export async function readFile(filePath: string, offset = 0, limit = 2000, sessi
  */
 
 import fs from 'node:fs/promises';
-import { statSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { validatePath } from '../utils/path-validation.js';
@@ -7680,6 +7113,37 @@ try {
 }
 
 const MAX_RESULTS = 100;
+const MAX_PATTERN_LENGTH = 1000;
+
+
+
+// Directories to skip during recursive search
+const SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'coverage',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.tox',
+  '.nox',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.hypothesis',
+  '.next',
+  'out',
+  '.turbo',
+  '.cache',
+]);
+
+// Track visited inodes to detect symlink cycles
+interface SearchResult {
+  display: string;
+  mtime: number;
+}
 
 export async function searchFiles(
   searchTerm: string,
@@ -7689,6 +7153,13 @@ export async function searchFiles(
 ): Promise<string> {
   const validated = await validatePath(directoryPath);
 
+  // Security: Validate pattern to prevent ReDoS (Catastrophic Backtracking)
+  // Attack: Pattern (a+)+\$ with input 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' causes exponential backtracking
+  // In JS fallback, this hangs the process for minutes/hours with 100% CPU
+  if (searchTerm.length > MAX_PATTERN_LENGTH) {
+    return \`Error: Pattern too long (\${searchTerm.length} chars, max \${MAX_PATTERN_LENGTH})\`;
+  }
+
   if (hasRipgrep) {
     return searchWithRipgrep(searchTerm, validated, directoryPath, caseSensitive, fileExtensions);
   }
@@ -7697,19 +7168,18 @@ export async function searchFiles(
 
 // ─── Ripgrep implementation ───
 
-function searchWithRipgrep(
+async function searchWithRipgrep(
   searchTerm: string,
   validated: string,
   directoryPath: string,
   caseSensitive: boolean,
   fileExtensions?: string[],
-): string {
+): Promise<string> {
   const args: string[] = [
     '--line-number',
     '--with-filename',
     '--no-heading',
     '--color=never',
-    '--max-count=1',
     '--max-filesize=1M',
   ];
 
@@ -7741,10 +7211,13 @@ function searchWithRipgrep(
     }
 
     // Parse rg output and sort by mtime
-    const parsed = lines.slice(0, MAX_RESULTS).map(line => {
+    const parsed: SearchResult[] = [];
+    for (const line of lines.slice(0, MAX_RESULTS)) {
       // rg output: filepath:linenum:content
       const firstColon = line.indexOf(':');
       const secondColon = line.indexOf(':', firstColon + 1);
+      if (firstColon === -1 || secondColon === -1) continue;
+
       const filePath = line.slice(0, firstColon);
       const lineNum = line.slice(firstColon + 1, secondColon);
       let content = line.slice(secondColon + 1).trim();
@@ -7756,11 +7229,12 @@ function searchWithRipgrep(
       const relativePath = path.relative(validated, filePath);
       let mtime = 0;
       try {
-        mtime = statSync(filePath).mtimeMs;
-      } catch { /* ignore */ }
+        const stats = await stat(filePath);
+        mtime = stats.mtimeMs;
+      } catch { /* ignore stat errors */ }
 
-      return { display: \`\${relativePath}:\${lineNum}: \${content}\`, mtime };
-    });
+      parsed.push({ display: \`\${relativePath}:\${lineNum}: \${content}\`, mtime });
+    }
 
     // Sort by mtime descending (most recently modified first)
     parsed.sort((a, b) => b.mtime - a.mtime);
@@ -7780,7 +7254,7 @@ function searchWithRipgrep(
       return \`Error: ripgrep error: \${msg}\`;
     }
     // Fall back to JS search on any other error
-    return \`Error: ripgrep failed: \${err.message}\`;
+    return searchWithJs(searchTerm, validated, directoryPath, caseSensitive, fileExtensions);
   }
 }
 
@@ -7802,7 +7276,8 @@ async function searchWithJs(
     return \`Error: invalid regex pattern "\${searchTerm}": \${message}\`;
   }
 
-  const results: string[] = [];
+  const results: SearchResult[] = [];
+  const visitedInodes = new Set<string>();
 
   async function search(dir: string): Promise<void> {
     if (results.length >= MAX_RESULTS) return;
@@ -7813,12 +7288,33 @@ async function searchWithJs(
 
       const fullPath = path.join(dir, entry.name);
 
+      // Skip symlinks to prevent cycles
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+
       // Skip common non-useful directories
       if (entry.isDirectory()) {
-        if (['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__'].includes(entry.name)) continue;
+        if (SKIP_DIRS.has(entry.name)) continue;
+
+        // Track inode to detect hardlink cycles
+        try {
+          const stats = await fs.stat(fullPath);
+          const inodeKey = \`\${stats.dev}:\${stats.ino}\`;
+          if (visitedInodes.has(inodeKey)) {
+            continue; // Already visited this directory
+          }
+          visitedInodes.add(inodeKey);
+        } catch {
+          // If we can't stat, skip to be safe
+          continue;
+        }
+
         await search(fullPath);
         continue;
       }
+
+      if (!entry.isFile()) continue;
 
       // Filter by extension
       if (fileExtensions && fileExtensions.length > 0) {
@@ -7828,6 +7324,7 @@ async function searchWithJs(
 
       try {
         const content = await fs.readFile(fullPath, 'utf8');
+        const stats = await stat(fullPath);
         const lines = content.split('\\n');
         for (let i = 0; i < lines.length && results.length < MAX_RESULTS; i++) {
           if (regex.test(lines[i])) {
@@ -7839,7 +7336,10 @@ async function searchWithJs(
               lineContent = lineContent.slice(0, 500) + '... (truncated)';
             }
 
-            results.push(\`\${relativePath}:\${i + 1}: \${lineContent}\`);
+            results.push({
+              display: \`\${relativePath}:\${i + 1}: \${lineContent}\`,
+              mtime: stats.mtimeMs,
+            });
           }
           regex.lastIndex = 0; // reset regex state
         }
@@ -7855,8 +7355,12 @@ async function searchWithJs(
     return \`No matches found for "\${searchTerm}" in \${directoryPath}\`;
   }
 
+  // Sort by mtime descending (most recently modified first)
+  results.sort((a, b) => b.mtime - a.mtime);
+
+  const displayResults = results.map(r => r.display);
   const suffix = results.length >= MAX_RESULTS ? \`\\n(results truncated at \${MAX_RESULTS})\` : '';
-  return \`Found \${results.length} match(es) for "\${searchTerm}":\\n\${results.join('\\n')}\${suffix}\`;
+  return \`Found \${results.length} match(es) for "\${searchTerm}":\\n\${displayResults.join('\\n')}\${suffix}\`;
 }
 `,
   },
@@ -7996,7 +7500,7 @@ export function clearTodos(sessionId?: string): void {
  * - Charset-aware content decoding
  */
 
-import { convert } from 'html-to-text';
+import { convert } from "html-to-text";
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024; // 5MB
 const MAX_OUTPUT_SIZE = 2 * 1024 * 1024; // 2MB
@@ -8004,48 +7508,56 @@ const MAX_REDIRECTS = 10;
 const MAX_URL_LENGTH = 4096;
 
 const FETCH_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Accept-Encoding': 'gzip, deflate',
-  'DNT': '1',
-  'Connection': 'keep-alive',
-  'Upgrade-Insecure-Requests': '1',
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate",
+  DNT: "1",
+  Connection: "keep-alive",
+  "Upgrade-Insecure-Requests": "1",
 };
 
 // Text-based MIME types that are safe to process
 const TEXT_MIME_TYPES = [
-  'text/',
-  'application/json',
-  'application/xml',
-  'application/x-www-form-urlencoded',
-  'application/atom+xml',
-  'application/rss+xml',
-  'application/javascript',
-  'application/typescript',
+  "text/",
+  "application/json",
+  "application/xml",
+  "application/x-www-form-urlencoded",
+  "application/atom+xml",
+  "application/rss+xml",
+  "application/javascript",
+  "application/typescript",
 ];
 
-// Lazy-loaded Turndown instance (CJS module — dynamic import avoids forcing esbuild CJS output)
+// Lazy-loaded Turndown instance — converts HTML to Markdown
+// We lazy-load because Turndown is a CommonJS module; dynamic import keeps our
+// ESM output clean without forcing esbuild to bundle everything as CJS.
+// Why Turndown? HTML → Markdown preserves document structure (headings, lists,
+// links) in a readable format that LLMs handle better than raw HTML markup.
 let _turndownService: any = null;
-async function getTurndownService() {
+async function getTurndownService(): Promise<any> {
   if (!_turndownService) {
-    const { default: TurndownService } = await import('turndown');
+    const { default: TurndownService } = await import("turndown");
     _turndownService = new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
-      bulletListMarker: '-',
-      emDelimiter: '*',
+      headingStyle: "atx",       // # Heading, not underlined
+      codeBlockStyle: "fenced",  // \`\`\`code\`\`\`, not indented
+      bulletListMarker: "-",
+      emDelimiter: "*",
     });
-    _turndownService.remove(['script', 'style', 'meta', 'link']);
+    // Remove noise that doesn't help LLM understanding
+    _turndownService.remove(["script", "style", "meta", "link"]);
   }
   return _turndownService;
 }
 
-// Lazy-loaded he module (CJS module)
+// Lazy-loaded 'he' module — decodes HTML entities like &lt; &gt; &amp;
+// We lazy-load for the same CJS/ESM reason as Turndown.
+// Why 'he'? Browsers and node don't have built-in HTML entity decoding that
+// handles the full set (&nbsp;, &#x2713;, named entities, etc.) correctly.
 let _he: any = null;
-async function getHe() {
+async function getHe(): Promise<any> {
   if (!_he) {
-    const { default: he } = await import('he');
+    const { default: he } = await import("he");
     _he = he;
   }
   return _he;
@@ -8063,7 +7575,7 @@ function isTextMimeType(mimeType: string): boolean {
  */
 function detectHTML(content: string, contentType: string): boolean {
   // Header says HTML
-  if (contentType.includes('text/html')) {
+  if (contentType.includes("text/html")) {
     return true;
   }
 
@@ -8078,16 +7590,16 @@ function detectHTML(content: string, contentType: string): boolean {
 function parseCharset(contentType: string): string {
   const match = contentType.match(/charset=([^\\s;]+)/i);
   if (match) {
-    const charset = match[1].replace(/['"]/g, '');
+    const charset = match[1].replace(/['"]/g, "");
     // Validate charset is supported by TextDecoder
     try {
       new TextDecoder(charset);
       return charset;
     } catch {
-      return 'utf-8';
+      return "utf-8";
     }
   }
-  return 'utf-8';
+  return "utf-8";
 }
 
 /**
@@ -8105,28 +7617,31 @@ function truncateOutput(output: string, maxSize: number): string {
 }
 
 export const webfetchTool = {
-  type: 'function' as const,
+  type: "function" as const,
   function: {
-    name: 'webfetch',
-    description: 'Fetch and process content from a web URL. Supports text (plain text extraction), markdown (HTML to markdown conversion), or html (raw HTML) output formats.',
+    name: "webfetch",
+    description:
+      "Fetch and process content from a web URL. Supports text (plain text extraction), markdown (HTML to markdown conversion), or html (raw HTML) output formats.",
     parameters: {
-      type: 'object',
+      type: "object",
       properties: {
         url: {
-          type: 'string',
-          description: 'HTTP(S) URL to fetch (must start with http:// or https://)',
+          type: "string",
+          description:
+            "HTTP(S) URL to fetch (must start with http:// or https://)",
         },
         format: {
-          type: 'string',
-          enum: ['text', 'markdown', 'html'],
-          description: 'Output format: text (plain text), markdown (HTML to markdown), or html (raw HTML)',
+          type: "string",
+          enum: ["text", "markdown", "html"],
+          description:
+            "Output format: text (plain text), markdown (HTML to markdown), or html (raw HTML)",
         },
         timeout: {
-          type: 'number',
-          description: 'Timeout in seconds (default 30, min 1, max 120)',
+          type: "number",
+          description: "Timeout in seconds (default 30, min 1, max 120)",
         },
       },
-      required: ['url', 'format'],
+      required: ["url", "format"],
     },
   },
 };
@@ -8139,20 +7654,20 @@ function htmlToText(html: string): string {
     return convert(html, {
       wordwrap: 120,
       selectors: [
-        { selector: 'img', options: { ignoreHref: true } },
-        { selector: 'a', options: { ignoreHref: true } },
+        { selector: "img", options: { ignoreHref: true } },
+        { selector: "a", options: { ignoreHref: true } },
       ],
     });
   } catch (error) {
     // Fallback: basic regex if library fails
     return html
-      .replace(/<script\\b[^<]*(?:(?!<\\/script>)<[^<]*)*<\\/script>/gi, '')
-      .replace(/<style\\b[^<]*(?:(?!<\\/style>)<[^<]*)*<\\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .split('\\n')
+      .replace(/<script\\b[^<]*(?:(?!<\\/script>)<[^<]*)*<\\/script>/gi, "")
+      .replace(/<style\\b[^<]*(?:(?!<\\/style>)<[^<]*)*<\\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .split("\\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-      .join('\\n');
+      .join("\\n");
   }
 }
 
@@ -8186,12 +7701,12 @@ async function fetchWithRedirectLimit(
     const response = await originalFetch(currentUrl, {
       signal,
       headers: FETCH_HEADERS,
-      redirect: 'manual', // Handle redirects manually to count them
+      redirect: "manual", // Handle redirects manually to count them
     });
 
     // Check for redirect status
     if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
+      const location = response.headers.get("location");
       if (location) {
         redirectCount++;
         // Resolve relative URLs
@@ -8217,27 +7732,33 @@ async function fetchWithRedirectLimit(
  */
 export async function webfetch(
   url: string,
-  format: 'text' | 'markdown' | 'html',
+  format: "text" | "markdown" | "html",
   timeout?: number,
-): Promise<{ output: string; title: string; metadata: Record<string, unknown> }> {
+): Promise<{
+  output: string;
+  title: string;
+  metadata: Record<string, unknown>;
+}> {
   // Validate URL
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    throw new Error('Invalid URL format. Must start with http:// or https://');
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    throw new Error("Invalid URL format. Must start with http:// or https://");
   }
 
   if (url.length > MAX_URL_LENGTH) {
-    throw new Error(\`URL too long (\${url.length} characters, max \${MAX_URL_LENGTH})\`);
+    throw new Error(
+      \`URL too long (\${url.length} characters, max \${MAX_URL_LENGTH})\`,
+    );
   }
 
   // Validate format
-  if (!['text', 'markdown', 'html'].includes(format)) {
+  if (!["text", "markdown", "html"].includes(format)) {
     throw new Error("Invalid format. Must be 'text', 'markdown', or 'html'");
   }
 
   // Validate timeout
   const timeoutSeconds = Math.min(timeout ?? 30, 120);
   if (timeoutSeconds < 1) {
-    throw new Error('Timeout must be between 1 and 120 seconds');
+    throw new Error("Timeout must be between 1 and 120 seconds");
   }
 
   // Setup timeout for entire operation
@@ -8256,7 +7777,7 @@ export async function webfetch(
     }
 
     // Validate response size by header
-    const contentLength = response.headers.get('content-length');
+    const contentLength = response.headers.get("content-length");
     if (contentLength && parseInt(contentLength) > MAX_RESPONSE_SIZE) {
       throw new Error(
         \`Response too large (exceeds 5MB limit). Content-Length: \${contentLength}\`,
@@ -8264,7 +7785,7 @@ export async function webfetch(
     }
 
     // Get content type
-    const contentType = response.headers.get('content-type') ?? 'text/plain';
+    const contentType = response.headers.get("content-type") ?? "text/plain";
 
     // Check if content type is text-based
     if (!isTextMimeType(contentType)) {
@@ -8273,7 +7794,12 @@ export async function webfetch(
       );
     }
 
-    // Get response as ArrayBuffer
+    // Get response as ArrayBuffer (not .text() or .blob()) because:
+    // 1. response.text() always decodes as UTF-8 — would corrupt non-UTF-8 pages
+    //    (e.g., Shift_JIS, GB2312, windows-1251 sites)
+    // 2. ArrayBuffer preserves raw bytes so we can use TextDecoder with the
+    //    CORRECT charset from the Content-Type header
+    // 3. We can check byteLength BEFORE decoding for security (5MB limit)
     const arrayBuffer = await response.arrayBuffer();
 
     // Check actual response size
@@ -8294,17 +7820,19 @@ export async function webfetch(
 
     // Format content based on requested format
     let output: string;
-    if (format === 'text') {
+    if (format === "text") {
       output = isHTML ? htmlToText(content) : content;
-    } else if (format === 'markdown') {
-      output = isHTML ? await htmlToMarkdown(content) : \`\\\`\\\`\\\`\\n\${content}\\n\\\`\\\`\\\`\`;
+    } else if (format === "markdown") {
+      output = isHTML
+        ? await htmlToMarkdown(content)
+        : \`\\\`\\\`\\\`\\n\${content}\\n\\\`\\\`\\\`\`;
     } else {
       // format === 'html'
       output = content;
     }
 
     // Decode HTML entities ONLY for text/markdown formats (not for raw HTML)
-    if (format !== 'html') {
+    if (format !== "html") {
       const he = await getHe();
       output = he.decode(output);
     }
@@ -8327,7 +7855,7 @@ export async function webfetch(
     return { output, title, metadata };
   } catch (error) {
     // Handle AbortError (timeout or cancellation)
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (error instanceof Error && error.name === "AbortError") {
       throw new Error(\`Fetch timeout after \${timeoutSeconds} seconds\`);
     }
 
@@ -8350,9 +7878,10 @@ export async function webfetch(
  * write_file tool — Create or overwrite a file. Requires approval.
  */
 
-import fs from 'node:fs/promises';
+import fs, { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
+import { findSimilarPaths } from '../utils/path-suggestions.js';
 import { requestApproval } from '../utils/approval.js';
 import { recordRead } from '../utils/file-time.js';
 
@@ -8373,7 +7902,21 @@ export const writeFileTool = {
 };
 
 export async function writeFile(filePath: string, content: string, sessionId?: string): Promise<string> {
-  const validated = await validatePath(filePath);
+  let validated: string;
+  try {
+    validated = await validatePath(filePath);
+  } catch (err: any) {
+    // If file not found, try to suggest similar paths
+    if (err.message?.includes('does not exist') || err.code === 'ENOENT') {
+      const suggestions = await findSimilarPaths(filePath);
+      let msg = \`File not found: '\${filePath}'\`;
+      if (suggestions.length > 0) {
+        msg += '\\nDid you mean one of these?\\n' + suggestions.map(s => \`  \${s}\`).join('\\n');
+      }
+      return msg;
+    }
+    throw err;
+  }
 
   // Request approval
   const preview = content.length > 500
@@ -8396,11 +7939,25 @@ export async function writeFile(filePath: string, content: string, sessionId?: s
   // Ensure parent directory exists
   await fs.mkdir(path.dirname(validated), { recursive: true });
 
-  // Atomic write: write to temp file then rename
+  // Security: Atomic write with symlink protection
+  // Uses O_CREAT|O_EXCL ('wx' flag) to prevent symlink attacks
   const tmpPath = path.join(path.dirname(validated), \`.protoagent-write-\${process.pid}-\${Date.now()}-\${path.basename(validated)}\`);
+
+  let fd: FileHandle | undefined;
   try {
-    await fs.writeFile(tmpPath, content, 'utf8');
+    // Open with O_CREAT|O_EXCL - atomically creates or fails if exists
+    fd = await fs.open(tmpPath, 'wx', 0o600);
+    await fd.writeFile(content, 'utf8');
+    await fd.sync();
+    await fd.close();
+    fd = undefined;
     await fs.rename(tmpPath, validated);
+  } catch (err: any) {
+    if (fd !== undefined) {
+      try { await fd.close(); } catch { /* ignore */ }
+    }
+    try { await fs.unlink(tmpPath); } catch { /* ignore */ }
+    throw err;
   } finally {
     await fs.rm(tmpPath, { force: true }).catch(() => undefined);
   }
@@ -8507,6 +8064,8 @@ export async function requestApproval(req: ApprovalRequest): Promise<boolean> {
       sessionApprovals.add(sessionKey);
       return true;
     case 'reject':
+      return false;
+    default:
       return false;
   }
 }
@@ -8681,9 +8240,12 @@ export function estimateMessageTokens(msg: OpenAI.Chat.Completions.ChatCompletio
   if ('content' in msg && typeof msg.content === 'string') {
     tokens += estimateTokens(msg.content);
   }
-  if ('tool_calls' in msg && Array.isArray((msg as any).tool_calls)) {
-    for (const tc of (msg as any).tool_calls) {
-      tokens += estimateTokens(tc.function?.name || '') + estimateTokens(tc.function?.arguments || '') + 10;
+  if ('tool_calls' in msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+    for (const tc of msg.tool_calls) {
+      // Type guard for function tool calls
+      if (tc.type === 'function' && 'function' in tc) {
+        tokens += estimateTokens(tc.function.name || '') + estimateTokens(tc.function.arguments || '') + 10;
+      }
     }
   }
   return tokens;
@@ -8909,6 +8471,7 @@ export function renderFormattedText(text: string): React.ReactNode {
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import stripAnsi from 'strip-ansi';
 
 export enum LogLevel {
   ERROR = 0,
@@ -8976,7 +8539,8 @@ function writeToFile(message: string): void {
   try {
     appendFileSync(logFilePath!, message);
   } catch (err) {
-    // Silently fail if we can't write to log file
+    // Emit to stderr since we can't write to log file
+    process.stderr.write(\`Failed to write to log file: \${err}\\n\`);
   }
 }
 
@@ -8987,6 +8551,14 @@ function timestamp(): string {
   const ss = String(d.getSeconds()).padStart(2, '0');
   const ms = String(d.getMilliseconds()).padStart(3, '0');
   return \`\${hh}:\${mm}:\${ss}.\${ms}\`;
+}
+
+function safeStringify(obj: unknown): string {
+  try {
+    return JSON.stringify(obj);
+  } catch {
+    return '[Object with circular references]';
+  }
 }
 
 function log(level: LogLevel, label: string, message: string, context?: Record<string, unknown>): void {
@@ -9011,8 +8583,11 @@ function log(level: LogLevel, label: string, message: string, context?: Record<s
   logListeners.forEach(listener => listener(entry));
 
   // Write to file
-  const ctx = context ? \` \${JSON.stringify(context)}\` : '';
-  writeToFile(\`[\${ts}] \${label.padEnd(5)} \${message}\${ctx}\\n\`);
+  const ctx = context ? \` \${safeStringify(context)}\` : '';
+  // Security: Strip ANSI escape codes to prevent terminal injection attacks
+  const sanitizedMessage = stripAnsi(message);
+  const sanitizedCtx = stripAnsi(ctx);
+  writeToFile(\`[\${ts}] \${label.padEnd(5)} \${sanitizedMessage}\${sanitizedCtx}\\n\`);
 }
 
 export const logger = {
@@ -9042,6 +8617,95 @@ export const logger = {
 `,
   },
   {
+    path: "src/utils/path-suggestions.ts",
+    content: `/**
+ * Path suggestions utility — Find similar paths when a file isn't found.
+ *
+ * Used by read_file and edit_file to suggest alternatives when
+ * the requested path doesn't exist (helps recover from typos).
+ */
+
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import leven from 'leven';
+import { getWorkingDirectory } from './path-validation.js';
+
+const MAX_DEPTH = 6;
+const MAX_ENTRIES = 200;
+const MAX_CANDIDATES = 50;
+const MAX_SUGGESTIONS = 3;
+
+/**
+ * Collect all file paths recursively up to MAX_DEPTH.
+ */
+async function collectAllPaths(cwd: string): Promise<string[]> {
+  const paths: string[] = [];
+  const skipDirs = new Set(['node_modules', '.git', 'dist', 'build', 'coverage']);
+
+  async function walk(dir: string, currentPath: string): Promise<void> {
+    if (paths.length >= MAX_CANDIDATES) return;
+
+    let entries: string[];
+    try {
+      const dirEntries = await fs.readdir(dir, { withFileTypes: true });
+      entries = dirEntries
+        .filter(e => !skipDirs.has(e.name))
+        .slice(0, MAX_ENTRIES)
+        .map(e => e.name);
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (paths.length >= MAX_CANDIDATES) return;
+
+      const entryPath = currentPath ? \`\${currentPath}/\${entry}\` : entry;
+      const fullPath = path.join(dir, entry);
+
+      paths.push(entryPath);
+
+      // Continue walking deeper
+      try {
+        const stat = await fs.stat(fullPath);
+        if (stat.isDirectory() && entryPath.split('/').length < MAX_DEPTH) {
+          await walk(fullPath, entryPath);
+        }
+      } catch {
+        // skip
+      }
+    }
+  }
+
+  await walk(cwd, '');
+  return paths;
+}
+
+/**
+ * Find similar paths when a requested file doesn't exist.
+ * Uses Levenshtein distance to find the closest matches.
+ */
+export async function findSimilarPaths(requestedPath: string): Promise<string[]> {
+  const cwd = getWorkingDirectory();
+
+  // Collect all available paths
+  const allPaths = await collectAllPaths(cwd);
+
+  // Calculate Levenshtein distance for each path
+  const scored = allPaths.map(candidatePath => ({
+    path: candidatePath,
+    distance: leven(requestedPath.toLowerCase(), candidatePath.toLowerCase()),
+  }));
+
+  // Sort by distance (lower is better) and take top suggestions
+  scored.sort((a, b) => a.distance - b.distance);
+
+  return scored
+    .slice(0, MAX_SUGGESTIONS)
+    .map(s => s.path);
+}
+`,
+  },
+  {
     path: "src/utils/path-validation.ts",
     content: `/**
  * Path validation utility shared by all file tools.
@@ -9053,17 +8717,13 @@ export const logger = {
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import isPathInside from 'is-path-inside';
 
 const workingDirectory = process.cwd();
 let allowedRoots: string[] = [];
 
-function isWithinRoot(targetPath: string, rootPath: string): boolean {
-  const relative = path.relative(rootPath, targetPath);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
 function isAllowedPath(targetPath: string): boolean {
-  return isWithinRoot(targetPath, workingDirectory) || allowedRoots.some((root) => isWithinRoot(targetPath, root));
+  return isPathInside(targetPath, workingDirectory) || allowedRoots.some((root) => isPathInside(targetPath, root));
 }
 
 export async function setAllowedPathRoots(roots: string[]): Promise<void> {

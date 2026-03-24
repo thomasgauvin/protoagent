@@ -100,13 +100,11 @@ At runtime, the user interacts only with the Ink UI. The UI delegates model/tool
 
 ### UI components and formatting helpers
 
-- `src/components/CollapsibleBox.tsx`
-- `src/components/ConsolidatedToolMessage.tsx`
 - `src/components/FormattedMessage.tsx`
-- `src/components/Table.tsx`
+- `src/components/LeftBar.tsx`
 - `src/utils/format-message.tsx`
 
-These handle collapsible long output, grouped tool rendering, Markdown-ish formatting, and table rendering.
+These handle Markdown-ish formatting, left-bar indicators for callouts, and structured message rendering.
 
 ### Shared utilities
 
@@ -412,12 +410,10 @@ The output is a rebuilt message list with a synthetic summary system message.
 
 ### Rendering helpers
 
-- `CollapsibleBox` truncates long system/tool output with `/expand` and `/collapse`
-- `ConsolidatedToolMessage` groups assistant tool calls with following tool results
 - `FormattedMessage` parses mixed text/table/code output
-- `Table` renders JSON or Markdown-table data with terminal-width-aware wrapping
-- `formatMessage()` applies simple Markdown-style bold/italic formatting
 - `LeftBar` renders a bold green `│` bar on the left side of callout content (tool calls, approvals, errors, code blocks)
+
+Tool results are rendered as compact one-line summaries: `▶ tool_name: result...`
 
 ### LeftBar: why not Box borders
 

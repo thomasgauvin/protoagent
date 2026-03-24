@@ -39,9 +39,12 @@ export function estimateMessageTokens(msg: OpenAI.Chat.Completions.ChatCompletio
   if ('content' in msg && typeof msg.content === 'string') {
     tokens += estimateTokens(msg.content);
   }
-  if ('tool_calls' in msg && Array.isArray((msg as any).tool_calls)) {
-    for (const tc of (msg as any).tool_calls) {
-      tokens += estimateTokens(tc.function?.name || '') + estimateTokens(tc.function?.arguments || '') + 10;
+  if ('tool_calls' in msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+    for (const tc of msg.tool_calls) {
+      // Type guard for function tool calls
+      if (tc.type === 'function' && 'function' in tc) {
+        tokens += estimateTokens(tc.function.name || '') + estimateTokens(tc.function.arguments || '') + 10;
+      }
     }
   }
   return tokens;

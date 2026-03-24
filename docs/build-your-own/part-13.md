@@ -832,7 +832,7 @@ See `src/tools/edit-file.ts` in the source tree for the complete implementation.
 
 - Import `assertReadBefore` and `recordRead` from `../utils/file-time.js`
 - `findWithCascade()` tries 5 match strategies in order
-- `computeUnifiedDiff()` generates a diff for the tool result
+- Uses the `diff` library's `createPatch()` for unified diff generation
 - Re-reads the file after write and records the read time
 
 ## Step 6: Upgrade `src/tools/read-file.ts`
@@ -846,6 +846,8 @@ See `src/tools/read-file.ts` in the source tree for the complete implementation.
 ## Step 7: Upgrade `src/tools/search-files.ts`
 
 The final version adds ripgrep (`rg`) support when available, falling back to the JS implementation. Ripgrep results are sorted by modification time (most recently changed files first).
+
+Note that even with ripgrep, search is not as fast as you might expect for large codebases. Cursor found that ripgrep alone wasn't sufficient for their needs and invested in custom indexing — see [their writeup](https://x.com/cursor_ai/status/2036122609931165985). For a tutorial project, ripgrep is plenty fast; for production, you may want to explore indexed search.
 
 See `src/tools/search-files.ts` in the source tree for the complete implementation.
 

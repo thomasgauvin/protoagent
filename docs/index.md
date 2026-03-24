@@ -13,6 +13,9 @@ hero:
     - theme: alt
       text: Try it out
       link: /try-it-out/getting-started
+    - theme: alt
+      text: GitHub
+      link: https://github.com/thomasgauvin/protoagent
 
 features:
   - title: CORE AGENTIC LOOP

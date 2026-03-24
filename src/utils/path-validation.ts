@@ -8,17 +8,13 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import isPathInside from 'is-path-inside';
 
 const workingDirectory = process.cwd();
 let allowedRoots: string[] = [];
 
-function isWithinRoot(targetPath: string, rootPath: string): boolean {
-  const relative = path.relative(rootPath, targetPath);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
 function isAllowedPath(targetPath: string): boolean {
-  return isWithinRoot(targetPath, workingDirectory) || allowedRoots.some((root) => isWithinRoot(targetPath, root));
+  return isPathInside(targetPath, workingDirectory) || allowedRoots.some((root) => isPathInside(targetPath, root));
 }
 
 export async function setAllowedPathRoots(roots: string[]): Promise<void> {

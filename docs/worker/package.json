@@ -13,7 +13,8 @@
     "sync:protoagent": "node scripts/sync-protoagent-stubs.mjs"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.41"
+    "@sinclair/typebox": "^0.34.41",
+    "diff": "^5.2.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.13.3",

@@ -192,7 +192,9 @@ async function listSkillResources(skillDir: string): Promise<string[]> {
     }
   }
 
-  await Promise.all(['scripts', 'references', 'assets'].map((dir) => walk(dir)));
+  for (const dir of ['scripts', 'references', 'assets']) {
+    await walk(dir);
+  }
   return files.sort();
 }
 

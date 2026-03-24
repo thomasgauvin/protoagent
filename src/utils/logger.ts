@@ -11,6 +11,7 @@
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import stripAnsi from 'strip-ansi';
 
 export enum LogLevel {
   ERROR = 0,
@@ -78,7 +79,8 @@ function writeToFile(message: string): void {
   try {
     appendFileSync(logFilePath!, message);
   } catch (err) {
-    // Silently fail if we can't write to log file
+    // Emit to stderr since we can't write to log file
+    process.stderr.write(`Failed to write to log file: ${err}\n`);
   }
 }
 
@@ -89,6 +91,14 @@ function timestamp(): string {
   const ss = String(d.getSeconds()).padStart(2, '0');
   const ms = String(d.getMilliseconds()).padStart(3, '0');
   return `${hh}:${mm}:${ss}.${ms}`;
+}
+
+function safeStringify(obj: unknown): string {
+  try {
+    return JSON.stringify(obj);
+  } catch {
+    return '[Object with circular references]';
+  }
 }
 
 function log(level: LogLevel, label: string, message: string, context?: Record<string, unknown>): void {
@@ -113,8 +123,11 @@ function log(level: LogLevel, label: string, message: string, context?: Record<s
   logListeners.forEach(listener => listener(entry));
 
   // Write to file
-  const ctx = context ? ` ${JSON.stringify(context)}` : '';
-  writeToFile(`[${ts}] ${label.padEnd(5)} ${message}${ctx}\n`);
+  const ctx = context ? ` ${safeStringify(context)}` : '';
+  // Security: Strip ANSI escape codes to prevent terminal injection attacks
+  const sanitizedMessage = stripAnsi(message);
+  const sanitizedCtx = stripAnsi(ctx);
+  writeToFile(`[${ts}] ${label.padEnd(5)} ${sanitizedMessage}${sanitizedCtx}\n`);
 }
 
 export const logger = {

@@ -2,9 +2,10 @@
  * write_file tool — Create or overwrite a file. Requires approval.
  */
 
-import fs from 'node:fs/promises';
+import fs, { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
+import { findSimilarPaths } from '../utils/path-suggestions.js';
 import { requestApproval } from '../utils/approval.js';
 import { recordRead } from '../utils/file-time.js';
 
@@ -25,7 +26,21 @@ export const writeFileTool = {
 };
 
 export async function writeFile(filePath: string, content: string, sessionId?: string): Promise<string> {
-  const validated = await validatePath(filePath);
+  let validated: string;
+  try {
+    validated = await validatePath(filePath);
+  } catch (err: any) {
+    // If file not found, try to suggest similar paths
+    if (err.message?.includes('does not exist') || err.code === 'ENOENT') {
+      const suggestions = await findSimilarPaths(filePath);
+      let msg = `File not found: '${filePath}'`;
+      if (suggestions.length > 0) {
+        msg += '\nDid you mean one of these?\n' + suggestions.map(s => `  ${s}`).join('\n');
+      }
+      return msg;
+    }
+    throw err;
+  }
 
   // Request approval
   const preview = content.length > 500
@@ -48,11 +63,25 @@ export async function writeFile(filePath: string, content: string, sessionId?: s
   // Ensure parent directory exists
   await fs.mkdir(path.dirname(validated), { recursive: true });
 
-  // Atomic write: write to temp file then rename
+  // Security: Atomic write with symlink protection
+  // Uses O_CREAT|O_EXCL ('wx' flag) to prevent symlink attacks
   const tmpPath = path.join(path.dirname(validated), `.protoagent-write-${process.pid}-${Date.now()}-${path.basename(validated)}`);
+
+  let fd: FileHandle | undefined;
   try {
-    await fs.writeFile(tmpPath, content, 'utf8');
+    // Open with O_CREAT|O_EXCL - atomically creates or fails if exists
+    fd = await fs.open(tmpPath, 'wx', 0o600);
+    await fd.writeFile(content, 'utf8');
+    await fd.sync();
+    await fd.close();
+    fd = undefined;
     await fs.rename(tmpPath, validated);
+  } catch (err: any) {
+    if (fd !== undefined) {
+      try { await fd.close(); } catch { /* ignore */ }
+    }
+    try { await fs.unlink(tmpPath); } catch { /* ignore */ }
+    throw err;
   } finally {
     await fs.rm(tmpPath, { force: true }).catch(() => undefined);
   }

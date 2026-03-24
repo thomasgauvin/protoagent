@@ -59,7 +59,7 @@ You'll want:
 5. **[Core Tools: Files, TODOs, and Web Fetching](/build-your-own/part-5)** — path validation, approval system, file tools, TODO tracking, and web fetching
 6. **[Shell Commands & Approvals](/build-your-own/part-6)** — `bash` tool with three-tier security (hard-blocked, auto-approved, requires approval)
 7. **[System Prompt & Runtime Policy](/build-your-own/part-7)** — dynamic system prompt with directory tree and tool descriptions
-8. **[Compaction & Cost Tracking](/build-your-own/part-8)** — token estimation, cost display, logger, and long-context compaction
+8. **[Compaction & Cost Tracking](/build-your-own/part-8)** — token estimation, cost display, and long-context compaction
 
 ### Persistence and reuse
 

@@ -124,7 +124,6 @@ import {
   unregisterDynamicTool,
 } from './tools/index.js';
 import { setAllowedPathRoots } from './utils/path-validation.js';
-import { logger } from './utils/logger.js';
 
 export interface Skill {
   name: string;
@@ -225,10 +224,8 @@ async function loadSkillFromDirectory(skillDir: string, source: 'project' | 'use
     const rawContent = await fs.readFile(location, 'utf8');
     const parsed = parseFrontmatter(rawContent);
     const skill = validateSkill(parsed, skillDir, source, location);
-    logger.debug(`Loaded skill: ${skill.name} (${source})`, { location });
     return skill;
   } catch (error) {
-    logger.warn(`Skipping invalid skill at ${location}`, { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
@@ -311,7 +308,9 @@ async function listSkillResources(skillDir: string): Promise<string[]> {
     }
   }
 
-  await Promise.all(['scripts', 'references', 'assets'].map((dir) => walk(dir)));
+  for (const dir of ['scripts', 'references', 'assets']) {
+    await walk(dir);
+  }
   return files.sort();
 }
 

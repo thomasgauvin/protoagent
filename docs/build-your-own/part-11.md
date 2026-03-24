@@ -303,7 +303,6 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadRuntimeConfig, getRuntimeConfig, type RuntimeMcpServerConfig } from './runtime-config.js';
-import { logger } from './utils/logger.js';
 import { registerDynamicTool, registerDynamicHandler } from './tools/index.js';
 
 type StdioServerConfig = Extract<RuntimeMcpServerConfig, { type: 'stdio' }>;
@@ -348,7 +347,7 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
     const response = await conn.client.listTools();
     const tools = response.tools || [];
 
-    logger.info(`MCP [${conn.serverName}] discovered ${tools.length} tools`);
+    // Silent in part 11 - logger added in part 13
 
     for (const tool of tools) {
       const toolName = `mcp_${conn.serverName}_${tool.name}`;
@@ -377,7 +376,7 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
       });
     }
   } catch (err) {
-    logger.error(`Failed to register tools for MCP [${conn.serverName}]: ${err}`);
+    // Silent error handling in part 11
   }
 }
 
@@ -388,11 +387,8 @@ export async function initializeMcp(): Promise<void> {
 
   if (Object.keys(servers).length === 0) return;
 
-  logger.info('Loading MCP servers from merged runtime config');
-
   for (const [name, serverConfig] of Object.entries(servers)) {
     if (serverConfig.enabled === false) {
-      logger.debug(`Skipping disabled MCP server: ${name}`);
       continue;
     }
 
@@ -400,32 +396,28 @@ export async function initializeMcp(): Promise<void> {
       let conn: McpConnection;
 
       if (serverConfig.type === 'stdio') {
-        logger.debug(`Connecting to stdio MCP server: ${name}`);
         conn = await connectStdioServer(name, serverConfig);
       } else if (serverConfig.type === 'http') {
-        logger.debug(`Connecting to HTTP MCP server: ${name} (${serverConfig.url})`);
         conn = await connectHttpServer(name, serverConfig);
       } else {
-        logger.error(`Unknown MCP server type for "${name}": ${(serverConfig as any).type}`);
         continue;
       }
 
       connections.set(name, conn);
       await registerMcpTools(conn);
     } catch (err) {
-      logger.error(`Failed to connect to MCP server "${name}": ${err}`);
+      // Silent error handling in part 11
     }
   }
 }
 
 // Closes all active MCP connections and clears the connection map.
 export async function closeMcp(): Promise<void> {
-  for (const [name, conn] of connections) {
+  for (const [, conn] of connections) {
     try {
-      logger.debug(`Closing MCP connection: ${name}`);
       await conn.client.close();
-    } catch (err) {
-      logger.error(`Error closing MCP connection [${name}]: ${err}`);
+    } catch {
+      // Silent error handling in part 11
     }
   }
   connections.clear();
