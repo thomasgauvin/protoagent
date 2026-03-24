@@ -1,6 +1,6 @@
 # Part 14: Where to Go From Here
 
-You've built a fully functional coding agent from scratch. Over thirteen parts, you've implemented streaming, tool use, file operations, shell execution, web fetching, approval systems, persistent sessions, skills, MCP integration, and sub-agents. That's not trivial—it's a real, working system.
+You've built a fully functional coding agent from scratch. Over thirteen parts, you've implemented streaming, tool use, file operations, shell execution, web fetching, approval systems, persistent sessions, skills, MCP integration, and sub-agents. It's a real, working coding agent.
 
 ## What You've Built
 
