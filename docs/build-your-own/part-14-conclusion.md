@@ -41,7 +41,7 @@ Prompt injection is also real. A malicious file in your repo could instruct the 
 
 **Here's the thing, though: don't let this paralyze you.**
 
-The same risks exist in every coding agent—Claude Code, Cursor, Copilot. The difference is you *understand* ProtoAgent's security model because you built it. You know exactly what protections exist and where the boundaries are. That's actually a stronger position than using a black-box tool.
+The same risks exist in every coding agent—Claude Code, Cursor, Copilot. The difference is you *understand* ProtoAgent's security model because you built it. You know exactly what protections exist and where the boundaries are. And you could always take it further and experiment as you learn about securing LLM-based applications.
 
 Practical advice:
 - Run ProtoAgent in a Docker container or VM when working with untrusted code
