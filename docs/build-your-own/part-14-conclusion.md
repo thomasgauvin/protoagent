@@ -37,7 +37,7 @@ We've covered a lot of security ground in this tutorial—path validation, comma
 
 But let's be real: **coding agents are inherently powerful tools, and powerful tools carry risk.** You're giving them access to practically everything you have access to. That's why every coding agent relies on human approval and oversight. That is, until you use `--dangerously-skip-permissions` and rely on the LLM to not get any destructive ideas. See the many instances of [coding agents deleting entire production databases](https://www.reddit.com/r/OpenAI/comments/1m4lqvh/replit_ai_went_rogue_deleted_a_companys_entire/). 
 
-Prompt injection is real. A malicious file in your repo could instruct the agent to do something you didn't intend. An MCP server could misbehave. A carefully crafted prompt could bypass safeguards. We've built multiple layers of defense, but no defense is perfect.
+Prompt injection is also real. A malicious file in your repo could instruct the agent to do something you didn't intend. A website could have a carefully crafted prompt that bypasses safeguards and tells your coding agent to send sensitive data to a remote server. An MCP server could misbehave. We've built multiple layers of defense, but no defense is perfect. Prompt injection prevention is a [huge area research with great resources. ](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html)
 
 **Here's the thing, though: don't let this paralyze you.**
 
