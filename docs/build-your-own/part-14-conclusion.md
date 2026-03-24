@@ -49,7 +49,7 @@ Practical advice:
 - Keep sensitive credentials out of the working directory
 - Use the `--dangerously-skip-permissions` flag sparingly (it's named that way for a reason)
 
-The security model is solid for personal use and trusted projects. For production deployments or sensitive environments, you'll want additional hardening—which brings me to pi-mono.
+The security model is solid for personal use and trusted projects. For production deployments or sensitive environments, you'll want additional hardening, so stick to the trusted Claude Code's and Codex's of the world.
 
 ## When You Need More: pi-mono
 
