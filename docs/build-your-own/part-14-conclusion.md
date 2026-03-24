@@ -35,7 +35,7 @@ Every workflow is different. The agent that works for me might not work for you.
 
 We've covered a lot of security ground in this tutorial—path validation, command filtering, ReDoS protection, credential redaction, MCP sandboxing. These aren't theoretical concerns; they're real protections against real attack vectors.
 
-But I want to be straight with you: **coding agents are inherently powerful tools, and powerful tools carry risk.**
+But let's be real: **coding agents are inherently powerful tools, and powerful tools carry risk.** You're giving them access to practically everything you have access to. That's why every coding agent relies on human approval and oversight. That is, until you use `--dangerously-skip-permissions` and rely on the LLM to not get any destructive ideas.
 
 Prompt injection is real. A malicious file in your repo could instruct the agent to do something you didn't intend. An MCP server could misbehave. A carefully crafted prompt could bypass safeguards. We've built multiple layers of defense, but no defense is perfect.
 
