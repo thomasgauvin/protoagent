@@ -14,7 +14,7 @@ import { handleToolCall, getAllTools } from './tools/index.js';
 import { generateSystemPrompt } from './system-prompt.js';
 import { logger } from './utils/logger.js';
 import { clearTodos } from './tools/todo.js';
-import type { ModelPricing } from './utils/cost-tracker.js';
+import { calculateCost, type ModelPricing, type UsageInfo } from './utils/cost-tracker.js';
 
 export const subAgentTool = {
   type: 'function' as const,
@@ -43,11 +43,8 @@ export const subAgentTool = {
 
 export type SubAgentProgressHandler = (event: { tool: string; status: 'running' | 'done' | 'error'; iteration: number; args?: Record<string, unknown> }) => void;
 
-export interface SubAgentUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cost: number;
-}
+/** Sub-agent usage stats (uses main UsageInfo type for consistency). */
+export type SubAgentUsage = UsageInfo;
 
 export interface SubAgentResult {
   response: string;
@@ -94,7 +91,7 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
     for (let i = 0; i < maxIterations; i++) {
       // Check abort at the top of each iteration
       if (abortSignal?.aborted) {
-        return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+        return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
       }
 
       let assistantMessage: any;
@@ -160,24 +157,19 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
         // Accumulate usage for this iteration
         const iterationInputTokens = actualUsage?.prompt_tokens || 0;
         const iterationOutputTokens = actualUsage?.completion_tokens || 0;
+        const iterationCachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens || 0;
         totalInputTokens += iterationInputTokens;
         totalOutputTokens += iterationOutputTokens;
 
-        // Calculate cost if pricing is available
+        // Calculate cost if pricing is available (handles cached token discount)
         if (pricing && (iterationInputTokens > 0 || iterationOutputTokens > 0)) {
-          const cachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens;
-          if (cachedTokens && cachedTokens > 0 && pricing.cachedPerToken != null) {
-            const uncachedTokens = iterationInputTokens - cachedTokens;
-            totalCost += uncachedTokens * pricing.inputPerToken + cachedTokens * pricing.cachedPerToken + iterationOutputTokens * pricing.outputPerToken;
-          } else {
-            totalCost += iterationInputTokens * pricing.inputPerToken + iterationOutputTokens * pricing.outputPerToken;
-          }
+          totalCost += calculateCost(iterationInputTokens, iterationOutputTokens, pricing, iterationCachedTokens);
         }
       } catch (err) {
         // If aborted during streaming, return gracefully
         if (abortSignal?.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message === 'Operation aborted'))) {
           logger.debug('Sub-agent aborted during streaming');
-          return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+          return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
         }
         throw err;
       }
@@ -214,7 +206,7 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
         for (const toolCall of assistantMessage.tool_calls) {
           // Check abort between tool calls
           if (abortSignal?.aborted) {
-            return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+            return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
           }
 
           const { name, arguments: argsStr } = toolCall.function;
@@ -254,16 +246,16 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
           role: 'assistant',
           content: message.content,
         });
-        return { response: message.content, usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+        return { response: message.content, usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
       }
       // The model produced an empty text response (e.g. it only called tools
       // and issued no final summary).  Log it and return a sentinel so the
       // parent agent knows the sub-agent finished but had nothing to say.
       logger.debug('Sub-agent returned empty content', { iteration: i });
-      return { response: '(sub-agent completed with no response)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+      return { response: '(sub-agent completed with no response)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
     }
 
-    return { response: '(sub-agent reached iteration limit)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+    return { response: '(sub-agent reached iteration limit)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
   } finally {
     op.end();
     clearTodos(subAgentSessionId);

@@ -19,7 +19,7 @@ Starting from Part 10, you add:
 ## Install new dependencies
 
 ```bash
-npm install @modelcontextprotocol/sdk jsonc-parser
+npm install @modelcontextprotocol/sdk jsonc-parser zod
 ```
 
 ## Step 1: Create `src/runtime-config.ts`
@@ -42,12 +42,26 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse, printParseErrorCode } from 'jsonc-parser';
+import { z } from 'zod';
+import { logger } from './utils/logger.js';
+
+// ─── Zod Schemas for Runtime Validation ───
+
+export const RuntimeConfigFileSchema = z.object({
+  providers: z.record(z.unknown()).optional(),
+  mcp: z.object({
+    servers: z.record(z.unknown()).optional(),
+  }).optional(),
+});
+
+// ─── TypeScript Interfaces ───
 
 export interface RuntimeModelConfig {
   name?: string;
   contextWindow?: number;
   inputPricePerMillion?: number;
   outputPricePerMillion?: number;
+  cachedPricePerMillion?: number;
   defaultParams?: Record<string, unknown>;
 }
 
@@ -64,6 +78,10 @@ export interface RuntimeProviderConfig {
   name?: string;
   baseURL?: string;
   apiKey?: string;
+  /**
+   * Name of an environment variable to read the API key from.
+   * Resolved at runtime by config.tsx's resolveApiKey() function.
+   */
   apiKeyEnvVar?: string;
   headers?: Record<string, string>;
   defaultParams?: Record<string, unknown>;
@@ -132,18 +150,25 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-// Replaces environment variable placeholders in a string with their values.
+/**
+ * Replaces ${ENV_VAR} placeholders in a string with actual environment variable values.
+ * Logs a warning if the environment variable is not set (replaces with empty string).
+ */
 function interpolateString(value: string, sourcePath: string): string {
   return value.replace(/\$\{([A-Z0-9_]+)\}/gi, (_match, envVar: string) => {
     const resolved = process.env[envVar];
     if (resolved === undefined) {
+      logger.warn(`Missing environment variable ${envVar} while loading ${sourcePath}`);
       return '';
     }
     return resolved;
   });
 }
 
-// Recursively interpolates environment variables in any value type.
+/**
+ * Recursively interpolates environment variables in all string values within a config object.
+ * Handles nested objects and arrays. Filters out empty header values.
+ */
 function interpolateValue<T>(value: T, sourcePath: string): T {
   if (typeof value === 'string') return interpolateString(value, sourcePath) as T;
   if (Array.isArray(value)) return value.map((entry) => interpolateValue(entry, sourcePath)) as T;
@@ -165,7 +190,11 @@ function interpolateValue<T>(value: T, sourcePath: string): T {
   return value;
 }
 
-// Removes reserved parameter keys from provider and model defaultParams.
+/**
+ * Removes reserved API parameters from provider and model defaultParams.
+ * Prevents users from accidentally overriding critical parameters like
+ * 'model', 'messages', 'tools' that are managed by the agentic loop.
+ */
 function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfigFile {
   const nextProviders = Object.fromEntries(
     Object.entries(config.providers || {}).map(([providerId, provider]) => {
@@ -195,21 +224,6 @@ function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfig
   return { ...config, providers: nextProviders };
 }
 
-// Merges two runtime configs, with overlay taking precedence.
-function mergeRuntimeConfig(base: RuntimeConfigFile, overlay: RuntimeConfigFile): RuntimeConfigFile {
-  const mergedProviders: Record<string, RuntimeProviderConfig> = { ...(base.providers || {}) };
-  for (const [providerId, providerConfig] of Object.entries(overlay.providers || {})) {
-    const current = mergedProviders[providerId] || {};
-    mergedProviders[providerId] = { ...current, ...providerConfig, models: { ...(current.models || {}), ...(providerConfig.models || {}) } };
-  }
-  const mergedServers: Record<string, RuntimeMcpServerConfig> = { ...(base.mcp?.servers || {}) };
-  for (const [name, serverConfig] of Object.entries(overlay.mcp?.servers || {})) {
-    const current = mergedServers[name];
-    mergedServers[name] = current && isPlainObject(current) ? { ...current, ...serverConfig } : serverConfig;
-  }
-  return { providers: mergedProviders, mcp: { servers: mergedServers } };
-}
-
 // Reads and parses a runtime config file with interpolation and validation.
 async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigFile | null> {
   try {
@@ -221,14 +235,22 @@ async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigF
       throw new Error(`Failed to parse ${configPath}: ${details}`);
     }
     if (!isPlainObject(parsed)) throw new Error(`Failed to parse ${configPath}: top-level value must be an object`);
-    return sanitizeDefaultParamsInConfig(interpolateValue(parsed as RuntimeConfigFile, configPath));
+    
+    // Validate against zod schema for better error messages
+    const result = RuntimeConfigFileSchema.safeParse(parsed);
+    if (!result.success) {
+      const issues = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
+      throw new Error(`Invalid runtime config in ${configPath}: ${issues}`);
+    }
+    
+    return sanitizeDefaultParamsInConfig(interpolateValue(result.data as RuntimeConfigFile, configPath));
   } catch (error: any) {
     if (error?.code === 'ENOENT') return null;
     throw error;
   }
 }
 
-// Loads the runtime config from file or cache, merging with defaults.
+// Loads the runtime config from file or cache.
 export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeConfigFile> {
   if (!forceReload && runtimeConfigCache) return runtimeConfigCache;
 
@@ -238,7 +260,7 @@ export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeCon
   if (configPath) {
     const fileConfig = await readRuntimeConfigFile(configPath);
     if (fileConfig) {
-      loaded = mergeRuntimeConfig(DEFAULT_RUNTIME_CONFIG, fileConfig);
+      loaded = fileConfig;
     }
   }
 
@@ -263,7 +285,7 @@ Now that `runtime-config.ts` is the single source of truth for config paths and 
 
 1. Add the import at the top:
 ```typescript
-import { getActiveRuntimeConfigPath, type RuntimeConfigFile, type RuntimeProviderConfig } from './runtime-config.js';
+import { getActiveRuntimeConfigPath, type RuntimeConfigFile, type RuntimeProviderConfig, RuntimeConfigFileSchema } from './runtime-config.js';
 ```
 
 2. Remove these duplicate functions and interfaces:
@@ -290,7 +312,7 @@ options={[
 ]}
 ```
 
-The `isPlainObject()` helper stays in config.tsx since it's still used by `readRuntimeConfigFileSync()`.
+The `isPlainObject()` helper stays in config.tsx since it's still used by `readRuntimeConfigFileSync()`. That function also validates the parsed config against the zod schema for clear error messages when users misconfigure their `protoagent.jsonc`.
 
 ## Step 3: Create `src/mcp.ts`
 
@@ -424,7 +446,162 @@ export async function closeMcp(): Promise<void> {
 }
 ```
 
-## Step 4: Update `src/App.tsx`
+## Step 4: Update `src/providers.ts`
+
+Replace the entire file with the runtime-config-aware version that merges user-defined providers from `protoagent.jsonc` with the built-in catalog:
+
+```typescript
+/**
+ * Provider and model registry.
+ *
+ * Built-in providers are declared in source and merged with runtime overrides
+ * from `protoagent.jsonc`.
+ */
+
+import { getRuntimeConfig } from './runtime-config.js';
+
+export interface ModelDetails {
+  id: string;
+  name: string;
+  contextWindow: number;
+  pricingPerMillionInput: number;
+  pricingPerMillionOutput: number;
+  pricingPerMillionCached?: number;
+  defaultParams?: Record<string, unknown>;
+}
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  baseURL?: string;
+  apiKey?: string;
+  apiKeyEnvVar?: string;
+  headers?: Record<string, string>;
+  defaultParams?: Record<string, unknown>;
+  models: ModelDetails[];
+}
+
+export const BUILTIN_PROVIDERS: ModelProvider[] = [
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    apiKeyEnvVar: 'OPENAI_API_KEY',
+    models: [
+      { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 1_048_576, pricingPerMillionInput: 2.50, pricingPerMillionOutput: 15.00 },
+      { id: 'gpt-5-mini', name: 'GPT-5 Mini', contextWindow: 1_000_000, pricingPerMillionInput: 0.25, pricingPerMillionOutput: 2.00 },
+      { id: 'gpt-4.1', name: 'GPT-4.1', contextWindow: 1_048_576, pricingPerMillionInput: 2.0, pricingPerMillionOutput: 8.00 },
+    ],
+  },
+  {
+    id: 'anthropic',
+    name: 'Anthropic Claude',
+    baseURL: 'https://api.anthropic.com/v1/',
+    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
+    models: [
+      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', contextWindow: 200_000, pricingPerMillionInput: 5.0, pricingPerMillionOutput: 25.0 },
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', contextWindow: 200_000, pricingPerMillionInput: 3.0, pricingPerMillionOutput: 15.0 },
+      { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', contextWindow: 200_000, pricingPerMillionInput: 1.0, pricingPerMillionOutput: 5.0 },
+    ],
+  },
+  {
+    id: 'google',
+    name: 'Google Gemini',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    apiKeyEnvVar: 'GEMINI_API_KEY',
+    models: [
+      { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 0.50, pricingPerMillionOutput: 3.0 },
+      { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Preview)', contextWindow: 1_000_000, pricingPerMillionInput: 2.0, pricingPerMillionOutput: 12.0 },
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1_000_000, pricingPerMillionInput: 0.30, pricingPerMillionOutput: 2.5 },
+      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', contextWindow: 1_000_000, pricingPerMillionInput: 1.25, pricingPerMillionOutput: 10.0 },
+    ],
+  },
+];
+
+function sanitizeDefaultParams(defaultParams?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!defaultParams || Object.keys(defaultParams).length === 0) return undefined;
+  return defaultParams;
+}
+
+function toProviderMap(providers: ModelProvider[]): Map<string, ModelProvider> {
+  return new Map(providers.map((provider) => [provider.id, provider]));
+}
+
+function mergeModelLists(baseModels: ModelDetails[], overrideModels?: Record<string, any>): ModelDetails[] {
+  const merged = new Map(baseModels.map((model) => [model.id, model]));
+  for (const [modelId, override] of Object.entries(overrideModels || {})) {
+    const current = merged.get(modelId);
+    merged.set(modelId, {
+      id: modelId,
+      name: override.name ?? current?.name ?? modelId,
+      contextWindow: override.contextWindow ?? current?.contextWindow ?? 0,
+      pricingPerMillionInput: override.inputPricePerMillion ?? current?.pricingPerMillionInput ?? 0,
+      pricingPerMillionOutput: override.outputPricePerMillion ?? current?.pricingPerMillionOutput ?? 0,
+      pricingPerMillionCached: override.cachedPricePerMillion ?? current?.pricingPerMillionCached,
+      defaultParams: sanitizeDefaultParams({
+        ...(current?.defaultParams || {}),
+        ...(override.defaultParams || {}),
+      }),
+    });
+  }
+  return Array.from(merged.values());
+}
+
+export function getAllProviders(): ModelProvider[] {
+  const runtimeProviders = getRuntimeConfig().providers || {};
+  const mergedProviders = toProviderMap(BUILTIN_PROVIDERS);
+
+  for (const [providerId, providerConfig] of Object.entries(runtimeProviders)) {
+    const current = mergedProviders.get(providerId);
+    mergedProviders.set(providerId, {
+      id: providerId,
+      name: providerConfig.name ?? current?.name ?? providerId,
+      baseURL: providerConfig.baseURL ?? current?.baseURL,
+      apiKey: providerConfig.apiKey ?? current?.apiKey,
+      apiKeyEnvVar: providerConfig.apiKeyEnvVar ?? current?.apiKeyEnvVar,
+      headers: providerConfig.headers ?? current?.headers,
+      defaultParams: sanitizeDefaultParams({
+        ...(current?.defaultParams || {}),
+        ...(providerConfig.defaultParams || {}),
+      }),
+      models: mergeModelLists(current?.models || [], providerConfig.models),
+    });
+  }
+
+  return Array.from(mergedProviders.values());
+}
+
+export function getProvider(providerId: string): ModelProvider | undefined {
+  return getAllProviders().find((provider) => provider.id === providerId);
+}
+
+export function getModelDetails(providerId: string, modelId: string): ModelDetails | undefined {
+  return getProvider(providerId)?.models.find((model) => model.id === modelId);
+}
+
+export function getModelPricing(providerId: string, modelId: string) {
+  const details = getModelDetails(providerId, modelId);
+  if (!details) return undefined;
+  return {
+    inputPerToken: details.pricingPerMillionInput / 1_000_000,
+    outputPerToken: details.pricingPerMillionOutput / 1_000_000,
+    cachedPerToken: details.pricingPerMillionCached != null ? details.pricingPerMillionCached / 1_000_000 : undefined,
+    contextWindow: details.contextWindow,
+  };
+}
+
+export function getRequestDefaultParams(providerId: string, modelId: string): Record<string, unknown> {
+  const provider = getProvider(providerId);
+  const model = getModelDetails(providerId, modelId);
+  return {
+    ...(provider?.defaultParams || {}),
+    ...(model?.defaultParams || {}),
+  };
+}
+```
+
+Note the key mapping in `mergeModelLists`: runtime config uses `inputPricePerMillion`/`outputPricePerMillion`/`cachedPricePerMillion` while the internal `ModelDetails` interface uses `pricingPerMillionInput`/`pricingPerMillionOutput`/`pricingPerMillionCached`.
+
+## Step 5: Update `src/App.tsx`
 
 Add MCP initialization on startup and cleanup on unmount:
 
@@ -475,7 +652,7 @@ Replace the init `useEffect`:
   }, []);
 ```
 
-## Step 5: Configure MCP servers
+## Step 6: Configure MCP servers
 
 Create `.protoagent/protoagent.jsonc` in your project and configure a sample MCP server. 
 
@@ -497,13 +674,219 @@ Create `.protoagent/protoagent.jsonc` in your project and configure a sample MCP
 }
 ```
 
+## Step 7: Add `protoagent init` command
+
+Add the `init` subcommand to create a project-local or user-wide runtime config file. This provides an interactive wizard for setting up `protoagent.jsonc`.
+
+Update `src/config.tsx` with the runtime config template and helper functions:
+
+```typescript
+// src/config.tsx
+
+// Add to existing imports:
+import { Select, TextInput } from '@inkjs/ui';
+import { getActiveRuntimeConfigPath } from './runtime-config.js';
+import { getAllProviders } from './providers.js';
+
+// Add these type definitions:
+export type InitConfigTarget = 'project' | 'user';
+export type InitConfigWriteStatus = 'created' | 'exists' | 'overwritten';
+
+// Add these helper functions after getProjectRuntimeConfigPath():
+export const getInitConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
+  return target === 'project' ? getProjectRuntimeConfigPath(cwd) : getUserRuntimeConfigPath();
+};
+
+const RUNTIME_CONFIG_TEMPLATE = `{
+  // Add project or user-wide ProtoAgent runtime config here.
+  // Example uses:
+  // - choose the active provider/model by making it the first provider
+  //   and the first model under that provider
+  // - custom providers/models
+  // - MCP server definitions
+  // - request default parameters
+  "providers": {
+    // "provider-id": {
+    //   "name": "Display Name",
+    //   "baseURL": "https://api.example.com/v1",
+    //   "apiKey": "your-api-key",
+    //   "apiKeyEnvVar": "ENV_VAR_NAME",
+    //   "headers": {
+    //     "X-Custom-Header": "value"
+    //   },
+    //   "defaultParams": {},
+    //   "models": {
+    //     "model-id": {
+    //       "name": "Display Name",
+    //       "contextWindow": 128000,
+    //       "inputPricePerMillion": 2.5,
+    //       "outputPricePerMillion": 10.0,
+    //       "cachedPricePerMillion": 1.25,
+    //       "defaultParams": {}
+    //     }
+    //   }
+    // }
+  },
+  "mcp": {
+    "servers": {
+      // "server-name": {
+      //   "type": "stdio",
+      //   "command": "npx",
+      //   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
+      //   "env": { "KEY": "value" },
+      //   "cwd": "/working/directory",
+      //   "enabled": true,
+      //   "timeoutMs": 30000
+      // }
+    }
+  }
+}
+`;
+
+export function writeInitConfig(
+  target: InitConfigTarget,
+  cwd = process.cwd(),
+  options: { overwrite?: boolean } = {}
+): { path: string; status: InitConfigWriteStatus } {
+  const configPath = getInitConfigPath(target, cwd);
+  const alreadyExists = existsSync(configPath);
+  if (alreadyExists) {
+    if (!options.overwrite) {
+      return { path: configPath, status: 'exists' };
+    }
+  } else {
+    ensureDirectory(path.dirname(configPath));
+  }
+
+  writeFileSync(configPath, RUNTIME_CONFIG_TEMPLATE, { encoding: 'utf8', mode: CONFIG_FILE_MODE });
+  hardenPermissions(configPath, CONFIG_FILE_MODE);
+  return { path: configPath, status: alreadyExists ? 'overwritten' : 'created' };
+}
+
+export const InitComponent = () => {
+  const [selectedTarget, setSelectedTarget] = useState<InitConfigTarget | null>(null);
+  const [result, setResult] = useState<{ path: string; status: InitConfigWriteStatus } | null>(null);
+
+  if (selectedTarget && !result) {
+    const selectedPath = getInitConfigPath(selectedTarget);
+    return (
+      <Box flexDirection="column">
+        <Text>Config already exists:</Text>
+        <Text>{selectedPath}</Text>
+        <Text>Overwrite it? (y/n)</Text>
+        <TextInput
+          onSubmit={(answer: string) => {
+            if (answer.trim().toLowerCase() === 'y') {
+              setResult(writeInitConfig(selectedTarget, process.cwd(), { overwrite: true }));
+            } else {
+              setResult({ path: selectedPath, status: 'exists' });
+            }
+          }}
+        />
+      </Box>
+    );
+  }
+
+  if (result) {
+    const color = result.status === 'exists' ? 'yellow' : 'green';
+    const message = result.status === 'created'
+      ? 'Created ProtoAgent config:'
+      : result.status === 'overwritten'
+        ? 'Overwrote ProtoAgent config:'
+        : 'ProtoAgent config already exists:';
+    return (
+      <Box flexDirection="column">
+        <Text color={color}>{message}</Text>
+        <Text>{result.path}</Text>
+      </Box>
+    );
+  }
+
+  return (
+    <TargetSelection
+      title="Create a ProtoAgent runtime config"
+      subtitle="Select where to write `protoagent.jsonc`"
+      onSelect={(target) => {
+        const configPath = getInitConfigPath(target);
+        if (existsSync(configPath)) {
+          setSelectedTarget(target);
+          return;
+        }
+        setResult(writeInitConfig(target));
+      }}
+    />
+  );
+};
+```
+
+Now update `src/cli.tsx` to add the `init` subcommand:
+
+```typescript
+// Add to imports in src/cli.tsx:
+import { InitComponent, writeInitConfig } from './config.js';
+
+// Add after the 'configure' command definition:
+program
+  .command('init')
+  .description('Create a project-local or shared ProtoAgent runtime config')
+  .option('--project', 'Write <cwd>/.protoagent/protoagent.jsonc')
+  .option('--user', 'Write the shared user protoagent.jsonc')
+  .option('--force', 'Overwrite an existing target file')
+  .action((options) => {
+    if (options.project || options.user) {
+      if (options.project && options.user) {
+        console.error('Choose only one of --project or --user.');
+        process.exitCode = 1;
+        return;
+      }
+
+      const result = writeInitConfig(options.project ? 'project' : 'user', process.cwd(), {
+        overwrite: Boolean(options.force),
+      });
+      const message = result.status === 'created'
+        ? 'Created ProtoAgent config:'
+        : result.status === 'overwritten'
+          ? 'Overwrote ProtoAgent config:'
+          : 'ProtoAgent config already exists:';
+      console.log(message);
+      console.log(result.path);
+      return;
+    }
+
+    render(<InitComponent />);
+  });
+```
+
+Now you can create a config file using:
+
+```bash
+# Interactive wizard
+protoagent init
+
+# Or non-interactive
+protoagent init --project
+protoagent init --user --force
+```
+
 ## Verification
+
+First, create a config file:
+
+```bash
+# Interactive wizard
+npm run dev -- init
+
+# Or non-interactive
+npm run dev -- init --project
+```
+
+Then add an MCP server to `.protoagent/protoagent.jsonc` and run:
 
 ```bash
 npm run dev
 ```
 
-If you have MCP servers configured, you should see them connecting during startup (visible in debug logs). The discovered tools will be available to the model alongside the built-in tools.
+If you have MCP servers configured, you should see them connecting during startup. The discovered tools will be available to the model alongside the built-in tools.
 
 ```
  █▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀

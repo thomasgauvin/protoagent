@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getInitConfigPath, readConfig, resolveApiKey, writeConfig, writeInitConfig } from '../src/config.js';
+import { getRuntimeConfigPath, readConfig, resolveApiKey, writeConfig, writeInitConfig } from '../src/config.js';
 import { getActiveRuntimeConfigPath, loadRuntimeConfig, resetRuntimeConfigForTests } from '../src/runtime-config.js';
 
 test.afterEach(() => {
@@ -85,8 +85,8 @@ test('getActiveRuntimeConfigPath prefers project config over user config', () =>
   }
 });
 
-test('getInitConfigPath returns project-local protoagent.jsonc path', () => {
-  const projectPath = getInitConfigPath('project', '/tmp/demo-project');
+test('getRuntimeConfigPath returns project-local protoagent.jsonc path', () => {
+  const projectPath = getRuntimeConfigPath('project', '/tmp/demo-project');
   assert.equal(projectPath, path.join('/tmp/demo-project', '.protoagent', 'protoagent.jsonc'));
 });
 

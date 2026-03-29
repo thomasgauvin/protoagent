@@ -2,6 +2,20 @@ import React from 'react';
 import { Text } from 'ink';
 
 /**
+ * Normalize text for transcript display.
+ * - Collapses multiple consecutive newlines into a single newline
+ * - Trims leading/trailing whitespace
+ * - Returns empty string if text is empty/whitespace only
+ */
+export function normalizeTranscriptText(text: string): string {
+  if (!text || !text.trim()) {
+    return '';
+  }
+  // Collapse multiple newlines to single, trim ends
+  return text.replace(/\n{2,}/g, '\n').trim();
+}
+
+/**
  * Parse Markdown-style formatting and render as Ink Text elements.
  *
  * Supports:

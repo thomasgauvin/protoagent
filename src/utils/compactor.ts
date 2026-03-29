@@ -41,10 +41,10 @@ export async function compactIfNeeded(
   model: string,
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   contextWindow: number,
-  currentTokens: number,
   requestDefaults: Record<string, unknown> = {},
   sessionId?: string
 ): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
+  const currentTokens = estimateConversationTokens(messages);
   const utilisation = (currentTokens / contextWindow) * 100;
   if (utilisation < 90) return messages;
 

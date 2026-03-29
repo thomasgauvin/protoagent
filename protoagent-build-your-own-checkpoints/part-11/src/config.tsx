@@ -5,8 +5,9 @@ import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import { Select, TextInput, PasswordInput } from '@inkjs/ui';
 import { parse } from 'jsonc-parser';
+import { z } from 'zod';
 import { getAllProviders, getProvider } from './providers.js';
-import { getActiveRuntimeConfigPath, type RuntimeConfigFile, type RuntimeProviderConfig } from './runtime-config.js';
+import { getActiveRuntimeConfigPath, type RuntimeConfigFile, type RuntimeProviderConfig, RuntimeConfigFileSchema } from './runtime-config.js';
 
 export interface Config {
   provider: string;
@@ -74,10 +75,138 @@ export const getProjectRuntimeConfigDirectory = (cwd = process.cwd()) => {
   return path.join(cwd, '.protoagent');
 };
 
-export const getInitConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
+export const getRuntimeConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
   const projectPath = path.join(getProjectRuntimeConfigDirectory(cwd), 'protoagent.jsonc');
   const userPath = path.join(getUserRuntimeConfigDirectory(), 'protoagent.jsonc');
   return target === 'project' ? projectPath : userPath;
+};
+
+const RUNTIME_CONFIG_TEMPLATE = `{
+  // Add project or user-wide ProtoAgent runtime config here.
+  // Example uses:
+  // - choose the active provider/model by making it the first provider
+  //   and the first model under that provider
+  // - custom providers/models
+  // - MCP server definitions
+  // - request default parameters
+  "providers": {
+    // "provider-id": {
+    //   "name": "Display Name",
+    //   "baseURL": "https://api.example.com/v1",
+    //   "apiKey": "your-api-key",
+    //   "apiKeyEnvVar": "ENV_VAR_NAME",
+    //   "headers": {
+    //     "X-Custom-Header": "value"
+    //   },
+    //   "defaultParams": {},
+    //   "models": {
+    //     "model-id": {
+    //       "name": "Display Name",
+    //       "contextWindow": 128000,
+    //       "inputPricePerMillion": 2.5,
+    //       "outputPricePerMillion": 10.0,
+    //       "cachedPricePerMillion": 1.25,
+    //       "defaultParams": {}
+    //     }
+    //   }
+    // }
+  },
+  "mcp": {
+    "servers": {
+      // "server-name": {
+      //   "type": "stdio",
+      //   "command": "npx",
+      //   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
+      //   "env": { "KEY": "value" },
+      //   "cwd": "/working/directory",
+      //   "enabled": true,
+      //   "timeoutMs": 30000
+      // }
+    }
+  }
+}
+`;
+
+export function writeInitConfig(
+  target: InitConfigTarget,
+  cwd = process.cwd(),
+  options: { overwrite?: boolean } = {}
+): { path: string; status: InitConfigWriteStatus } {
+  const configPath = getRuntimeConfigPath(target, cwd);
+  const alreadyExists = existsSync(configPath);
+  if (alreadyExists) {
+    if (!options.overwrite) {
+      return { path: configPath, status: 'exists' };
+    }
+  } else {
+    ensureDirectory(path.dirname(configPath));
+  }
+
+  writeFileSync(configPath, RUNTIME_CONFIG_TEMPLATE, { encoding: 'utf8', mode: CONFIG_FILE_MODE });
+  hardenPermissions(configPath, CONFIG_FILE_MODE);
+  return { path: configPath, status: alreadyExists ? 'overwritten' : 'created' };
+}
+
+export const InitComponent = () => {
+  const [selectedTarget, setSelectedTarget] = useState<InitConfigTarget | null>(null);
+  const [result, setResult] = useState<{ path: string; status: InitConfigWriteStatus } | null>(null);
+
+  // Step 1: Target selection
+  if (!selectedTarget && !result) {
+    return (
+      <TargetSelection
+        title="Create a ProtoAgent runtime config"
+        subtitle="Select where to write `protoagent.jsonc`"
+        onSelect={(target) => {
+          const configPath = getRuntimeConfigPath(target);
+          if (existsSync(configPath)) {
+            setSelectedTarget(target);
+            return;
+          }
+          setResult(writeInitConfig(target));
+        }}
+      />
+    );
+  }
+
+  // Step 2: Overwrite confirmation
+  if (selectedTarget && !result) {
+    const selectedPath = getRuntimeConfigPath(selectedTarget);
+    return (
+      <Box flexDirection="column">
+        <Text>Config already exists:</Text>
+        <Text>{selectedPath}</Text>
+        <Text>Overwrite it? (y/n)</Text>
+        <TextInput
+          onSubmit={(answer: string) => {
+            if (answer.trim().toLowerCase() === 'y') {
+              setResult(writeInitConfig(selectedTarget, process.cwd(), { overwrite: true }));
+            } else {
+              setResult({ path: selectedPath, status: 'exists' });
+            }
+          }}
+        />
+      </Box>
+    );
+  }
+
+  // Step 3: Result display
+  if (result) {
+    const color = result.status === 'exists' ? 'yellow' : 'green';
+    const message = result.status === 'created'
+      ? 'Created ProtoAgent config:'
+      : result.status === 'overwritten'
+        ? 'Overwrote ProtoAgent config:'
+        : 'ProtoAgent config already exists:';
+    return (
+      <Box flexDirection="column">
+        <Text color={color}>{message}</Text>
+        <Text>{result.path}</Text>
+      </Box>
+    );
+  }
+
+  return null;
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -92,7 +221,15 @@ function readRuntimeConfigFileSync(configPath: string): RuntimeConfigFile | null
     const errors: Array<{ error: number; offset: number; length: number }> = [];
     const parsed = parse(content, errors, { allowTrailingComma: true, disallowComments: false });
     if (errors.length > 0 || !isPlainObject(parsed)) return null;
-    return parsed as RuntimeConfigFile;
+    
+    // Validate against zod schema
+    const result = RuntimeConfigFileSchema.safeParse(parsed);
+    if (!result.success) {
+      console.error('Invalid runtime config format:', result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', '));
+      return null;
+    }
+    
+    return result.data as RuntimeConfigFile;
   } catch {
     return null;
   }
@@ -155,7 +292,7 @@ function upsertSelectedConfig(runtimeConfig: RuntimeConfigFile, config: Config):
 }
 
 export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd = process.cwd()): Config | null => {
-  const configPath = target === 'active' ? getActiveRuntimeConfigPath() : getInitConfigPath(target, cwd);
+  const configPath = target === 'active' ? getActiveRuntimeConfigPath() : getRuntimeConfigPath(target, cwd);
   if (!configPath) return null;
   const runtimeConfig = readRuntimeConfigFileSync(configPath);
   if (!runtimeConfig) return null;
@@ -163,7 +300,7 @@ export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd =
 };
 
 export const writeConfig = (config: Config, target: InitConfigTarget = 'user', cwd = process.cwd()) => {
-  const configPath = getInitConfigPath(target, cwd);
+  const configPath = getRuntimeConfigPath(target, cwd);
   const runtimeConfig = readRuntimeConfigFileSync(configPath) || { providers: {}, mcp: { servers: {} } };
   const nextRuntimeConfig = upsertSelectedConfig(runtimeConfig, config);
   writeRuntimeConfigFile(configPath, nextRuntimeConfig);

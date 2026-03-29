@@ -35,7 +35,7 @@ test('compactIfNeeded forwards request defaults to compaction request', async ()
     { role: 'assistant', content: 'six' },
   ] satisfies OpenAI.Chat.Completions.ChatCompletionMessageParam[];
 
-  await compactIfNeeded(client, 'test-model', messages, 10, 10, { top_p: 0.2, temperature: 0.7 });
+  await compactIfNeeded(client, 'test-model', messages, 10, { top_p: 0.2, temperature: 0.7 });
 
   assert.ok(captured);
   const request = captured as Record<string, unknown>;

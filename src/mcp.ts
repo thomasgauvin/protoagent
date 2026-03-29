@@ -144,6 +144,9 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
       });
 
       registerDynamicHandler(toolName, async (args: unknown) => {
+        // Note: Errors from this handler are caught and formatted by
+        // handleToolCall() in tools/index.ts, which wraps all tool calls
+        // in a try/catch and returns `Error executing ${toolName}: ${msg}`
         const result = await conn.client.callTool({
           name: tool.name,
           arguments: (args && typeof args === 'object' ? args : {}) as Record<string, unknown>,

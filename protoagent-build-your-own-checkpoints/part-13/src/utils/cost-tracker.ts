@@ -37,7 +37,10 @@ export function estimateMessageTokens(msg: OpenAI.Chat.Completions.ChatCompletio
   }
   if ('tool_calls' in msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
     for (const tc of msg.tool_calls) {
-      tokens += estimateTokens(tc.function?.name || '') + estimateTokens(tc.function?.arguments || '') + 10;
+      // Type guard for function tool calls
+      if (tc.type === 'function' && 'function' in tc) {
+        tokens += estimateTokens(tc.function?.name || '') + estimateTokens(tc.function?.arguments || '') + 10;
+      }
     }
   }
   return tokens;
@@ -88,11 +91,13 @@ export function createUsageInfo(
   outputTokens: number,
   pricing: ModelPricing,
   cachedTokens?: number
-): UsageInfo {
+): UsageInfo & { cost: number } {
+  const cost = calculateCost(inputTokens, outputTokens, pricing, cachedTokens);
   return {
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
-    estimatedCost: calculateCost(inputTokens, outputTokens, pricing, cachedTokens),
+    estimatedCost: cost,
+    cost,
   };
 }

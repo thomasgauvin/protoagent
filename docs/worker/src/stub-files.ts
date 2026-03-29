@@ -3934,7 +3934,7 @@ export const getProjectRuntimeConfigPath = (cwd = process.cwd()) => {
   return path.join(getProjectRuntimeConfigDirectory(cwd), 'protoagent.jsonc');
 };
 
-export const getInitConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
+export const getRuntimeConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
   return target === 'project' ? getProjectRuntimeConfigPath(cwd) : getUserRuntimeConfigPath();
 };
 
@@ -4077,7 +4077,7 @@ export function writeInitConfig(
   cwd = process.cwd(),
   options: { overwrite?: boolean } = {}
 ): { path: string; status: InitConfigWriteStatus } {
-  const configPath = getInitConfigPath(target, cwd);
+  const configPath = getRuntimeConfigPath(target, cwd);
   const alreadyExists = existsSync(configPath);
   if (alreadyExists) {
     if (!options.overwrite) {
@@ -4093,7 +4093,7 @@ export function writeInitConfig(
 }
 
 export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd = process.cwd()): Config | null => {
-  const configPath = target === 'active' ? getActiveRuntimeConfigPath() : getInitConfigPath(target, cwd);
+  const configPath = target === 'active' ? getActiveRuntimeConfigPath() : getRuntimeConfigPath(target, cwd);
   if (!configPath) {
     return null;
   }
@@ -4106,16 +4106,8 @@ export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd =
   return getConfiguredProviderAndModel(runtimeConfig);
 };
 
-export function getDefaultConfigTarget(cwd = process.cwd()): InitConfigTarget {
-  const activeConfigPath = getActiveRuntimeConfigPath();
-  if (activeConfigPath === getProjectRuntimeConfigPath(cwd)) {
-    return 'project';
-  }
-  return 'user';
-}
-
 export const writeConfig = (config: Config, target: InitConfigTarget = 'user', cwd = process.cwd()) => {
-  const configPath = getInitConfigPath(target, cwd);
+  const configPath = getRuntimeConfigPath(target, cwd);
   const runtimeConfig = readRuntimeConfigFileSync(configPath) || { providers: {}, mcp: { servers: {} } };
   const nextRuntimeConfig = upsertSelectedConfig(runtimeConfig, config);
   writeRuntimeConfigFile(configPath, nextRuntimeConfig);
@@ -4305,7 +4297,7 @@ export const ConfigResult: React.FC<ConfigResultProps> = ({ configWritten }) => 
 
 export const ConfigureComponent = () => {
   const [step, setStep] = useState(0);
-  const [target, setTarget] = useState<InitConfigTarget>(getDefaultConfigTarget());
+  const [target, setTarget] = useState<InitConfigTarget>('user');
   const [existingConfig, setExistingConfig] = useState<Config | null>(null);
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModelId, setSelectedModelId] = useState('');
@@ -4371,8 +4363,34 @@ export const InitComponent = () => {
   const activeTarget = selectedTarget ?? 'project';
   const activeOption = options.find((option) => option.value === activeTarget) ?? options[0];
 
+  // Step 1: Show target selection
+  if (!selectedTarget && !result) {
+    return (
+      <Box flexDirection="column">
+        <Text>Create a ProtoAgent runtime config:</Text>
+        <Text dimColor>Select where to write \`protoagent.jsonc\`.</Text>
+        <Text dimColor>{activeOption.description}</Text>
+        <Box marginTop={1}>
+          <Select
+            options={options.map((option) => ({ label: option.label, value: option.value }))}
+            onChange={(value) => {
+              const target = value as InitConfigTarget;
+              const configPath = getRuntimeConfigPath(target);
+              if (existsSync(configPath)) {
+                setSelectedTarget(target);
+                return;
+              }
+              setResult(writeInitConfig(target));
+            }}
+          />
+        </Box>
+      </Box>
+    );
+  }
+
+  // Step 2: Target selected but file exists - confirm overwrite
   if (selectedTarget && !result) {
-    const selectedPath = getInitConfigPath(selectedTarget);
+    const selectedPath = getRuntimeConfigPath(selectedTarget);
     return (
       <Box flexDirection="column">
         <Text>Config already exists:</Text>
@@ -4391,40 +4409,17 @@ export const InitComponent = () => {
     );
   }
 
-  if (result) {
-    const color = result.status === 'exists' ? 'yellow' : 'green';
-    const message = result.status === 'created'
-      ? 'Created ProtoAgent config:'
-      : result.status === 'overwritten'
-        ? 'Overwrote ProtoAgent config:'
-        : 'ProtoAgent config already exists:';
-    return (
-      <Box flexDirection="column">
-        <Text color={color}>{message}</Text>
-        <Text>{result.path}</Text>
-      </Box>
-    );
-  }
-
+  // Step 3: Show result
+  const color = result.status === 'exists' ? 'yellow' : 'green';
+  const message = result.status === 'created'
+    ? 'Created ProtoAgent config:'
+    : result.status === 'overwritten'
+      ? 'Overwrote ProtoAgent config:'
+      : 'ProtoAgent config already exists:';
   return (
     <Box flexDirection="column">
-      <Text>Create a ProtoAgent runtime config:</Text>
-      <Text dimColor>Select where to write \`protoagent.jsonc\`.</Text>
-      <Text dimColor>{activeOption.description}</Text>
-      <Box marginTop={1}>
-        <Select
-          options={options.map((option) => ({ label: option.label, value: option.value }))}
-          onChange={(value) => {
-            const target = value as InitConfigTarget;
-            const configPath = getInitConfigPath(target);
-            if (existsSync(configPath)) {
-              setSelectedTarget(target);
-              return;
-            }
-            setResult(writeInitConfig(target));
-          }}
-        />
-      </Box>
+      <Text color={color}>{message}</Text>
+      <Text>{result.path}</Text>
     </Box>
   );
 };

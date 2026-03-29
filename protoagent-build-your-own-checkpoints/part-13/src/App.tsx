@@ -58,9 +58,13 @@ Here's how the terminal UI is laid out (showcasing all options at once for demon
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, Static, useApp, useInput, useStdout } from 'ink';
 import { LeftBar } from './components/LeftBar.js';
+import { CommandFilter, SLASH_COMMANDS } from './components/CommandFilter.js';
+import { ApprovalPrompt } from './components/ApprovalPrompt.js';
+import { UsageDisplay } from './components/UsageDisplay.js';
+import { InlineSetup } from './components/InlineSetup.js';
 import { TextInput, Select } from '@inkjs/ui';
 import { OpenAI } from 'openai';
-import { readConfig, writeConfig, writeInitConfig, resolveApiKey, type Config, type InitConfigTarget, TargetSelection, ModelSelection, ApiKeyInput } from './config.js';
+import { readConfig, resolveApiKey, type Config } from './config.js';
 import { loadRuntimeConfig, getActiveRuntimeConfigPath } from './runtime-config.js';
 import { getProvider, getModelPricing, getRequestDefaultParams } from './providers.js';
 import {
@@ -84,12 +88,8 @@ import { clearTodos, getTodosForSession, setTodosForSession } from './tools/todo
 import { initializeMcp, closeMcp, getConnectedMcpServers } from './mcp.js';
 import { generateSystemPrompt } from './system-prompt.js';
 import { renderFormattedText } from './utils/format-message.js';
-
-interface InlineThreadError {
-  id: string;
-  message: string;
-  transient?: boolean;
-}
+import { formatToolActivity } from './utils/tool-display.js';
+import { useAgentEventHandler, type AssistantMessageRef, type StreamingBuffer, type InlineThreadError } from './hooks/useAgentEventHandler.js';
 
 // A single item rendered by <Static>. Each item is appended once and
 // permanently flushed to the terminal scrollback by Ink's Static component.
@@ -171,131 +171,8 @@ function printMessageToScrollback(addStatic: AddStaticFn, role: 'user' | 'assist
   addStatic(<Text>{renderFormattedText(normalized)}{'\n'}</Text>);
 }
 
-/**
- * Format a sub-agent tool call into a human-readable activity string.
- * Shows what the sub-agent is actually doing, e.g. "Sub-agent reading file package.json"
- */
-function formatSubAgentActivity(tool: string, args?: Record<string, unknown>): string {
-  if (!args || typeof args !== 'object') {
-    return `Sub-agent running ${tool}...`;
-  }
-
-  const argEntries = Object.entries(args);
-  if (argEntries.length === 0) {
-    return `Sub-agent running ${tool}...`;
-  }
-
-  // Extract the most meaningful argument based on the tool
-  let detail = '';
-  const firstValue = argEntries[0]?.[1];
-
-  switch (tool) {
-    case 'read_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'write_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'edit_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'list_directory':
-      detail = typeof args.directory_path === 'string' ? args.directory_path : '(current)';
-      break;
-    case 'search_files':
-      detail = typeof args.search_term === 'string' ? `"${args.search_term}"` : '';
-      break;
-    case 'bash':
-      detail = typeof args.command === 'string'
-        ? args.command.split(/\s+/).slice(0, 3).join(' ') + (args.command.split(/\s+/).length > 3 ? '...' : '')
-        : '';
-      break;
-    case 'todo_write':
-      detail = Array.isArray(args.todos) ? `${args.todos.length} task(s)` : '';
-      break;
-    case 'webfetch':
-      detail = typeof args.url === 'string' ? new URL(args.url).hostname : '';
-      break;
-    case 'sub_agent':
-      // Nested sub-agent
-      detail = 'nested task...';
-      break;
-    default:
-      // Use the first argument value as fallback
-      detail = typeof firstValue === 'string'
-        ? firstValue.length > 30 ? firstValue.slice(0, 30) + '...' : firstValue
-        : '';
-  }
-
-  if (detail) {
-    return `Sub-agent ${tool.replace(/_/g, ' ')}: ${detail}`;
-  }
-
-  return `Sub-agent running ${tool}...`;
-}
-
-/**
- * Format a tool call into a human-readable string showing the tool name and key argument.
- * Shows what the tool is actually doing, e.g. "read_file src/App.tsx"
- */
-function formatToolActivity(tool: string, args?: Record<string, unknown>): string {
-  if (!args || typeof args !== 'object') {
-    return tool;
-  }
-
-  let detail = '';
-
-  switch (tool) {
-    case 'read_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'write_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'edit_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'list_directory':
-      detail = typeof args.directory_path === 'string' ? args.directory_path : '(current)';
-      break;
-    case 'search_files':
-      detail = typeof args.search_term === 'string' ? `"${args.search_term}"` : '';
-      break;
-    case 'bash':
-      detail = typeof args.command === 'string'
-        ? args.command.split(/\s+/).slice(0, 3).join(' ') + (args.command.split(/\s+/).length > 3 ? '...' : '')
-        : '';
-      break;
-    case 'todo_write':
-      detail = Array.isArray(args.todos) ? `${args.todos.length} task(s)` : '';
-      break;
-    case 'todo_read':
-      detail = 'read';
-      break;
-    case 'webfetch':
-      detail = typeof args.url === 'string' ? new URL(args.url).hostname : '';
-      break;
-    case 'sub_agent':
-      detail = 'nested task...';
-      break;
-    default: {
-      // For unknown tools, use the first string argument
-      const firstEntry = Object.entries(args).find(([, v]) => typeof v === 'string');
-      if (firstEntry) {
-        const [, value] = firstEntry;
-        detail = String(value).length > 30 ? String(value).slice(0, 30) + '...' : String(value);
-      }
-    }
-  }
-
-  if (detail) {
-    return `${tool} ${detail}`;
-  }
-
-  return tool;
-}
-
-function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[]): void {  for (const message of messages) {
+function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[]): void {
+  for (const message of messages) {
     const msgAny = message as any;
     if (message.role === 'system') continue;
     if (message.role === 'user' && typeof message.content === 'string') {
@@ -346,19 +223,10 @@ export interface AppProps {
   sessionId?: string;
 }
 
-// ─── Available slash commands ───
-const SLASH_COMMANDS = [
-  { name: '/help', description: 'Show all available commands' },
-  { name: '/quit', description: 'Exit ProtoAgent' },
-  { name: '/exit', description: 'Alias for /quit' },
-];
-
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const HELP_TEXT = [
   'Commands:',
-  '  /help   - Show this help',
-  '  /quit   - Exit ProtoAgent',
-  '  /exit   - Alias for /quit',
+  ...SLASH_COMMANDS.map((cmd) => `  ${cmd.name} - ${cmd.description}`),
 ].join('\n');
 
 function buildClient(config: Config): OpenAI {
@@ -406,155 +274,6 @@ function buildClient(config: Config): OpenAI {
 
   return new OpenAI(clientOptions);
 }
-
-// ─── Sub-components ───
-
-/** Shows filtered slash commands when user types /. */
-const CommandFilter: React.FC<{ inputText: string }> = ({ inputText }) => {
-  if (!inputText.startsWith('/')) return null;
-
-  const filtered = SLASH_COMMANDS.filter((cmd) =>
-    cmd.name.toLowerCase().startsWith(inputText.toLowerCase())
-  );
-
-  if (filtered.length === 0) return null;
-
-  return (
-    <Box flexDirection="column" marginBottom={1}>
-      {filtered.map((cmd) => (
-        <Text key={cmd.name} dimColor>
-          <Text color="green">{cmd.name}</Text> — {cmd.description}
-        </Text>
-      ))}
-    </Box>
-  );
-};
-
-/** Interactive approval prompt rendered inline. */
-const ApprovalPrompt: React.FC<{
-  request: ApprovalRequest;
-  onRespond: (response: ApprovalResponse) => void;
-}> = ({ request, onRespond }) => {
-  const sessionApprovalLabel = request.sessionScopeKey
-    ? 'Approve this operation for session'
-    : `Approve all "${request.type}" for session`;
-
-  const items = [
-    { label: 'Approve once', value: 'approve_once' as const },
-    { label: sessionApprovalLabel, value: 'approve_session' as const },
-    { label: 'Reject', value: 'reject' as const },
-  ];
-
-  return (
-    <LeftBar color="green" marginTop={1} marginBottom={1}>
-      <Text color="green" bold>Approval Required</Text>
-      <Text>{request.description}</Text>
-      {request.detail && (
-        <Text dimColor>{request.detail.length > 200 ? request.detail.slice(0, 200) + '...' : request.detail}</Text>
-      )}
-      <Box marginTop={1}>
-        <Select
-          options={items.map((item) => ({ value: item.value, label: item.label }))}
-          onChange={(value) => onRespond(value as ApprovalResponse)}
-        />
-      </Box>
-    </LeftBar>
-  );
-};
-
-/** Cost/usage display in the status bar. */
-const UsageDisplay: React.FC<{
-  usage: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number } | null;
-  totalCost: number;
-}> = ({ usage, totalCost }) => {
-  if (!usage && totalCost === 0) return null;
-
-  return (
-    <Box marginTop={1}>
-      {usage && (
-        <Box>
-          <Box backgroundColor="#064e3b" paddingX={1}>
-            <Text color="white">tokens: </Text>
-            <Text color="white" bold>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
-          </Box>
-          <Box backgroundColor="#065f46" paddingX={1}>
-            <Text color="white">ctx: </Text>
-            <Text color="white" bold>{usage.contextPercent.toFixed(0)}%</Text>
-          </Box>
-        </Box>
-      )}
-      {totalCost > 0 && (
-        <Box backgroundColor="#064e3b" paddingX={1}>
-          <Text color="black">cost: </Text>
-          <Text color="black" bold>${totalCost.toFixed(4)}</Text>
-        </Box>
-      )}
-    </Box>
-  );
-};
-
-/** Inline setup wizard — shown when no config exists. */
-const InlineSetup: React.FC<{
-  onComplete: (config: Config) => void;
-}> = ({ onComplete }) => {
-  const [setupStep, setSetupStep] = useState<'target' | 'provider' | 'api_key'>('target');
-  const [target, setTarget] = useState<InitConfigTarget>('project');
-  const [selectedProviderId, setSelectedProviderId] = useState('');
-  const [selectedModelId, setSelectedModelId] = useState('');
-
-  const handleModelSelect = (providerId: string, modelId: string) => {
-    setSelectedProviderId(providerId);
-    setSelectedModelId(modelId);
-    setSetupStep('api_key');
-  };
-
-  const handleConfigComplete = (config: Config) => {
-    writeInitConfig(target);
-    writeConfig(config, target);
-    onComplete(config);
-  };
-
-  if (setupStep === 'target') {
-    return (
-      <Box marginTop={1}>
-        <TargetSelection
-          title="First-time setup"
-          subtitle="Create a ProtoAgent runtime config:"
-          onSelect={(value) => {
-            setTarget(value);
-            setSetupStep('provider');
-          }}
-        />
-      </Box>
-    );
-  }
-
-  if (setupStep === 'provider') {
-    return (
-      <Box marginTop={1}>
-        <ModelSelection
-          setSelectedProviderId={setSelectedProviderId}
-          setSelectedModelId={setSelectedModelId}
-          onSelect={handleModelSelect}
-          title="First-time setup"
-        />
-      </Box>
-    );
-  }
-
-  return (
-    <Box marginTop={1}>
-      <ApiKeyInput
-        selectedProviderId={selectedProviderId}
-        selectedModelId={selectedModelId}
-        target={target}
-        title="First-time setup"
-        showProviderHeaders={false}
-        onComplete={handleConfigComplete}
-      />
-    </Box>
-  );
-};
 
 // ─── Main App ───
 export const App: React.FC<AppProps> = ({
@@ -627,11 +346,7 @@ export const App: React.FC<AppProps> = ({
 
   // OpenAI client ref (stable across renders)
   const clientRef = useRef<OpenAI | null>(null);
-  const assistantMessageRef = useRef<{
-    message: any;
-    index: number;
-    kind: 'streaming_text' | 'tool_call_assistant';
-  } | null>(null);
+  const assistantMessageRef = useRef<AssistantMessageRef | null>(null);
 
   // Abort controller for cancelling the current completion
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -639,9 +354,24 @@ export const App: React.FC<AppProps> = ({
   // Buffer for streaming text that accumulates content and flushes complete lines to static
   // This prevents the live streaming area from growing unbounded - complete lines are
   // immediately flushed to <Static>, only the incomplete final line stays in the dynamic frame
-  const streamingBufferRef = useRef<{ unflushedContent: string; hasFlushedAnyLine: boolean }>({
+  const streamingBufferRef = useRef<StreamingBuffer>({
     unflushedContent: '',
     hasFlushedAnyLine: false,
+  });
+
+  // Hook for handling agent events - extracted to keep App.tsx focused on orchestration
+  const handleAgentEvent = useAgentEventHandler({
+    addStatic,
+    setCompletionMessages,
+    setIsStreaming,
+    setStreamingText,
+    setActiveTool,
+    setLastUsage,
+    setTotalCost,
+    setThreadErrors,
+    setError,
+    assistantMessageRef,
+    streamingBufferRef,
   });
 
   const didPrintIntroRef = useRef(false);
@@ -873,291 +603,7 @@ export const App: React.FC<AppProps> = ({
         config.model,
         [...completionMessages, userMessage],
         trimmed,
-        (event: AgentEvent) => {
-          switch (event.type) {
-            case 'text_delta': {
-              const deltaText = event.content || '';
-
-              // First text delta of this turn: initialize ref, show streaming indicator.
-              if (!assistantMessageRef.current || assistantMessageRef.current.kind !== 'streaming_text') {
-                // Trim leading whitespace from first delta - LLMs often output leading \n or spaces
-                const trimmedDelta = deltaText.replace(/^\s+/, '');
-                const assistantMsg = { role: 'assistant', content: trimmedDelta, tool_calls: [] } as Message;
-                const idx = completionMessages.length + 1;
-                assistantMessageRef.current = { message: assistantMsg, index: idx, kind: 'streaming_text' };
-                setIsStreaming(true);
-                setCompletionMessages((prev) => [...prev, assistantMsg]);
-
-                // Initialize the streaming buffer and process the first chunk
-                // through the same split logic as subsequent deltas for consistency
-                const buffer = { unflushedContent: trimmedDelta, hasFlushedAnyLine: false };
-                streamingBufferRef.current = buffer;
-
-                // Process the first chunk: split on newlines and flush complete lines
-                const lines = buffer.unflushedContent.split('\n');
-                if (lines.length > 1) {
-                  const completeLines = lines.slice(0, -1);
-                  const textToFlush = completeLines.join('\n');
-                  if (textToFlush) {
-                    addStatic(renderFormattedText(textToFlush));
-                    buffer.hasFlushedAnyLine = true;
-                  }
-                  buffer.unflushedContent = lines[lines.length - 1];
-                }
-
-                setStreamingText(buffer.unflushedContent);
-              } else {
-                // Subsequent deltas — append to ref and buffer, then flush complete lines
-                assistantMessageRef.current.message.content += deltaText;
-
-                // Accumulate in buffer and flush complete lines to static
-                const buffer = streamingBufferRef.current;
-                buffer.unflushedContent += deltaText;
-
-                // Split on newlines to find complete lines
-                const lines = buffer.unflushedContent.split('\n');
-
-                // If we have more than 1 element, there were newlines
-                if (lines.length > 1) {
-                  // All lines except the last one are complete (ended with \n)
-                  const completeLines = lines.slice(0, -1);
-
-                  // Build the text to flush - each complete line gets a newline added back
-                  const textToFlush = completeLines.join('\n');
-
-                  if (textToFlush) {
-                    addStatic(renderFormattedText(textToFlush));
-                    buffer.hasFlushedAnyLine = true;
-                  }
-
-                  // Keep only the last (incomplete) line in the buffer
-                  buffer.unflushedContent = lines[lines.length - 1];
-                }
-
-                // Show the incomplete line (if any) in the dynamic frame
-                setStreamingText(buffer.unflushedContent);
-              }
-              break;
-            }
-            case 'sub_agent_iteration':
-              if (event.subAgentTool) {
-                const { tool, status, args } = event.subAgentTool;
-                if (status === 'running') {
-                  setActiveTool(formatSubAgentActivity(tool, args));
-                } else {
-                  setActiveTool(null);
-                }
-              }
-              // Handle sub-agent usage update
-              if (event.subAgentUsage) {
-                setTotalCost((prev) => prev + event.subAgentUsage!.cost);
-              }
-              break;
-            case 'tool_call':
-              if (event.toolCall) {
-                const toolCall = event.toolCall;
-                setActiveTool(toolCall.name);
-
-                // If the model streamed some text before invoking this tool,
-                // flush any remaining unflushed content to <Static> now.
-                // The streaming buffer contains text that hasn't been flushed yet
-                // (the incomplete final line). We need to flush it before the tool call.
-                if (assistantMessageRef.current?.kind === 'streaming_text') {
-                  const buffer = streamingBufferRef.current;
-
-                  // Flush any remaining unflushed content
-                  if (buffer.unflushedContent) {
-                    addStatic(renderFormattedText(buffer.unflushedContent));
-                  }
-
-                  // Add spacing after the streamed text and before the tool call
-                  addStatic(renderFormattedText('\n'));
-
-                  // Reset streaming state and buffer
-                  streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
-                  setIsStreaming(false);
-                  setStreamingText('');
-                  assistantMessageRef.current = null;
-                }
-
-                // Track the tool call in the ref WITHOUT triggering a render.
-                // The render will happen when tool_result arrives.
-                const existingRef = assistantMessageRef.current;
-                const assistantMsg = existingRef?.message
-                  ? {
-                      ...existingRef.message,
-                      tool_calls: [...(existingRef.message.tool_calls || [])],
-                    }
-                  : { role: 'assistant', content: '', tool_calls: [] as any[] };
-
-                const nextToolCall = {
-                  id: toolCall.id,
-                  type: 'function',
-                  function: { name: toolCall.name, arguments: toolCall.args },
-                };
-
-                const idx = assistantMsg.tool_calls.findIndex(
-                  (tc: any) => tc.id === toolCall.id
-                );
-                if (idx === -1) {
-                  assistantMsg.tool_calls.push(nextToolCall);
-                } else {
-                  assistantMsg.tool_calls[idx] = nextToolCall;
-                }
-
-                if (!existingRef) {
-                  // First tool call — we need to add the assistant message to state
-                  setCompletionMessages((prev) => {
-                    assistantMessageRef.current = {
-                      message: assistantMsg,
-                      index: prev.length,
-                      kind: 'tool_call_assistant',
-                    };
-                    return [...prev, assistantMsg as Message];
-                  });
-                } else {
-                  // Subsequent tool calls — just update the ref, no render
-                  assistantMessageRef.current = {
-                    ...existingRef,
-                    message: assistantMsg,
-                    kind: 'tool_call_assistant',
-                  };
-                }
-              }
-              break;
-            case 'tool_result':
-              if (event.toolCall) {
-                const toolCall = event.toolCall;
-                setActiveTool(null);
-
-                // Write the tool summary immediately — at this point loading is
-                // still true but the frame height is stable (spinner + input box).
-                // The next state change (setActiveTool(null)) doesn't affect
-                // frame height so write() restores the correct frame.
-                const compactResult = (toolCall.result || '')
-                  .replace(/\s+/g, ' ')
-                  .trim()
-                  .slice(0, 180);
-                
-                // Parse tool args to show relevant parameter
-                let toolDisplay = toolCall.name;
-                try {
-                  const args = JSON.parse(toolCall.args || '{}');
-                  toolDisplay = formatToolActivity(toolCall.name, args);
-                } catch {
-                  // If parsing fails, just use the tool name
-                }
-                
-                addStatic(<Text dimColor>{'▶ '}{toolDisplay}{': '}{compactResult}{'\n'}</Text>);
-
-                // Flush the assistant message + tool result into completionMessages
-                // for session saving.
-                setCompletionMessages((prev) => {
-                  const updated = [...prev];
-                  // Sync assistant message
-                  if (assistantMessageRef.current) {
-                    updated[assistantMessageRef.current.index] = {
-                      ...assistantMessageRef.current.message,
-                    };
-                  }
-                  // Append tool result with args for replay
-                  updated.push({
-                    role: 'tool',
-                    tool_call_id: toolCall.id,
-                    content: toolCall.result || '',
-                    name: toolCall.name,
-                    args: toolCall.args,
-                  } as any);
-                  return updated;
-                });
-              }
-              break;
-            case 'usage':
-              if (event.usage) {
-                setLastUsage(event.usage);
-                setTotalCost((prev) => prev + event.usage!.cost);
-              }
-              break;
-            case 'error':
-              if (event.error) {
-                const errorMessage = event.error;
-                setThreadErrors((prev) => {
-                  if (event.transient) {
-                    return [
-                      ...prev.filter((threadError) => !threadError.transient),
-                      {
-                        id: `${Date.now()}-${prev.length}`,
-                        message: errorMessage,
-                        transient: true,
-                      },
-                    ];
-                  }
-
-                  if (prev[prev.length - 1]?.message === errorMessage) {
-                    return prev;
-                  }
-
-                  return [
-                    ...prev,
-                    {
-                      id: `${Date.now()}-${prev.length}`,
-                      message: errorMessage,
-                      transient: false,
-                    },
-                  ];
-                });
-              } else {
-                setError('Unknown error');
-              }
-              break;
-            case 'iteration_done':
-              if (assistantMessageRef.current?.kind === 'tool_call_assistant') {
-                assistantMessageRef.current = null;
-              }
-              break;
-            case 'done':
-              if (assistantMessageRef.current?.kind === 'streaming_text') {
-                const finalRef = assistantMessageRef.current;
-                const buffer = streamingBufferRef.current;
-
-                // Flush any remaining unflushed content from the buffer
-                // This is the final incomplete line that was being displayed live
-                if (buffer.unflushedContent) {
-                  // If we've already flushed some lines, just append the remainder
-                  // Otherwise, normalize and flush the full content
-                  if (buffer.hasFlushedAnyLine) {
-                    addStatic(renderFormattedText(buffer.unflushedContent));
-                  } else {
-                    // Nothing was flushed yet, normalize the full content
-                    const normalized = normalizeTranscriptText(finalRef.message.content || '');
-                    if (normalized) {
-                      addStatic(renderFormattedText(normalized));
-                    }
-                  }
-                }
-
-                // Add final spacing after the streamed text
-                // Always add one newline - the user message adds another for blank line separation
-                if (buffer.unflushedContent) {
-                  addStatic(renderFormattedText('\n'));
-                }
-
-                // Clear streaming state and buffer
-                setIsStreaming(false);
-                setStreamingText('');
-                streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
-                setCompletionMessages((prev) => {
-                  const updated = [...prev];
-                  updated[finalRef.index] = { ...finalRef.message };
-                  return updated;
-                });
-                assistantMessageRef.current = null;
-              }
-              setActiveTool(null);
-              setThreadErrors((prev) => prev.filter((threadError) => !threadError.transient));
-              break;
-          }
-        },
+        handleAgentEvent,
         {
           pricing: pricing || undefined,
           abortSignal: abortControllerRef.current.signal,

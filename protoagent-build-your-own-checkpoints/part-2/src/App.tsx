@@ -29,7 +29,7 @@ export const App: React.FC<AppProps> = () => {
 
   const handleSubmit = async (value: string) => {
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed || loading) return;
 
     const userMessage: Message = { role: 'user', content: trimmed };
     const updatedMessages = [...messages, userMessage];

@@ -5,6 +5,19 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse, printParseErrorCode } from 'jsonc-parser';
+import { z } from 'zod';
+import { logger } from './utils/logger.js';
+
+// ─── Zod Schemas for Runtime Validation ───
+
+export const RuntimeConfigFileSchema = z.object({
+  providers: z.record(z.unknown()).optional(),
+  mcp: z.object({
+    servers: z.record(z.unknown()).optional(),
+  }).optional(),
+});
+
+// ─── TypeScript Interfaces ───
 
 export interface RuntimeModelConfig {
   name?: string;
@@ -27,6 +40,10 @@ export interface RuntimeProviderConfig {
   name?: string;
   baseURL?: string;
   apiKey?: string;
+  /**
+   * Name of an environment variable to read the API key from.
+   * Resolved at runtime by config.tsx's resolveApiKey() function.
+   */
   apiKeyEnvVar?: string;
   headers?: Record<string, string>;
   defaultParams?: Record<string, unknown>;
@@ -95,18 +112,25 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-// Replaces environment variable placeholders in a string with their values.
+/**
+ * Replaces ${ENV_VAR} placeholders in a string with actual environment variable values.
+ * Logs a warning if the environment variable is not set (replaces with empty string).
+ */
 function interpolateString(value: string, sourcePath: string): string {
   return value.replace(/\$\{([A-Z0-9_]+)\}/gi, (_match, envVar: string) => {
     const resolved = process.env[envVar];
     if (resolved === undefined) {
+      logger.warn(`Missing environment variable ${envVar} while loading ${sourcePath}`);
       return '';
     }
     return resolved;
   });
 }
 
-// Recursively interpolates environment variables in any value type.
+/**
+ * Recursively interpolates environment variables in all string values within a config object.
+ * Handles nested objects and arrays. Filters out empty header values.
+ */
 function interpolateValue<T>(value: T, sourcePath: string): T {
   if (typeof value === 'string') return interpolateString(value, sourcePath) as T;
   if (Array.isArray(value)) return value.map((entry) => interpolateValue(entry, sourcePath)) as T;
@@ -128,7 +152,11 @@ function interpolateValue<T>(value: T, sourcePath: string): T {
   return value;
 }
 
-// Removes reserved parameter keys from provider and model defaultParams.
+/**
+ * Removes reserved API parameters from provider and model defaultParams.
+ * Prevents users from accidentally overriding critical parameters like
+ * 'model', 'messages', 'tools' that are managed by the agentic loop.
+ */
 function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfigFile {
   const nextProviders = Object.fromEntries(
     Object.entries(config.providers || {}).map(([providerId, provider]) => {
@@ -158,21 +186,6 @@ function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfig
   return { ...config, providers: nextProviders };
 }
 
-// Merges two runtime configs, with overlay taking precedence.
-function mergeRuntimeConfig(base: RuntimeConfigFile, overlay: RuntimeConfigFile): RuntimeConfigFile {
-  const mergedProviders: Record<string, RuntimeProviderConfig> = { ...(base.providers || {}) };
-  for (const [providerId, providerConfig] of Object.entries(overlay.providers || {})) {
-    const current = mergedProviders[providerId] || {};
-    mergedProviders[providerId] = { ...current, ...providerConfig, models: { ...(current.models || {}), ...(providerConfig.models || {}) } };
-  }
-  const mergedServers: Record<string, RuntimeMcpServerConfig> = { ...(base.mcp?.servers || {}) };
-  for (const [name, serverConfig] of Object.entries(overlay.mcp?.servers || {})) {
-    const current = mergedServers[name];
-    mergedServers[name] = current && isPlainObject(current) ? { ...current, ...serverConfig } : serverConfig;
-  }
-  return { providers: mergedProviders, mcp: { servers: mergedServers } };
-}
-
 // Reads and parses a runtime config file with interpolation and validation.
 async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigFile | null> {
   try {
@@ -184,14 +197,22 @@ async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigF
       throw new Error(`Failed to parse ${configPath}: ${details}`);
     }
     if (!isPlainObject(parsed)) throw new Error(`Failed to parse ${configPath}: top-level value must be an object`);
-    return sanitizeDefaultParamsInConfig(interpolateValue(parsed as RuntimeConfigFile, configPath));
+    
+    // Validate against zod schema for better error messages
+    const result = RuntimeConfigFileSchema.safeParse(parsed);
+    if (!result.success) {
+      const issues = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
+      throw new Error(`Invalid runtime config in ${configPath}: ${issues}`);
+    }
+    
+    return sanitizeDefaultParamsInConfig(interpolateValue(result.data as RuntimeConfigFile, configPath));
   } catch (error: any) {
     if (error?.code === 'ENOENT') return null;
     throw error;
   }
 }
 
-// Loads the runtime config from file or cache, merging with defaults.
+// Loads the runtime config from file or cache.
 export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeConfigFile> {
   if (!forceReload && runtimeConfigCache) return runtimeConfigCache;
 
@@ -201,7 +222,7 @@ export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeCon
   if (configPath) {
     const fileConfig = await readRuntimeConfigFile(configPath);
     if (fileConfig) {
-      loaded = mergeRuntimeConfig(DEFAULT_RUNTIME_CONFIG, fileConfig);
+      loaded = fileConfig;
     }
   }
 

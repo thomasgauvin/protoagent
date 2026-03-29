@@ -5,7 +5,13 @@ import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import { Select, TextInput, PasswordInput } from '@inkjs/ui';
 import { parse } from 'jsonc-parser';
-import { getActiveRuntimeConfigPath, type RuntimeConfigFile, type RuntimeProviderConfig } from './runtime-config.js';
+import { z } from 'zod';
+import { 
+  getActiveRuntimeConfigPath, 
+  type RuntimeConfigFile, 
+  type RuntimeProviderConfig,
+  RuntimeConfigFileSchema 
+} from './runtime-config.js';
 import { getAllProviders, getProvider } from './providers.js';
 
 export interface Config {
@@ -100,11 +106,11 @@ export const getProjectRuntimeConfigPath = (cwd = process.cwd()) => {
   return path.join(getProjectRuntimeConfigDirectory(cwd), 'protoagent.jsonc');
 };
 
-export const getInitConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
+export const getRuntimeConfigPath = (target: InitConfigTarget, cwd = process.cwd()) => {
   return target === 'project' ? getProjectRuntimeConfigPath(cwd) : getUserRuntimeConfigPath();
 };
 
-const RUNTIME_CONFIG_TEMPLATE = `{
+export const RUNTIME_CONFIG_TEMPLATE = `{
   // Add project or user-wide ProtoAgent runtime config here.
   // Example uses:
   // - choose the active provider/model by making it the first provider
@@ -180,13 +186,24 @@ function readRuntimeConfigFileSync(configPath: string): RuntimeConfigFile | null
     if (errors.length > 0 || !isPlainObject(parsed)) {
       return null;
     }
-    return parsed as RuntimeConfigFile;
+    
+    // Validate against zod schema
+    const result = RuntimeConfigFileSchema.safeParse(parsed);
+    if (!result.success) {
+      console.error('Invalid runtime config format:', result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', '));
+      return null;
+    }
+    
+    return result.data as RuntimeConfigFile;
   } catch (error) {
     console.error('Error reading runtime config file:', error);
     return null;
   }
 }
 
+// Returns the first provider with a valid model from the runtime config.
+// The active provider/model is determined by order: first provider in the
+// config with at least one model, and the first model under that provider.
 function getConfiguredProviderAndModel(runtimeConfig: RuntimeConfigFile): Config | null {
   for (const [providerId, providerConfig] of Object.entries(runtimeConfig.providers || {})) {
     const modelId = Object.keys(providerConfig.models || {})[0];
@@ -210,30 +227,39 @@ function writeRuntimeConfigFile(configPath: string, runtimeConfig: RuntimeConfig
   hardenPermissions(configPath, CONFIG_FILE_MODE);
 }
 
-function upsertSelectedConfig(runtimeConfig: RuntimeConfigFile, config: Config): RuntimeConfigFile {
-  const existingProviders = runtimeConfig.providers || {};
-  const currentProvider = existingProviders[config.provider] || {};
+// Merges a new provider/model configuration into the existing runtime config.
+// Used by writeConfig() to add/update a provider without losing existing data.
+// - newConfig: the provider/model to add (from user running 'configure' command)
+// - existingRuntimeConfig: the current runtime config file content (may be empty)
+function upsertSelectedConfig(
+  existingRuntimeConfig: RuntimeConfigFile,
+  newConfig: Config
+): RuntimeConfigFile {
+  const existingProviders = existingRuntimeConfig.providers || {};
+  const currentProvider = existingProviders[newConfig.provider] || {};
   const currentModels = currentProvider.models || {};
-  const selectedModelConfig = currentModels[config.model] || {};
+  const selectedModelConfig = currentModels[newConfig.model] || {};
 
   const nextProvider: RuntimeProviderConfig = {
     ...currentProvider,
-    ...(config.apiKey?.trim() ? { apiKey: config.apiKey.trim() } : {}),
+    ...(newConfig.apiKey?.trim() ? { apiKey: newConfig.apiKey.trim() } : {}),
     models: Object.fromEntries([
-      [config.model, selectedModelConfig],
-      ...Object.entries(currentModels).filter(([modelId]) => modelId !== config.model),
+      [newConfig.model, selectedModelConfig],
+      ...Object.entries(currentModels).filter(([modelId]) => modelId !== newConfig.model),
     ]),
   };
 
-  if (!config.apiKey?.trim()) {
+  if (!newConfig.apiKey?.trim()) {
     delete nextProvider.apiKey;
   }
 
   return {
-    ...runtimeConfig,
+    ...existingRuntimeConfig,
     providers: Object.fromEntries([
-      [config.provider, nextProvider],
-      ...Object.entries(existingProviders).filter(([providerId]) => providerId !== config.provider),
+      [newConfig.provider, nextProvider],
+      ...Object.entries(existingProviders).filter(
+        ([providerId]) => providerId !== newConfig.provider
+      ),
     ]),
   };
 }
@@ -243,7 +269,7 @@ export function writeInitConfig(
   cwd = process.cwd(),
   options: { overwrite?: boolean } = {}
 ): { path: string; status: InitConfigWriteStatus } {
-  const configPath = getInitConfigPath(target, cwd);
+  const configPath = getRuntimeConfigPath(target, cwd);
   const alreadyExists = existsSync(configPath);
   if (alreadyExists) {
     if (!options.overwrite) {
@@ -258,8 +284,17 @@ export function writeInitConfig(
   return { path: configPath, status: alreadyExists ? 'overwritten' : 'created' };
 }
 
-export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd = process.cwd()): Config | null => {
-  const configPath = target === 'active' ? getActiveRuntimeConfigPath() : getInitConfigPath(target, cwd);
+// Reads the provider/model config from a runtime config file.
+// - 'project': read from <cwd>/.protoagent/protoagent.jsonc
+// - 'user': read from ~/.config/protoagent/protoagent.jsonc
+// - 'active' (default): check project config first, fall back to user config
+//   This is what the agent uses at runtime to determine which provider/model to use.
+export const readConfig = (
+  target: InitConfigTarget | 'active' = 'active',
+  cwd = process.cwd()
+): Config | null => {
+  const configPath =
+    target === 'active' ? getActiveRuntimeConfigPath() : getRuntimeConfigPath(target, cwd);
   if (!configPath) {
     return null;
   }
@@ -272,16 +307,10 @@ export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd =
   return getConfiguredProviderAndModel(runtimeConfig);
 };
 
-export function getDefaultConfigTarget(cwd = process.cwd()): InitConfigTarget {
-  const activeConfigPath = getActiveRuntimeConfigPath();
-  if (activeConfigPath === getProjectRuntimeConfigPath(cwd)) {
-    return 'project';
-  }
-  return 'user';
-}
+
 
 export const writeConfig = (config: Config, target: InitConfigTarget = 'user', cwd = process.cwd()) => {
-  const configPath = getInitConfigPath(target, cwd);
+  const configPath = getRuntimeConfigPath(target, cwd);
   const runtimeConfig = readRuntimeConfigFileSync(configPath) || { providers: {}, mcp: { servers: {} } };
   const nextRuntimeConfig = upsertSelectedConfig(runtimeConfig, config);
   writeRuntimeConfigFile(configPath, nextRuntimeConfig);
@@ -471,7 +500,7 @@ export const ConfigResult: React.FC<ConfigResultProps> = ({ configWritten }) => 
 
 export const ConfigureComponent = () => {
   const [step, setStep] = useState(0);
-  const [target, setTarget] = useState<InitConfigTarget>(getDefaultConfigTarget());
+  const [target, setTarget] = useState<InitConfigTarget>('user');
   const [existingConfig, setExistingConfig] = useState<Config | null>(null);
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModelId, setSelectedModelId] = useState('');
@@ -522,23 +551,28 @@ export const ConfigureComponent = () => {
 export const InitComponent = () => {
   const [selectedTarget, setSelectedTarget] = useState<InitConfigTarget | null>(null);
   const [result, setResult] = useState<{ path: string; status: InitConfigWriteStatus } | null>(null);
-  const options: Array<{ label: string; value: InitConfigTarget; description: string }> = [
-    {
-      label: 'Project config',
-      value: 'project',
-      description: getProjectRuntimeConfigPath(),
-    },
-    {
-      label: 'Shared user config',
-      value: 'user',
-      description: getUserRuntimeConfigPath(),
-    },
-  ];
-  const activeTarget = selectedTarget ?? 'project';
-  const activeOption = options.find((option) => option.value === activeTarget) ?? options[0];
 
+  // Step 1: Show target selection
+  if (!selectedTarget && !result) {
+    return (
+      <TargetSelection
+        title="Create a ProtoAgent runtime config"
+        subtitle="Select where to write `protoagent.jsonc`"
+        onSelect={(target) => {
+          const configPath = getRuntimeConfigPath(target);
+          if (existsSync(configPath)) {
+            setSelectedTarget(target);
+            return;
+          }
+          setResult(writeInitConfig(target));
+        }}
+      />
+    );
+  }
+
+  // Step 2: Target selected but file exists - confirm overwrite
   if (selectedTarget && !result) {
-    const selectedPath = getInitConfigPath(selectedTarget);
+    const selectedPath = getRuntimeConfigPath(selectedTarget);
     return (
       <Box flexDirection="column">
         <Text>Config already exists:</Text>
@@ -557,6 +591,7 @@ export const InitComponent = () => {
     );
   }
 
+  // Step 3: Show result
   if (result) {
     const color = result.status === 'exists' ? 'yellow' : 'green';
     const message = result.status === 'created'
@@ -572,25 +607,5 @@ export const InitComponent = () => {
     );
   }
 
-  return (
-    <Box flexDirection="column">
-      <Text>Create a ProtoAgent runtime config:</Text>
-      <Text dimColor>Select where to write `protoagent.jsonc`.</Text>
-      <Text dimColor>{activeOption.description}</Text>
-      <Box marginTop={1}>
-        <Select
-          options={options.map((option) => ({ label: option.label, value: option.value }))}
-          onChange={(value) => {
-            const target = value as InitConfigTarget;
-            const configPath = getInitConfigPath(target);
-            if (existsSync(configPath)) {
-              setSelectedTarget(target);
-              return;
-            }
-            setResult(writeInitConfig(target));
-          }}
-        />
-      </Box>
-    </Box>
-  );
+  return null;
 };

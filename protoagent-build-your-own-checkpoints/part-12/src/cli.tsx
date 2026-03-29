@@ -7,7 +7,7 @@ import React from 'react';
 import { render } from 'ink';
 import { Command } from 'commander';
 import { App } from './App.js';
-import { ConfigureComponent, readConfig, writeConfig } from './config.js';
+import { ConfigureComponent, InitComponent, readConfig, writeConfig, writeInitConfig } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,6 +68,36 @@ program
     }
 
     render(<ConfigureComponent />);
+  });
+
+program
+  .command('init')
+  .description('Create a project-local or shared ProtoAgent runtime config')
+  .option('--project', 'Write <cwd>/.protoagent/protoagent.jsonc')
+  .option('--user', 'Write the shared user protoagent.jsonc')
+  .option('--force', 'Overwrite an existing target file')
+  .action((options) => {
+    if (options.project || options.user) {
+      if (options.project && options.user) {
+        console.error('Choose only one of --project or --user.');
+        process.exitCode = 1;
+        return;
+      }
+
+      const result = writeInitConfig(options.project ? 'project' : 'user', process.cwd(), {
+        overwrite: Boolean(options.force),
+      });
+      const message = result.status === 'created'
+        ? 'Created ProtoAgent config:'
+        : result.status === 'overwritten'
+          ? 'Overwrote ProtoAgent config:'
+          : 'ProtoAgent config already exists:';
+      console.log(message);
+      console.log(result.path);
+      return;
+    }
+
+    render(<InitComponent />);
   });
 
 program.parse(process.argv);

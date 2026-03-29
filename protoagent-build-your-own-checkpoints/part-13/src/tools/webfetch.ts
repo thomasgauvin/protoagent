@@ -38,8 +38,8 @@ const TEXT_MIME_TYPES = [
 // ESM output clean without forcing esbuild to bundle everything as CJS.
 // Why Turndown? HTML → Markdown preserves document structure (headings, lists,
 // links) in a readable format that LLMs handle better than raw HTML markup.
-let _turndownService: import('turndown').default | null = null;
-async function getTurndownService(): Promise<import('turndown').default> {
+let _turndownService: any = null;
+async function getTurndownService(): Promise<any> {
   if (!_turndownService) {
     const { default: TurndownService } = await import('turndown');
     _turndownService = new TurndownService({

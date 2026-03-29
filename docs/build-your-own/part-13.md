@@ -1,6 +1,6 @@
 # Part 13: Polish, Rendering & Logging
 
-This last part is pretty involved because it's a series of incremental improvements to individual tools that have been made after using ProtoAgent and refining it. 
+This last part is pretty involved because it's a series of incremental improvements to individual tools that have been made after using ProtoAgent and refining it.
 
 It's what makes the full final project have richer rendering, grouped tool output, collapsible messages, slash commands, formatted output, and the complete final module layout.
 
@@ -12,6 +12,10 @@ Starting from Part 12, you add:
 - `src/utils/format-message.tsx` — markdown-to-ANSI formatting
 - `src/utils/file-time.ts` — staleness guard for edit_file
 
+- `src/agentic-loop/stream.ts` — stream processing extracted from the main loop
+- `src/agentic-loop/executor.ts` — tool execution extracted from the main loop
+- `src/agentic-loop/errors.ts` — error handling extracted from the main loop
+
 There are also new files to create to adjust the UI:
 - `src/components/LeftBar.tsx` — left-side bar indicator for callouts (no Box border)
 - `src/components/CollapsibleBox.tsx` — expand/collapse for long content
@@ -20,11 +24,12 @@ There are also new files to create to adjust the UI:
 - `src/components/ConfigDialog.tsx` — mid-session config changes
 
 And many existing files are upgraded to be more robust:
+- Updated `src/agentic-loop.ts` — modularized using the new submodules
 - Updated `src/tools/edit-file.ts` — fuzzy match cascade + unified diff output
 - Updated `src/tools/read-file.ts` — similar-path suggestions + file-time tracking
 - Updated `src/tools/search-files.ts` — ripgrep support when available
 - Updated `src/App.tsx` — final version with all features
-- Updated `src/cli.tsx` — adds `init` subcommand for creating runtime configs
+- Updated `src/cli.tsx` — enhances command structure
 
 ## Step 1: Create `src/utils/logger.ts`
 
@@ -824,7 +829,940 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({
 };
 ```
 
-## Step 5: Upgrade `src/tools/edit-file.ts`
+## Step 5: Modularize `src/agentic-loop.ts`
+
+By Part 12, the agentic loop has grown to nearly 1000 lines with multiple concerns mixed together: stream processing, tool execution, error recovery, and the main orchestration loop. Before adding polish, let's refactor into focused modules.
+
+This separation makes the code more maintainable and easier to understand:
+- `stream.ts` — only handles accumulating streaming chunks
+- `executor.ts` — only handles executing tool calls
+- `errors.ts` — only handles error recovery strategies
+- `agentic-loop.ts` — orchestrates using the modules above
+
+### Create `src/agentic-loop/stream.ts`
+
+Create the file:
+
+```bash
+mkdir -p src/agentic-loop && touch src/agentic-loop/stream.ts
+```
+
+```typescript
+// src/agentic-loop/stream.ts
+
+/**
+ * Stream processing module for the agentic loop.
+ *
+ * Handles accumulation of streaming response chunks into a complete
+ * assistant message, including content, tool calls, and usage data.
+ */
+
+import type OpenAI from 'openai';
+import type { AgentEventHandler } from '../agentic-loop.js';
+import { estimateTokens, estimateConversationTokens, createUsageInfo, getContextInfo, type ModelPricing } from '../utils/cost-tracker.js';
+import { logger } from '../utils/logger.js';
+
+/**
+ * Accumulated result from processing a streaming response.
+ */
+export interface StreamResult {
+  assistantMessage: {
+    role: 'assistant';
+    content: string;
+    tool_calls: any[];
+  };
+  hasToolCalls: boolean;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cost: number;
+    contextPercent: number;
+  };
+}
+
+/**
+ * Process a streaming API response, accumulating content and tool calls.
+ *
+ * Emits text_delta events for immediate UI display and usage info
+ * when available. Returns the complete accumulated message.
+ */
+export async function processStream(
+  stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>,
+  messages: any[],
+  model: string,
+  pricing: ModelPricing | undefined,
+  onEvent: AgentEventHandler
+): Promise<StreamResult> {
+  const assistantMessage = {
+    role: 'assistant' as const,
+    content: '',
+    tool_calls: [] as any[],
+  };
+
+  let streamedContent = '';
+  let hasToolCalls = false;
+  let actualUsage: OpenAI.CompletionUsage | undefined;
+
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta;
+
+    if (chunk.usage) {
+      actualUsage = chunk.usage;
+    }
+
+    // Stream text content (and return to UI for immediate display via onEvent)
+    if (delta?.content) {
+      streamedContent += delta.content;
+      assistantMessage.content = streamedContent;
+      if (!hasToolCalls) {
+        onEvent({ type: 'text_delta', content: delta.content });
+      }
+    }
+
+    // Accumulate tool calls across stream chunks
+    if (delta?.tool_calls) {
+      hasToolCalls = true;
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index || 0;
+        if (!assistantMessage.tool_calls[idx]) {
+          assistantMessage.tool_calls[idx] = {
+            id: '',
+            type: 'function',
+            function: { name: '', arguments: '' },
+          };
+        }
+        if (tc.id) assistantMessage.tool_calls[idx].id = tc.id;
+        if (tc.function?.name) {
+          assistantMessage.tool_calls[idx].function.name += tc.function.name;
+        }
+        if (tc.function?.arguments) {
+          assistantMessage.tool_calls[idx].function.arguments += tc.function.arguments;
+        }
+        // Gemini 3+ models include an `extra_content` field on tool calls
+        // containing a `thought_signature`. This MUST be preserved and sent
+        // back in subsequent requests, otherwise Gemini returns a 400.
+        // See: https://ai.google.dev/gemini-api/docs/openai
+        if ((tc as any).extra_content) {
+          assistantMessage.tool_calls[idx].extra_content = (tc as any).extra_content;
+        }
+      }
+    }
+  }
+
+  // Calculate usage metrics
+  const inputTokens = actualUsage?.prompt_tokens ?? estimateConversationTokens(messages);
+  const outputTokens = actualUsage?.completion_tokens ?? estimateTokens(assistantMessage.content || '');
+  const cachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens;
+  const cost = pricing
+    ? createUsageInfo(inputTokens, outputTokens, pricing, cachedTokens).estimatedCost
+    : 0;
+  const contextPercent = pricing
+    ? getContextInfo(messages, pricing).utilizationPercentage
+    : 0;
+
+  // Log API response with usage info at INFO level
+  logger.info('Received API response', {
+    model,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    cost: cost > 0 ? `$${cost.toFixed(4)}` : 'N/A',
+    contextPercent: contextPercent > 0 ? `${contextPercent.toFixed(1)}%` : 'N/A',
+    hasToolCalls: assistantMessage.tool_calls.length > 0,
+    contentLength: assistantMessage.content?.length || 0,
+  });
+
+  onEvent({
+    type: 'usage',
+    usage: { inputTokens, outputTokens, cost, contextPercent },
+  });
+
+  // Log the full assistant message for debugging
+  logger.debug('Assistant response details', {
+    contentLength: assistantMessage.content?.length || 0,
+    contentPreview: assistantMessage.content?.slice(0, 200) || '(empty)',
+    toolCallsCount: assistantMessage.tool_calls?.length || 0,
+    toolCalls: assistantMessage.tool_calls?.map((tc: any) => ({
+      id: tc.id,
+      name: tc.function?.name,
+      argsPreview: tc.function?.arguments?.slice(0, 100),
+    })),
+  });
+
+  return {
+    assistantMessage,
+    hasToolCalls,
+    usage: { inputTokens, outputTokens, cost, contextPercent },
+  };
+}
+```
+
+### Create `src/agentic-loop/executor.ts`
+
+Create the file:
+
+```bash
+touch src/agentic-loop/executor.ts
+```
+
+```typescript
+// src/agentic-loop/executor.ts
+
+/**
+ * Tool execution module for the agentic loop.
+ *
+ * Handles execution of tool calls including special handling for
+ * sub-agents and proper abort signal management between tool calls.
+ */
+
+import type { AgentEventHandler, ToolCallEvent } from '../agentic-loop.js';
+import { handleToolCall } from '../tools/index.js';
+import { runSubAgent, type SubAgentProgressHandler, type SubAgentUsage } from '../sub-agent.js';
+import { logger } from '../utils/logger.js';
+
+/**
+ * Context for tool execution, passed through from the main loop.
+ */
+export interface ToolExecutionContext {
+  sessionId?: string;
+  abortSignal?: AbortSignal;
+  requestDefaults: Record<string, unknown>;
+  client: any;  // OpenAI client
+  model: string;
+  pricing?: any;  // ModelPricing
+}
+
+/**
+ * Execute all tool calls from an assistant message.
+ *
+ * Handles:
+ * - Abort checking between tool calls
+ * - Sub-agent special case with progress reporting
+ * - Error handling and result accumulation
+ * - Pending tool call tracking for abort scenarios
+ *
+ * Returns true if execution completed normally, false if aborted.
+ */
+export async function executeToolCalls(
+  toolCalls: any[],
+  messages: any[],
+  onEvent: AgentEventHandler,
+  context: ToolExecutionContext
+): Promise<{ completed: boolean; shouldAbort: boolean }> {
+  const { sessionId, abortSignal, requestDefaults, client, model, pricing } = context;
+
+  // Track which tool_call_ids still need a tool result message.
+  // This set is used to inject stub responses on abort, preventing
+  // orphaned tool_call_ids from permanently bricking the session.
+  const pendingToolCallIds = new Set<string>(
+    toolCalls.map((tc: any) => tc.id as string)
+  );
+
+  const injectStubsForPendingToolCalls = () => {
+    for (const id of pendingToolCallIds) {
+      messages.push({
+        role: 'tool',
+        tool_call_id: id,
+        content: 'Aborted by user.',
+      } as any);
+    }
+  };
+
+  for (const toolCall of toolCalls) {
+    // Check abort between tool calls
+    if (abortSignal?.aborted) {
+      logger.debug('Agentic loop aborted between tool calls');
+      injectStubsForPendingToolCalls();
+      return { completed: false, shouldAbort: true };
+    }
+
+    const { name, arguments: argsStr } = toolCall.function;
+
+    onEvent({
+      type: 'tool_call',
+      toolCall: { id: toolCall.id, name, args: argsStr, status: 'running' } as ToolCallEvent,
+    });
+
+    try {
+      const args = JSON.parse(argsStr);
+      let result: string;
+
+      // Handle sub-agent tool specially
+      if (name === 'sub_agent') {
+        const subProgress: SubAgentProgressHandler = (evt) => {
+          onEvent({
+            type: 'sub_agent_iteration',
+            subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration, args: evt.args },
+          });
+        };
+        const subResult = await runSubAgent(
+          client,
+          model,
+          args.task,
+          args.max_iterations,
+          requestDefaults,
+          subProgress,
+          abortSignal,
+          pricing,
+        );
+        result = subResult.response;
+        // Emit sub-agent usage for the UI to add to total cost
+        if (subResult.usage.inputTokens > 0 || subResult.usage.outputTokens > 0) {
+          onEvent({
+            type: 'sub_agent_iteration',
+            subAgentUsage: subResult.usage as any,
+          });
+        }
+      } else {
+        result = await handleToolCall(name, args, { sessionId, abortSignal });
+      }
+
+      logger.info('Tool completed', {
+        tool: name,
+        resultLength: result.length,
+      });
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: result,
+      } as any);
+      pendingToolCallIds.delete(toolCall.id);
+
+      onEvent({
+        type: 'tool_result',
+        toolCall: { id: toolCall.id, name, args: argsStr, status: 'done', result } as ToolCallEvent,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: `Error: ${errMsg}`,
+      } as any);
+      pendingToolCallIds.delete(toolCall.id);
+
+      // If the tool was aborted, inject stubs for remaining pending calls and stop
+      if (abortSignal?.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message === 'Operation aborted'))) {
+        logger.debug('Agentic loop aborted during tool execution');
+        injectStubsForPendingToolCalls();
+        return { completed: false, shouldAbort: true };
+      }
+
+      onEvent({
+        type: 'tool_result',
+        toolCall: { id: toolCall.id, name, args: argsStr, status: 'error', result: errMsg } as ToolCallEvent,
+      });
+    }
+  }
+
+  return { completed: true, shouldAbort: false };
+}
+```
+
+### Create `src/agentic-loop/errors.ts`
+
+Create the file:
+
+```bash
+touch src/agentic-loop/errors.ts
+```
+
+```typescript
+// src/agentic-loop/errors.ts
+
+/**
+ * Error handling module for the agentic loop.
+ *
+ * Handles API errors with various retry strategies:
+ * - 400 errors: JSON repair, orphaned tool cleanup, truncation, "continue" prompts
+ * - 429 errors: rate limit backoff
+ * - 5xx errors: exponential backoff
+ * - Context window exceeded: forced compaction
+ */
+
+import type { Message, AgentEventHandler } from '../agentic-loop.js';
+import type { ModelPricing } from '../utils/cost-tracker.js';
+import { compactIfNeeded } from '../utils/compactor.js';
+import { logger } from '../utils/logger.js';
+
+// Retry state tracked across loop iterations.
+export interface RetryState {
+  repairCount: number;
+  contextCount: number;
+  truncateCount: number;
+  continueCount: number;
+  retriggerCount: number;
+}
+
+const LIMITS = {
+  MAX_REPAIR: 2,
+  MAX_CONTEXT: 2,
+  MAX_TRUNCATE: 5,
+  MAX_CONTINUE: 1,
+};
+
+// Sleep with abort signal support.
+export async function sleepWithAbort(delayMs: number, abortSignal?: AbortSignal): Promise<void> {
+  if (!abortSignal) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return;
+  }
+
+  if (abortSignal.aborted) {
+    throw new Error('Operation aborted');
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      abortSignal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      abortSignal.removeEventListener('abort', onAbort);
+      reject(new Error('Operation aborted'));
+    };
+
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+// Result of attempting to handle an API error.
+export interface ErrorHandlerResult {
+  handled: boolean;
+  shouldAbort: boolean;
+  silentRetry: boolean;
+  errorMessage?: string;
+  transient?: boolean;
+}
+
+// Handle an API error with appropriate retry strategy.
+export async function handleApiError(
+  apiError: any,
+  messages: Message[],
+  _validToolNames: Set<string>,
+  pricing: ModelPricing | undefined,
+  retryState: RetryState,
+  iterationCount: number,
+  onEvent: AgentEventHandler,
+  client?: any,
+  model?: string,
+  requestDefaults?: Record<string, unknown>,
+  sessionId?: string
+): Promise<ErrorHandlerResult> {
+  const errMsg = apiError?.message || 'Unknown API error';
+  const status = apiError?.status;
+
+  logger.error(`API error: ${errMsg}`, { status, code: apiError?.code });
+
+  const retryableStatus = status === 408 || status === 409 || status === 425;
+  const retryableCode = ['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ENETUNREACH', 'EAI_AGAIN'].includes(apiError?.code);
+
+  // Context window exceeded - force compaction
+  const isContextTooLong =
+    status === 400 &&
+    /prompt.*too long|context.*length|maximum.*token|tokens?.*exceed/i.test(errMsg);
+
+  if (isContextTooLong && retryState.contextCount < LIMITS.MAX_CONTEXT) {
+    retryState.contextCount++;
+    logger.warn(`Prompt too long (attempt ${retryState.contextCount})`);
+    onEvent({
+      type: 'error',
+      error: 'Prompt too long. Compacting conversation...',
+      transient: true,
+    });
+
+    if (pricing && client && model) {
+      try {
+        const compacted = await compactIfNeeded(
+          client,
+          model,
+          messages,
+          pricing.contextWindow,
+          requestDefaults || {},
+          sessionId
+        );
+        messages.length = 0;
+        messages.push(...compacted);
+      } catch (compactErr) {
+        logger.error(`Compaction failed: ${compactErr}`);
+      }
+    }
+
+    // Truncate oversized tool results as fallback
+    const MAX_TOOL_CHARS = 20_000;
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i] as any;
+      if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > MAX_TOOL_CHARS) {
+        messages[i] = {
+          ...m,
+          content: m.content.slice(0, MAX_TOOL_CHARS) + '\n... (truncated)',
+        };
+      }
+    }
+
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // Rate limit - backoff
+  if (status === 429) {
+    const retryAfter = parseInt(apiError?.headers?.['retry-after'] || '5', 10);
+    const backoff = Math.min(retryAfter * 1000, 60_000);
+    logger.info(`Rate limited, retrying in ${backoff / 1000}s...`);
+    onEvent({ type: 'error', error: `Rate limited. Retrying...`, transient: true });
+    await sleepWithAbort(backoff);
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // Server error - exponential backoff
+  if (status >= 500 || retryableStatus || retryableCode) {
+    const backoff = Math.min(2 ** iterationCount * 1000, 30_000);
+    logger.info(`Request failed, retrying in ${backoff / 1000}s...`);
+    onEvent({ type: 'error', error: `Request failed. Retrying...`, transient: true });
+    await sleepWithAbort(backoff);
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // Generic 400 errors - try repair/truncate
+  if (status === 400) {
+    return await handle400Error(messages, retryState, onEvent);
+  }
+
+  // Non-retryable
+  return { handled: false, shouldAbort: false, silentRetry: false, errorMessage: errMsg };
+}
+
+// Handle 400 errors: repair JSON -> truncate.
+async function handle400Error(
+  messages: Message[],
+  retryState: RetryState,
+  onEvent: AgentEventHandler
+): Promise<ErrorHandlerResult> {
+  // Try JSON repairs on tool arguments
+  if (retryState.repairCount < LIMITS.MAX_REPAIR) {
+    let repaired = false;
+
+    for (const msg of messages) {
+      const msgAny = msg as any;
+      if (msg.role === 'assistant' && Array.isArray(msgAny.tool_calls)) {
+        for (const tc of msgAny.tool_calls) {
+          const args = tc.function?.arguments;
+          if (args && typeof args === 'string') {
+            const fixed = repairInvalidEscapes(args);
+            if (fixed !== args) {
+              tc.function.arguments = fixed;
+              repaired = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (repaired) {
+      retryState.repairCount++;
+      logger.warn('400 response: repaired invalid JSON escapes');
+      return { handled: true, shouldAbort: false, silentRetry: true };
+    }
+  }
+
+  // Truncate messages progressively
+  if (retryState.truncateCount < LIMITS.MAX_TRUNCATE && messages.length > 2) {
+    retryState.truncateCount++;
+    const removed = messages.splice(-1);
+    logger.debug('400 error: removed last message', {
+      role: removed[0]?.role,
+      remaining: messages.length,
+    });
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // All strategies exhausted
+  return {
+    handled: false,
+    shouldAbort: false,
+    silentRetry: false,
+    errorMessage: 'Could not recover from error. Try /clear to start fresh.',
+  };
+}
+
+/**
+ * Repair invalid JSON escape sequences.
+ * Models sometimes emit \| \! \- etc. (e.g. grep regex args).
+ */
+function repairInvalidEscapes(value: string): string {
+  return value.replace(/\\([^"\\\/bfnrtu])/g, '\\\\$1');
+}
+```
+
+### Update `src/agentic-loop.ts`
+
+Now update the main agentic loop to use these modules:
+
+```typescript
+// src/agentic-loop.ts
+
+/**
+ * The agentic loop — the core of ProtoAgent.
+ *
+ * This module implements the standard tool-use loop:
+ *
+ *  1. Send the conversation to the LLM with tool definitions
+ *  2. If the response contains tool_calls:
+ *     a. Execute each tool
+ *     b. Append the results to the conversation
+ *     c. Go to step 1
+ *  3. If the response is plain text:
+ *     a. Return it to the caller (the UI renders it)
+ *
+ * The loop is a plain TypeScript module — not an Ink component.
+ * The UI subscribes to events emitted by the loop and updates
+ * React state accordingly. This keeps the core logic testable
+ * and UI-independent.
+ */
+
+import type OpenAI from 'openai';
+import { setMaxListeners } from 'node:events';
+import { getAllTools } from './tools/index.js';
+import { generateSystemPrompt } from './system-prompt.js';
+import { subAgentTool, type SubAgentUsage } from './sub-agent.js';
+import {
+  getContextInfo,
+  type ModelPricing,
+} from './utils/cost-tracker.js';
+import { compactIfNeeded } from './utils/compactor.js';
+import { logger } from './utils/logger.js';
+import { processStream } from './agentic-loop/stream.js';
+import { executeToolCalls, type ToolExecutionContext } from './agentic-loop/executor.js';
+import { handleApiError, type RetryState } from './agentic-loop/errors.js';
+
+// ─── Types ───
+
+export type Message = OpenAI.Chat.Completions.ChatCompletionMessageParam;
+
+export interface ToolCallEvent {
+  id: string;
+  name: string;
+  args: string;
+  status: 'running' | 'done' | 'error';
+  result?: string;
+}
+
+export interface AgentEvent {
+  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done' | 'sub_agent_iteration';
+  content?: string;
+  toolCall?: ToolCallEvent;
+  /** Emitted while a sub-agent is executing — carries the child tool name and iteration status. */
+  subAgentTool?: { tool: string; status: 'running' | 'done' | 'error'; iteration: number; args?: Record<string, unknown> };
+  usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
+  /** Emitted when a sub-agent completes, carrying its accumulated usage. */
+  subAgentUsage?: SubAgentUsage;
+  error?: string;
+  transient?: boolean;
+}
+
+export type AgentEventHandler = (event: AgentEvent) => void;
+
+export interface AgenticLoopOptions {
+  maxIterations?: number;
+  pricing?: ModelPricing;
+  abortSignal?: AbortSignal;
+  sessionId?: string;
+  requestDefaults?: Record<string, unknown>;
+}
+
+function emitAbortAndFinish(onEvent: AgentEventHandler): void {
+  onEvent({ type: 'done' });
+}
+
+function getValidToolNames(): Set<string> {
+  return new Set(
+    [...getAllTools(), subAgentTool]
+      .map((tool: any) => tool.function?.name)
+      .filter((name: string | undefined): name is string => Boolean(name))
+  );
+}
+
+/**
+ * Process a single user input through the agentic loop.
+ *
+ * Takes the full conversation history (including system message),
+ * runs the loop, and returns the updated message history.
+ *
+ * The `onEvent` callback is called for each event (text deltas,
+ * tool calls, usage info, etc.) so the UI can render progress.
+ */
+export async function runAgenticLoop(
+  client: OpenAI,
+  model: string,
+  messages: Message[],
+  userInput: string,
+  onEvent: AgentEventHandler,
+  options: AgenticLoopOptions = {}
+): Promise<Message[]> {
+  const maxIterations = options.maxIterations ?? 100;
+  const pricing = options.pricing;
+  const abortSignal = options.abortSignal;
+  const sessionId = options.sessionId;
+  const requestDefaults = options.requestDefaults || {};
+
+  // The same AbortSignal is passed into every OpenAI SDK call and every
+  // sleep across all loop iterations and sub-agent calls.
+  // The SDK attaches an 'abort' listener per request, so on a long run
+  // the default limit of 10 listeners is quickly exceeded.
+  if (abortSignal) {
+    setMaxListeners(0, abortSignal); // 0 = unlimited, scoped to this signal only
+  }
+
+  // Note: userInput is passed for context/logging but user message should already be in messages array
+  const updatedMessages: Message[] = [...messages];
+
+  // Refresh system prompt to pick up any new skills or project changes
+  const newSystemPrompt = await generateSystemPrompt();
+  const systemMsgIndex = updatedMessages.findIndex((m) => m.role === 'system');
+  if (systemMsgIndex !== -1) {
+    updatedMessages[systemMsgIndex] = { role: 'system', content: newSystemPrompt } as Message;
+  }
+
+  let iterationCount = 0;
+  const retryState: RetryState = {
+    repairCount: 0,
+    contextCount: 0,
+    truncateCount: 0,
+    continueCount: 0,
+    retriggerCount: 0,
+  };
+  const MAX_RETRIGGERS = 3;
+  const validToolNames = getValidToolNames();
+
+  while (iterationCount < maxIterations) {
+    // Check if abort was requested
+    if (abortSignal?.aborted) {
+      logger.debug('Agentic loop aborted by user');
+      emitAbortAndFinish(onEvent);
+      return updatedMessages;
+    }
+
+    iterationCount++;
+
+    // Check for compaction when we have pricing info (includes context window).
+    // Compaction preserves: (1) the system prompt at index 0, (2) any skill_content
+    // tool messages, and (3) the 5 most recent messages. Middle messages are
+    // summarized into a secondary system message. The length=0 + spread reassigns
+    // the array in place with the compacted structure.
+    if (pricing) {
+      const contextInfo = getContextInfo(updatedMessages, pricing);
+      if (contextInfo.needsCompaction) {
+        const compacted = await compactIfNeeded(
+          client,
+          model,
+          updatedMessages,
+          pricing.contextWindow,
+          requestDefaults,
+          sessionId
+        );
+        // Replace messages in-place with compacted version
+        updatedMessages.length = 0;
+        updatedMessages.push(...compacted);
+      }
+    }
+
+    // Declare assistantMessage outside try block so it's accessible in catch
+    let assistantMessage: any;
+
+    try {
+      // Build tools list: core tools + sub-agent tool + dynamic (MCP) tools
+      const allTools = [...getAllTools(), subAgentTool];
+
+      logger.info('Making API request', {
+        model,
+        toolsCount: allTools.length,
+        messagesCount: updatedMessages.length,
+      });
+
+      // Debug: log message roles and sizes
+      logger.trace('Messages', { msgs: updatedMessages.map((m: any) => ({
+        role: m.role,
+        len: m.content?.length || m.tool_calls?.length || 0,
+      })) });
+
+      const stream = await client.chat.completions.create({
+        ...requestDefaults,
+        model,
+        messages: updatedMessages,
+        tools: allTools,
+        tool_choice: 'auto',
+        stream: true,
+        stream_options: { include_usage: true },
+      }, {
+        signal: abortSignal,
+      });
+
+      // Process the streaming response
+      const streamResult = await processStream(stream, updatedMessages, model, pricing, onEvent);
+      assistantMessage = streamResult.assistantMessage;
+
+      // Handle tool calls
+      if (streamResult.hasToolCalls) {
+        // Reset retrigger count on valid tool call response
+        retryState.retriggerCount = 0;
+
+        // Clean up empty tool_calls entries (from sparse array)
+        assistantMessage.tool_calls = assistantMessage.tool_calls.filter(Boolean);
+
+        // Validate that all tool calls have valid JSON arguments
+        const invalidToolCalls = assistantMessage.tool_calls.filter((tc: any) => {
+          const args = tc.function?.arguments;
+          if (!args) return false;
+          try {
+            JSON.parse(args);
+            return false;
+          } catch {
+            return true;
+          }
+        });
+
+        if (invalidToolCalls.length > 0) {
+          logger.warn('Assistant produced tool calls with invalid JSON, skipping this turn');
+          continue;
+        }
+
+        logger.info('Model returned tool calls', {
+          count: assistantMessage.tool_calls.length,
+          tools: assistantMessage.tool_calls.map((tc: any) => tc.function?.name).join(', '),
+        });
+
+        updatedMessages.push(assistantMessage);
+
+        // Execute tool calls
+        const toolContext: ToolExecutionContext = {
+          sessionId,
+          abortSignal,
+          requestDefaults,
+          client,
+          model,
+          pricing,
+        };
+
+        const executionResult = await executeToolCalls(
+          assistantMessage.tool_calls,
+          updatedMessages,
+          onEvent,
+          toolContext
+        );
+
+        if (executionResult.shouldAbort) {
+          emitAbortAndFinish(onEvent);
+          return updatedMessages;
+        }
+
+        // Signal UI that this iteration's tool calls are all done
+        onEvent({ type: 'iteration_done' });
+
+        // Continue loop — let the LLM process tool results
+        continue;
+      }
+
+      // Plain text response — we're done
+      if (assistantMessage.content) {
+        updatedMessages.push({
+          role: 'assistant',
+          content: assistantMessage.content,
+        } as Message);
+        retryState.retriggerCount = 0;
+      }
+
+      // Check if we need to retrigger
+      const lastMessage = updatedMessages[updatedMessages.length - 1];
+      if (lastMessage?.role === 'tool' && retryState.retriggerCount < MAX_RETRIGGERS) {
+        retryState.retriggerCount++;
+        logger.warn('AI stopped after tool call without responding; retriggering');
+        updatedMessages.push({
+          role: 'user',
+          content: 'Please continue.',
+        } as Message);
+        continue;
+      }
+
+      // Reset retry counts on successful completion
+      retryState.repairCount = 0;
+      retryState.retriggerCount = 0;
+      onEvent({ type: 'done' });
+      return updatedMessages;
+
+    } catch (apiError: any) {
+      if (abortSignal?.aborted || apiError?.name === 'AbortError') {
+        logger.debug('Agentic loop request aborted');
+        // Handle partial assistant message on abort...
+        emitAbortAndFinish(onEvent);
+        return updatedMessages;
+      }
+
+      // Handle API errors with retry strategies
+      const errorResult = await handleApiError(
+        apiError,
+        updatedMessages,
+        validToolNames,
+        pricing,
+        retryState,
+        iterationCount,
+        onEvent,
+        client,
+        model,
+        requestDefaults,
+        sessionId
+      );
+
+      if (errorResult.shouldAbort) {
+        emitAbortAndFinish(onEvent);
+        return updatedMessages;
+      }
+
+      if (!errorResult.handled) {
+        onEvent({
+          type: 'error',
+          error: errorResult.errorMessage || 'Unknown error',
+          transient: errorResult.transient,
+        });
+        onEvent({ type: 'done' });
+        return updatedMessages;
+      }
+
+      if (!errorResult.silentRetry) {
+        onEvent({ type: 'done' });
+        return updatedMessages;
+      }
+
+      // Silent retry - continue the loop
+      continue;
+    }
+  }
+
+  onEvent({ type: 'error', error: 'Maximum iteration limit reached.' });
+  onEvent({ type: 'done' });
+  return updatedMessages;
+}
+
+/**
+ * Initialize the conversation with the system prompt.
+ */
+export async function initializeMessages(): Promise<Message[]> {
+  const systemPrompt = await generateSystemPrompt();
+  return [{ role: 'system', content: systemPrompt } as Message];
+}
+```
+
+**Why modularize now?** By Part 12, `agentic-loop.ts` has grown to nearly 1000 lines. This makes it hard to understand and maintain. The modularization:
+- Keeps each file focused on one responsibility
+- Makes the code easier to navigate and modify
+- Teaches good software engineering practices
+- Prepares the codebase for future enhancements
+
+The refactored `agentic-loop.ts` is now ~400 lines (down from ~1000) and orchestrates the three submodules.
+
+## Step 6: Upgrade `src/tools/edit-file.ts`
 
 The final version adds a 5-strategy fuzzy match cascade (exact, line-trimmed, indent-flexible, whitespace-normalized, trimmed-boundary) and returns a unified diff on success. It also enforces the read-before-edit staleness guard via `file-time.ts`.
 
@@ -835,7 +1773,7 @@ See `src/tools/edit-file.ts` in the source tree for the complete implementation.
 - Uses the `diff` library's `createPatch()` for unified diff generation
 - Re-reads the file after write and records the read time
 
-## Step 6: Upgrade `src/tools/read-file.ts`
+## Step 7: Upgrade `src/tools/read-file.ts`
 
 The final version adds:
 - `findSimilarPaths()` — suggests similar paths when a file isn't found
@@ -843,7 +1781,7 @@ The final version adds:
 
 See `src/tools/read-file.ts` in the source tree for the complete implementation.
 
-## Step 7: Upgrade `src/tools/search-files.ts`
+## Step 8: Upgrade `src/tools/search-files.ts`
 
 The final version adds ripgrep (`rg`) support when available, falling back to the JS implementation. Ripgrep results are sorted by modification time (most recently changed files first).
 
@@ -851,57 +1789,16 @@ Note that even with ripgrep, search is not as fast as you might expect for large
 
 See `src/tools/search-files.ts` in the source tree for the complete implementation.
 
-## Step 8: Upgrade `src/agentic-loop.ts`
-
-The final version adds extensive error recovery, logging, and robustness improvements:
-
-**AbortSignal Handling:**
-- `setMaxListeners(0, abortSignal)` — Prevents MaxListenersExceededWarning on long runs
-- `sleepWithAbort()` — Cancellable delays with proper cleanup
-- `emitAbortAndFinish()` — Clean abort handling
-
-**Tool Call Sanitization (Critical for Reliability):**
-- `appendStreamingFragment()` — Handles overlapping stream deltas correctly
-- `collapseRepeatedString()` — Fixes models that repeat tool names
-- `normalizeToolName()` — Matches tool names even when malformed
-- `extractFirstCompleteJsonValue()` — Extracts valid JSON from garbage
-- `repairInvalidEscapes()` — Fixes invalid JSON escapes like `\|` from grep regex
-- `sanitizeToolCall()` / `sanitizeMessagesForRetry()` — Comprehensive repair of malformed tool calls
-
-**Retry & Recovery Logic:**
-- `repairRetryCount` — Retries with sanitized messages on 400 errors
-- `contextRetryCount` — Forces compaction on context-too-long errors
-- `retriggerCount` / `MAX_RETRIGGERS` — Retries when AI stops after tool calls
-- `truncateRetryCount` / `MAX_TRUNCATE_RETRIES` — Removes messages on persistent 400s
-- Exponential backoff: `Math.min(2 ** iterationCount * 1000, 30_000)`
-
-**Provider-Specific Fixes:**
-- Preserves Gemini's `extra_content` field (thought_signature) to prevent 400 errors
-
-**System Prompt Refresh:**
-- Refreshes system prompt each iteration to pick up new skills
-
-**Comprehensive Logging:**
-- API request/response logging with token counts
-- Tool call validation warnings
-- Debug logging for message payloads
-
-See `src/agentic-loop.ts` in the source tree for the complete 500+ line implementation.
-
 ## Step 9: Upgrade `src/config.tsx`
 
-The final version adds the `InitComponent` for the interactive `protoagent init` wizard, plus helper functions for config path resolution:
+The final version adds helper functions for config path resolution:
 
-- `InitComponent` — Interactive React component for creating runtime configs
-- `getInitConfigPath()` — Returns path for project or user config
-- `writeInitConfig()` — Creates initial protoagent.jsonc with empty providers/mcp structure
-- Helper functions: `getConfigDirectory()`, `getUserRuntimeConfigPath()`, `getProjectRuntimeConfigPath()`
+- `getConfigDirectory()` — Returns the base config directory
+- `getUserRuntimeConfigPath()` — Returns path to user-wide config
+- `getProjectRuntimeConfigPath()` — Returns path to project config
 - Enhanced `resolveApiKey()` with better precedence chain and custom headers support
 
-Key additions to the `InitComponent`:
-- Two-step wizard: select target (project vs user) → confirm/create config
-- Checks if config already exists and prompts for overwrite
-- Shows colored success/exists messages after creation
+Note: The `InitComponent` and `writeInitConfig()` were added in Part 11, so they're already present in your codebase.
 
 See `src/config.tsx` in the source tree for the complete implementation.
 
@@ -919,9 +1816,413 @@ The stderr handling is particularly important: MCP servers often log to stderr, 
 
 See `src/mcp.ts` in the source tree for the complete implementation.
 
-## Step 11: Final `src/App.tsx`
+## Step 11: Extract Event Handler Hook and UI Sub-components from `src/App.tsx`
 
-The final App brings together everything from Parts 1-12 plus:
+Our `App.tsx` has grown to manage many responsibilities — state management, event handling, and several UI sub-components. Let's refactor it to keep the main file focused on orchestration.
+
+### Custom Hook for Event Handling
+
+The `handleSubmit` function contains ~350 lines of event handling logic — a large switch statement processing different `AgentEvent` types. This is a perfect candidate for a **custom React hook**:
+
+- **Separation of concerns**: App.tsx focuses on orchestration, the hook handles event processing
+- **Testability**: Event handling logic can be tested independently
+- **Reusability**: The pattern could be reused if we had multiple agent interfaces
+
+Create the hook:
+
+```bash
+touch src/hooks/useAgentEventHandler.tsx
+```
+
+```typescript
+// src/hooks/useAgentEventHandler.tsx
+
+import React, { useCallback } from 'react';
+import { Text } from 'ink';
+import type { AgentEvent, Message } from '../agentic-loop.js';
+import { renderFormattedText, normalizeTranscriptText } from '../utils/format-message.js';
+import { formatSubAgentActivity, formatToolActivity } from '../utils/tool-display.js';
+
+export interface AssistantMessageRef {
+  message: any;
+  index: number;
+  kind: 'streaming_text' | 'tool_call_assistant';
+}
+
+export interface StreamingBuffer {
+  unflushedContent: string;
+  hasFlushedAnyLine: boolean;
+}
+
+export interface InlineThreadError {
+  id: string;
+  message: string;
+  transient?: boolean;
+}
+
+interface UseAgentEventHandlerOptions {
+  addStatic: (node: React.ReactNode) => void;
+  setCompletionMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  setIsStreaming: React.Dispatch<React.SetStateAction<boolean>>;
+  setStreamingText: React.Dispatch<React.SetStateAction<string>>;
+  setActiveTool: React.Dispatch<React.SetStateAction<string | null>>;
+  setLastUsage: React.Dispatch<React.SetStateAction<AgentEvent['usage'] | null>>;
+  setTotalCost: React.Dispatch<React.SetStateAction<number>>;
+  setThreadErrors: React.Dispatch<React.SetStateAction<InlineThreadError[]>>;
+  setError: React.Dispatch<React.SetStateAction<string | null>>;
+  assistantMessageRef: React.MutableRefObject<AssistantMessageRef | null>;
+  streamingBufferRef: React.MutableRefObject<StreamingBuffer>;
+}
+
+export function useAgentEventHandler(options: UseAgentEventHandlerOptions) {
+  const {
+    addStatic,
+    setCompletionMessages,
+    setIsStreaming,
+    setStreamingText,
+    setActiveTool,
+    setLastUsage,
+    setTotalCost,
+    setThreadErrors,
+    setError,
+    assistantMessageRef,
+    streamingBufferRef,
+  } = options;
+
+  return useCallback((event: AgentEvent) => {
+    switch (event.type) {
+      case 'text_delta': {
+        // Handle streaming text from the model...
+        // (full implementation in checkpoint)
+        break;
+      }
+      case 'sub_agent_iteration': {
+        // Handle sub-agent progress updates...
+        break;
+      }
+      case 'tool_call': {
+        // Handle tool call start...
+        break;
+      }
+      case 'tool_result': {
+        // Handle tool completion...
+        break;
+      }
+      case 'usage': {
+        // Handle usage/cost updates...
+        break;
+      }
+      case 'error': {
+        // Handle errors...
+        break;
+      }
+      case 'iteration_done': {
+        // Clean up after iteration...
+        break;
+      }
+      case 'done': {
+        // Finalize streaming, flush buffer...
+        break;
+      }
+    }
+  }, [/* dependency array */]);
+}
+```
+
+The hook:
+- **Exports shared types** (`AssistantMessageRef`, `StreamingBuffer`, `InlineThreadError`) so they can be used in App.tsx
+- **Encapsulates all event handling** — the ~350 line switch statement moves here
+- **Uses TypeScript discriminated unions** with type assertions for precise event typing
+- **Maintains ref-based state** for performance during high-frequency streaming
+
+In `App.tsx`, replace the inline handler with the hook:
+
+```typescript
+// In App.tsx, import the hook and types
+import { useAgentEventHandler, type AssistantMessageRef, type StreamingBuffer, type InlineThreadError } from './hooks/useAgentEventHandler.js';
+
+// Remove the local InlineThreadError interface (now imported)
+
+// Use the imported types for refs
+const assistantMessageRef = useRef<AssistantMessageRef | null>(null);
+const streamingBufferRef = useRef<StreamingBuffer>({
+  unflushedContent: '',
+  hasFlushedAnyLine: false,
+});
+
+// Create the event handler
+const handleAgentEvent = useAgentEventHandler({
+  addStatic,
+  setCompletionMessages,
+  setIsStreaming,
+  setStreamingText,
+  setActiveTool,
+  setLastUsage,
+  setTotalCost,
+  setThreadErrors,
+  setError,
+  assistantMessageRef,
+  streamingBufferRef,
+});
+
+// In handleSubmit, pass the handler to runAgenticLoop:
+const updatedMessages = await runAgenticLoop(
+  clientRef.current,
+  config.model,
+  [...completionMessages, userMessage],
+  trimmed,
+  handleAgentEvent,  // <-- use the hook's callback
+  { pricing, abortSignal, sessionId, requestDefaults }
+);
+```
+
+**Why this pattern works:**
+- **App.tsx shrinks from ~1080 to ~740 lines** — a 32% reduction
+- **The hook is self-contained** — all event handling logic in one place
+- **Types are shared** — no duplication between files
+- **Refs stay in App.tsx** — component state belongs with the component
+
+### UI Sub-components
+
+Now let's extract the UI components. Create the files:
+
+```bash
+touch src/components/CommandFilter.tsx
+touch src/components/ApprovalPrompt.tsx
+touch src/components/UsageDisplay.tsx
+touch src/components/InlineSetup.tsx
+```
+
+### `src/components/CommandFilter.tsx`
+
+Shows filtered slash commands when the user types `/`. We export `SLASH_COMMANDS` so `App.tsx` can reuse it for the help text:
+
+```typescript
+import React from 'react';
+import { Box, Text } from 'ink';
+
+export const SLASH_COMMANDS = [
+  { name: '/help', description: 'Show all available commands' },
+  { name: '/quit', description: 'Exit ProtoAgent' },
+  { name: '/exit', description: 'Alias for /quit' },
+];
+
+export interface CommandFilterProps {
+  inputText: string;
+}
+
+export const CommandFilter: React.FC<CommandFilterProps> = ({ inputText }) => {
+  if (!inputText.startsWith('/')) return null;
+
+  const filtered = SLASH_COMMANDS.filter((cmd) =>
+    cmd.name.toLowerCase().startsWith(inputText.toLowerCase())
+  );
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      {filtered.map((cmd) => (
+        <Text key={cmd.name} dimColor>
+          <Text color="green">{cmd.name}</Text> — {cmd.description}
+        </Text>
+      ))}
+    </Box>
+  );
+};
+```
+
+### `src/components/ApprovalPrompt.tsx`
+
+Interactive approval prompt rendered inline:
+
+```typescript
+import React from 'react';
+import { Box, Text } from 'ink';
+import { Select } from '@inkjs/ui';
+import { LeftBar } from './LeftBar.js';
+import type { ApprovalRequest, ApprovalResponse } from '../utils/approval.js';
+
+export interface ApprovalPromptProps {
+  request: ApprovalRequest;
+  onRespond: (response: ApprovalResponse) => void;
+}
+
+export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({ request, onRespond }) => {
+  const sessionApprovalLabel = request.sessionScopeKey
+    ? 'Approve this operation for session'
+    : `Approve all "${request.type}" for session`;
+
+  const items = [
+    { label: 'Approve once', value: 'approve_once' as const },
+    { label: sessionApprovalLabel, value: 'approve_session' as const },
+    { label: 'Reject', value: 'reject' as const },
+  ];
+
+  return (
+    <LeftBar color="green" marginTop={1} marginBottom={1}>
+      <Text color="green" bold>Approval Required</Text>
+      <Text>{request.description}</Text>
+      {request.detail && (
+        <Text dimColor>{request.detail.length > 200 ? request.detail.slice(0, 200) + '...' : request.detail}</Text>
+      )}
+      <Box marginTop={1}>
+        <Select
+          options={items.map((item) => ({ value: item.value, label: item.label }))}
+          onChange={(value) => onRespond(value as ApprovalResponse)}
+        />
+      </Box>
+    </LeftBar>
+  );
+};
+```
+
+### `src/components/UsageDisplay.tsx`
+
+Cost/usage display in the status bar:
+
+```typescript
+import React from 'react';
+import { Box, Text } from 'ink';
+
+export interface UsageDisplayProps {
+  usage: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number } | null;
+  totalCost: number;
+}
+
+export const UsageDisplay: React.FC<UsageDisplayProps> = ({ usage, totalCost }) => {
+  if (!usage && totalCost === 0) return null;
+
+  return (
+    <Box marginTop={1}>
+      {usage && (
+        <Box>
+          <Box backgroundColor="#064e3b" paddingX={1}>
+            <Text color="white">tokens: </Text>
+            <Text color="white" bold>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
+          </Box>
+          <Box backgroundColor="#065f46" paddingX={1}>
+            <Text color="white">ctx: </Text>
+            <Text color="white" bold>{usage.contextPercent.toFixed(0)}%</Text>
+          </Box>
+        </Box>
+      )}
+      {totalCost > 0 && (
+        <Box backgroundColor="#064e3b" paddingX={1}>
+          <Text color="black">cost: </Text>
+          <Text color="black" bold>${totalCost.toFixed(4)}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+};
+```
+
+### `src/components/InlineSetup.tsx`
+
+Inline setup wizard shown when no config exists:
+
+```typescript
+import React, { useState } from 'react';
+import { Box } from 'ink';
+import {
+  writeConfig,
+  writeInitConfig,
+  type Config,
+  type InitConfigTarget,
+  TargetSelection,
+  ModelSelection,
+  ApiKeyInput,
+} from '../config.js';
+
+export interface InlineSetupProps {
+  onComplete: (config: Config) => void;
+}
+
+export const InlineSetup: React.FC<InlineSetupProps> = ({ onComplete }) => {
+  const [setupStep, setSetupStep] = useState<'target' | 'provider' | 'api_key'>('target');
+  const [target, setTarget] = useState<InitConfigTarget>('project');
+  const [selectedProviderId, setSelectedProviderId] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState('');
+
+  const handleModelSelect = (providerId: string, modelId: string) => {
+    setSelectedProviderId(providerId);
+    setSelectedModelId(modelId);
+    setSetupStep('api_key');
+  };
+
+  const handleConfigComplete = (config: Config) => {
+    writeInitConfig(target);
+    writeConfig(config, target);
+    onComplete(config);
+  };
+
+  if (setupStep === 'target') {
+    return (
+      <Box marginTop={1}>
+        <TargetSelection
+          title="First-time setup"
+          subtitle="Create a ProtoAgent runtime config:"
+          onSelect={(value) => {
+            setTarget(value);
+            setSetupStep('provider');
+          }}
+        />
+      </Box>
+    );
+  }
+
+  if (setupStep === 'provider') {
+    return (
+      <Box marginTop={1}>
+        <ModelSelection
+          setSelectedProviderId={setSelectedProviderId}
+          setSelectedModelId={setSelectedModelId}
+          onSelect={handleModelSelect}
+          title="First-time setup"
+        />
+      </Box>
+    );
+  }
+
+  return (
+    <Box marginTop={1}>
+      <ApiKeyInput
+        selectedProviderId={selectedProviderId}
+        selectedModelId={selectedModelId}
+        target={target}
+        title="First-time setup"
+        showProviderHeaders={false}
+        onComplete={handleConfigComplete}
+      />
+    </Box>
+  );
+};
+```
+
+### Update `src/App.tsx`
+
+Remove the inline component definitions from `App.tsx` and import the extracted components instead:
+
+```typescript
+// Replace this import:
+import { readConfig, writeConfig, writeInitConfig, resolveApiKey, type Config, type InitConfigTarget, TargetSelection, ModelSelection, ApiKeyInput } from './config.js';
+
+// With this:
+import { readConfig, resolveApiKey, type Config } from './config.js';
+
+// Add these imports:
+import { CommandFilter } from './components/CommandFilter.js';
+import { ApprovalPrompt } from './components/ApprovalPrompt.js';
+import { UsageDisplay } from './components/UsageDisplay.js';
+import { InlineSetup } from './components/InlineSetup.js';
+```
+
+Then remove the `// ─── Sub-components ───` section entirely — the inline `CommandFilter`, `ApprovalPrompt`, `UsageDisplay`, and `InlineSetup` definitions are no longer needed.
+
+This isn't strictly necessary for functionality, but it demonstrates how to structure a React application as it grows. Each component now has a single responsibility, and `App.tsx` focuses on state management and event coordination.
+
+The final `App.tsx` brings together everything from Parts 1-12 plus:
 
 - **Archived vs live message rendering** — archived messages use `useMemo` for performance, live messages re-render during streaming
 - **Static items as React nodes** — `StaticItem` stores `node: React.ReactNode` instead of `text: string`; all `addStatic()` calls use `<Text>` components with Ink props (e.g., `<Text color="green">`, `<Text bold>`) instead of ANSI escape codes
@@ -935,7 +2236,7 @@ The final App brings together everything from Parts 1-12 plus:
 - **Terminal resize handling** — re-renders input on window resize
 - **Quitting with session save** — displays the resume command before exit
 
-See `src/App.tsx` in the source tree for the complete 1061-line implementation.
+See `src/App.tsx` in the source tree for the complete implementation.
 
 ## Step 12: Final `src/cli.tsx`
 

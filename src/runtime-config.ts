@@ -3,7 +3,58 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse, printParseErrorCode } from 'jsonc-parser';
+import { z } from 'zod';
 import { logger } from './utils/logger.js';
+
+// ─── Zod Schemas for Runtime Validation ───
+
+export const RuntimeModelConfigSchema = z.object({
+  name: z.string().optional(),
+  contextWindow: z.number().optional(),
+  inputPricePerMillion: z.number().optional(),
+  outputPricePerMillion: z.number().optional(),
+  cachedPricePerMillion: z.number().optional(),
+  defaultParams: z.record(z.unknown()).optional(),
+});
+
+export const RuntimeProviderConfigSchema = z.object({
+  name: z.string().optional(),
+  baseURL: z.string().optional(),
+  apiKey: z.string().optional(),
+  apiKeyEnvVar: z.string().optional(),
+  headers: z.record(z.string()).optional(),
+  defaultParams: z.record(z.unknown()).optional(),
+  models: z.record(RuntimeModelConfigSchema).optional(),
+});
+
+export const StdioServerConfigSchema = z.object({
+  type: z.literal('stdio'),
+  command: z.string(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string()).optional(),
+  cwd: z.string().optional(),
+  enabled: z.boolean().optional(),
+  timeoutMs: z.number().optional(),
+});
+
+export const HttpServerConfigSchema = z.object({
+  type: z.literal('http'),
+  url: z.string(),
+  headers: z.record(z.string()).optional(),
+  enabled: z.boolean().optional(),
+  timeoutMs: z.number().optional(),
+});
+
+export const RuntimeMcpServerConfigSchema = z.union([StdioServerConfigSchema, HttpServerConfigSchema]);
+
+export const RuntimeConfigFileSchema = z.object({
+  providers: z.record(z.any()).optional(),
+  mcp: z.object({
+    servers: z.record(z.any()).optional(),
+  }).optional(),
+});
+
+// ─── TypeScript Interfaces (kept for backward compatibility) ───
 
 export interface RuntimeModelConfig {
   name?: string;
@@ -27,6 +78,10 @@ export interface RuntimeProviderConfig {
   name?: string;
   baseURL?: string;
   apiKey?: string;
+  /**
+   * Name of an environment variable to read the API key from.
+   * Resolved at runtime by config.tsx's resolveApiKey() function.
+   */
   apiKeyEnvVar?: string;
   headers?: Record<string, string>;
   defaultParams?: Record<string, unknown>;
@@ -97,6 +152,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Replaces ${ENV_VAR} placeholders in a string with actual environment variable values.
+ * Logs a warning if the environment variable is not set (replaces with empty string).
+ */
 function interpolateString(value: string, sourcePath: string): string {
   return value.replace(/\$\{([A-Z0-9_]+)\}/gi, (_match, envVar: string) => {
     const resolved = process.env[envVar];
@@ -108,6 +167,10 @@ function interpolateString(value: string, sourcePath: string): string {
   });
 }
 
+/**
+ * Recursively interpolates environment variables in all string values within a config object.
+ * Handles nested objects and arrays. Filters out empty header values.
+ */
 function interpolateValue<T>(value: T, sourcePath: string): T {
   if (typeof value === 'string') {
     return interpolateString(value, sourcePath) as T;
@@ -122,6 +185,7 @@ function interpolateValue<T>(value: T, sourcePath: string): T {
     for (const [key, entry] of Object.entries(value)) {
       const interpolated = interpolateValue(entry, sourcePath);
       if (key === 'headers' && isPlainObject(interpolated)) {
+        // Filter out headers with empty values (from unset env vars)
         const filtered = Object.fromEntries(
           Object.entries(interpolated).filter(([, headerValue]) => typeof headerValue !== 'string' || headerValue.length > 0)
         );
@@ -136,6 +200,11 @@ function interpolateValue<T>(value: T, sourcePath: string): T {
   return value;
 }
 
+/**
+ * Removes reserved API parameters from provider and model defaultParams.
+ * Prevents users from accidentally overriding critical parameters like
+ * 'model', 'messages', 'tools' that are managed by the agentic loop.
+ */
 function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfigFile {
   const nextProviders = Object.fromEntries(
     Object.entries(config.providers || {}).map(([providerId, provider]) => {
@@ -188,42 +257,6 @@ function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfig
   };
 }
 
-function mergeRuntimeConfig(base: RuntimeConfigFile, overlay: RuntimeConfigFile): RuntimeConfigFile {
-  const mergedProviders: Record<string, RuntimeProviderConfig> = {
-    ...(base.providers || {}),
-  };
-
-  for (const [providerId, providerConfig] of Object.entries(overlay.providers || {})) {
-    const currentProvider = mergedProviders[providerId] || {};
-    mergedProviders[providerId] = {
-      ...currentProvider,
-      ...providerConfig,
-      models: {
-        ...(currentProvider.models || {}),
-        ...(providerConfig.models || {}),
-      },
-    };
-  }
-
-  const mergedServers: Record<string, RuntimeMcpServerConfig> = {
-    ...(base.mcp?.servers || {}),
-  };
-
-  for (const [serverName, serverConfig] of Object.entries(overlay.mcp?.servers || {})) {
-    const currentServer = mergedServers[serverName];
-    mergedServers[serverName] = currentServer && isPlainObject(currentServer)
-      ? { ...currentServer, ...serverConfig }
-      : serverConfig;
-  }
-
-  return {
-    providers: mergedProviders,
-    mcp: {
-      servers: mergedServers,
-    },
-  };
-}
-
 async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigFile | null> {
   try {
     const content = await fs.readFile(configPath, 'utf8');
@@ -238,7 +271,15 @@ async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigF
     if (!isPlainObject(parsed)) {
       throw new Error(`Failed to parse ${configPath}: top-level value must be an object`);
     }
-    return sanitizeDefaultParamsInConfig(interpolateValue(parsed as RuntimeConfigFile, configPath));
+    
+    // Validate against zod schema for better error messages
+    const result = RuntimeConfigFileSchema.safeParse(parsed);
+    if (!result.success) {
+      const issues = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
+      throw new Error(`Invalid runtime config in ${configPath}: ${issues}`);
+    }
+    
+    return sanitizeDefaultParamsInConfig(interpolateValue(result.data as RuntimeConfigFile, configPath));
   } catch (error: any) {
     if (error?.code === 'ENOENT') {
       return null;
@@ -259,7 +300,7 @@ export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeCon
     const fileConfig = await readRuntimeConfigFile(configPath);
     if (fileConfig) {
       logger.debug('Loaded runtime config', { path: configPath });
-      loaded = mergeRuntimeConfig(DEFAULT_RUNTIME_CONFIG, fileConfig);
+      loaded = fileConfig;
     }
   }
 
