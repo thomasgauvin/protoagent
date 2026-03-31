@@ -5,6 +5,8 @@
 
 A minimal, educational AI coding agent CLI written in TypeScript. It stays small enough to read in an afternoon, but it still has the core pieces you expect from a real coding agent: a streaming tool-use loop, approvals, sessions, MCP, skills, sub-agents, and cost tracking.
 
+Check out the website for the full guide on how to build `protoagent` yourself: [https://protoagent.dev/](https://protoagent.dev/)
+
 ## Features
 
 - **Multi-provider chat** — OpenAI, Anthropic, Google Gemini via the OpenAI SDK
