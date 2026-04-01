@@ -104,7 +104,72 @@ Top-level technical references:
 - `SPEC.md` — current implementation specification
 - `ARCHITECTURE.md` — current runtime architecture and module relationships
 
-## Architecture
+## ProtoAgent Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ USER INTERFACE (Ink/React)                                                                      │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────┐   │
+│ │ App.tsx: Banner | History | Streaming | Loading | Approval | Usage Info                   │   │
+│ │ • Manages React state (messages, streaming, loading)                                      │   │
+│ │ • Event router → State updates → Re-render                                                │   │
+│ └───────────────────────────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                              ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ AGENTIC LOOP (src/agentic-loop/)                                                                │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────┐   │
+│ │ INITIALIZATION (once per session)                                                         │   │
+│ │ • generateSystemPrompt() (src/system-prompt.ts)                                           │   │
+│ │ • initializeMcp() (src/mcp.ts) → listTools() → registerDynamicTool()                      │   │
+│ │ • initializeSkillsSupport() (src/skills.ts) → discover → loadSKILL.md → inject prompt     │   │
+│ └───────────────────────────────────────────────────────────────────────────────────────────┘   │
+│                                              ▼                                                  │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────┐   │
+│ │ while (iteration < maxIterations) {                                                       │   │
+│ │                                                                                           │   │
+│ │   1. CHECK ABORT → Emit 'done' → Return                                                   │   │
+│ │                                                                                           │   │
+│ │   2. CHECK COMPACT → Context ≥ 90%? → compactIfNeeded()                                   │   │
+│ │                                                                                           │   │
+│ │   3. CALL LLM → client.chat.completions.create({stream: true, tools})                     │   │
+│ │      ├─ processStream() → accumulate content, build tool_calls[], emit text_delta         │   │
+│ │      └─ Response type?                                                                    │   │
+│ │         │                                                                                 │   │
+│ │         ├─ Tool Calls → executeToolCalls()                                                │   │
+│ │         │   │                                                                             │   │
+│ │         │   ├─ CORE TOOLS (src/tools/*.ts):                                               │   │
+│ │         │   │  ├─ read_file, write_file, edit_file, list_directory, bash, etc.            │   │
+│ │         │   │  └─ Emit: tool_call, tool_result events                                     │   │
+│ │         │   │                                                                             │   │
+│ │         │   ├─ DYNAMIC TOOLS (Runtime registered):                                        │   │
+│ │         │   │  ├─ MCP tools (mcp_{server}_{tool})                                         │   │
+│ │         │   │  ├─ activate_skill(name) → loads skill, injects into prompt                 │   │
+│ │         │   │  └─ Emit: tool_call, tool_result events                                     │   │
+│ │         │   │                                                                             │   │
+│ │         │   └─ SUB-AGENT TOOL (src/sub-agent.ts):                                         │   │
+│ │         │      ├─ runSubAgent() → Isolated conversation                                   │   │
+│ │         │      ├─ • Own system prompt + task prompt                                       │   │
+│ │         │      ├─ • Own message history                                                   │   │
+│ │         │      ├─ • Access same tools as parent                                           │   │
+│ │         │      ├─ • Separate usage tracking                                               │   │
+│ │         │      ├─ • Returns summary + events                                              │   │
+│ │         │      └─ Emit: sub_agent_iteration, tool_result events                           │   │
+│ │         │                                                                                 │   │
+│ │         │   → Loop back with tool results                                                 │   │
+│ │         │                                                                                 │   │
+│ │         └─ Text Response → Add to messages, emit 'done', return                           │   │
+│ │                                                                                           │   │
+│ │   4. ERROR HANDLING (src/agentic-loop/errors.ts):                                         │   │
+│ │      └─ 400 repairs (JSON/orphaned/truncate) | 429 backoff | 5xx retry | context compact  │   │
+│ │                                                                                           │   │
+│ │   5. SESSION PERSISTENCE (src/sessions.ts):                                               │   │
+│ │      └─ saveSession() → ~/.local/share/protoagent/sessions/                               │   │
+│ │                                                                                           │   │
+│ │ }                                                                                         │   │
+│ └───────────────────────────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
 The codebase is organized so each part is easy to trace:
 
