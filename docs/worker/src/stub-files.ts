@@ -11,6 +11,221 @@ interface StubFile {
 
 export const stubFiles: StubFile[] = [
   {
+    path: ".agents/skills/docs-checkpoint-consistency/SKILL.md",
+    content: `---
+name: docs-checkpoint-consistency
+description: Ensures tutorial documentation and build-your-own checkpoints remain consistent when making changes. Performs forward passes (verify changes propagate to later checkpoints) and backward passes (verify features don't leak into earlier parts).
+allowed-tools: read_file, write_file, edit_file, list_directory, search_files, bash
+---
+
+# Docs and Checkpoint Consistency
+
+This skill helps maintain consistency between the tutorial documentation (\`docs/build-your-own/\`) and the checkpoint implementations (\`protoagent-build-your-own-checkpoints/part-*/\`) when making changes.
+
+## When to Use This Skill
+
+Use this skill when:
+- Updating tutorial documentation (part-*.md files)
+- Modifying checkpoint code (protoagent-build-your-own-checkpoints/part-*/)
+- Adding new features that affect multiple tutorial parts
+- Refactoring code that exists across multiple checkpoints
+- Ensuring changes don't break the tutorial flow
+
+## Core Concepts
+
+### Forward Pass
+Verify that changes introduced in an earlier part are carried forward to all later parts.
+
+**Example:** If you add zod validation in part-11, check that:
+- part-12 also has zod validation
+- part-13 also has zod validation
+
+### Backward Pass  
+Verify that features from later parts don't leak into earlier parts where they shouldn't exist.
+
+**Example:** Verify that:
+- \`sub-agent.ts\` only exists in part-12 onwards (not part-11)
+- \`components/\` directory only exists in part-13 (not part-12)
+- \`logger.ts\` usage in runtime-config.ts only starts at part-12
+
+## Step-by-Step Process
+
+### Step 1: Identify the Scope of Changes
+
+Determine:
+- Which part introduced the change?
+- Which parts should have this change?
+- Which parts should NOT have this change?
+
+### Step 2: Perform Forward Pass
+
+For each file modified, check it exists and is consistent in later parts:
+
+\`\`\`bash
+# Example: Checking zod validation in runtime-config.ts
+echo "=== Part 11 ===" && grep "import.*zod" protoagent-build-your-own-checkpoints/part-11/src/runtime-config.ts
+echo "=== Part 12 ===" && grep "import.*zod" protoagent-build-your-own-checkpoints/part-12/src/runtime-config.ts
+echo "=== Part 13 ===" && grep "import.*zod" protoagent-build-your-own-checkpoints/part-13/src/runtime-config.ts
+\`\`\`
+
+Key things to verify:
+- File exists in expected parts
+- Imports are present
+- Key functions/exports are present
+- Logic is consistent (may evolve but core behavior preserved)
+
+### Step 3: Perform Backward Pass
+
+Verify features don't exist in parts where they shouldn't:
+
+\`\`\`bash
+# Example: sub-agent.ts should NOT exist before part-12
+ls protoagent-build-your-own-checkpoints/part-11/src/sub-agent.ts 2>/dev/null || echo "Correct: not in part-11"
+ls protoagent-build-your-own-checkpoints/part-12/src/sub-agent.ts 2>/dev/null && echo "Correct: exists in part-12"
+
+# Example: logger usage should be silent in part-11
+grep -c "logger\\." protoagent-build-your-own-checkpoints/part-11/src/runtime-config.ts || echo "Should be minimal/none in part-11"
+\`\`\`
+
+### Step 4: Verify Inter-Checkpoint Diffs Match Tutorial
+
+This is critical: The differences between consecutive checkpoints should EXACTLY match what the tutorial teaches in that part. No extra changes, no missing changes.
+
+**Generate a diff between consecutive parts:**
+\`\`\`bash
+# Compare part-N with part-(N+1) for the files changed in that part
+# Example: part-11 introduces MCP, so check those files
+diff -u protoagent-build-your-own-checkpoints/part-10/src/config.tsx \\
+         protoagent-build-your-own-checkpoints/part-11/src/config.tsx | head -50
+\`\`\`
+
+**Check all files that should have changed:**
+\`\`\`bash
+# List all files that differ between two parts
+diff -qr protoagent-build-your-own-checkpoints/part-10/ \\
+            protoagent-build-your-own-checkpoints/part-11/ | grep -v ".git"
+\`\`\`
+
+**What to verify:**
+- Only files mentioned in the tutorial should have changed
+- Changes should match the code blocks shown in the tutorial
+- New files in part-N should be introduced in part-N's tutorial section
+- No "surprise" changes that aren't documented
+
+**Red flags:**
+- A file changed in the checkpoint but not mentioned in the tutorial
+- The diff shows refactors that aren't part of the lesson
+- Missing files that should have been added
+- Extra dependencies in package.json not mentioned in install instructions
+
+### Step 5: Update Documentation
+
+If the change introduces new concepts:
+1. Update the relevant part-*.md file
+2. Ensure code blocks match the checkpoint diff exactly
+3. Add explanations for new dependencies or patterns
+4. Mention if the pattern continues in later parts
+
+### Step 6: Run Tests
+
+Always run tests after modifications:
+\`\`\`bash
+npm test
+\`\`\`
+
+## Common Patterns to Check
+
+### Adding a New Dependency
+- **Forward pass:** Check package.json in all later parts
+- **Backward pass:** Ensure earlier parts don't import from it
+- **Docs:** Update install command in the relevant part-*.md
+
+### Adding a New File
+- **Forward pass:** File exists in all later parts
+- **Backward pass:** File does NOT exist in earlier parts
+- **Docs:** Update file listing/structure in tutorial
+
+### Modifying an Existing Function
+- **Forward pass:** Function exists with similar signature in later parts
+- **Backward pass:** Earlier parts use appropriate simpler version
+- **Docs:** Update code examples in tutorial
+
+### Adding Runtime Validation
+- **Forward pass:** Validation present in all config loading paths
+- **Backward pass:** Earlier parts either lack it or have simpler version
+- **Docs:** Explain validation purpose and error messages
+
+## Checklist Template
+
+When updating docs/checkpoints, verify:
+
+- [ ] **Forward Pass**: Change is present in all parts >= introduction part
+- [ ] **Backward Pass**: Change is absent in all parts < introduction part  
+- [ ] **Inter-Checkpoint Diff**: Only expected files changed between consecutive parts
+- [ ] **Package.json**: Dependencies updated in all affected checkpoints
+- [ ] **Imports**: All import statements correct in all parts
+- [ ] **Exports**: Public API consistent where expected
+- [ ] **Documentation**: Tutorial text matches checkpoint code
+- [ ] **Tests**: All tests pass after changes
+
+## Example: Adding Zod Validation
+
+**Change introduced in:** part-11
+
+**Forward pass verification:**
+\`\`\`bash
+echo "=== Checking zod in runtime-config.ts ==="
+for part in part-11 part-12 part-13; do
+  echo "\$part:"
+  grep "import.*zod" protoagent-build-your-own-checkpoints/\$part/src/runtime-config.ts
+done
+\`\`\`
+
+**Backward pass verification:**
+\`\`\`bash
+echo "=== Checking zod NOT in earlier parts ==="
+for part in part-3 part-4 part-10; do
+  echo "\$part:"
+  grep "zod" protoagent-build-your-own-checkpoints/\$part/src/config.tsx 2>/dev/null || echo "  Correct: not present"
+done
+\`\`\`
+
+**Documentation update:**
+- Update part-11.md install command to include zod
+- Add zod schema definition to runtime-config.ts code block
+- Add validation logic to readRuntimeConfigFile code block
+- Update imports section to include RuntimeConfigFileSchema
+
+**Inter-checkpoint diff verification:**
+\`\`\`bash
+# Only these files should differ between part-10 and part-11:
+# - src/runtime-config.ts (new file)
+# - src/config.tsx (imports + template update)
+# - src/mcp.ts (new file)
+# - src/providers.ts (updated)
+# - src/App.tsx (updated)
+# - package.json (new dependency)
+# - part-11.md (tutorial doc - doesn't affect checkpoint)
+
+diff -qr protoagent-build-your-own-checkpoints/part-10/ \\
+            protoagent-build-your-own-checkpoints/part-11/ | grep -v ".git"
+\`\`\`
+
+If you see unexpected files changing (e.g., \`src/agentic-loop.ts\`), investigate why.
+
+## Troubleshooting
+
+### Feature appears in wrong part
+**Fix:** Remove the feature from the earlier checkpoint, or move the feature introduction to the correct part in docs.
+
+### Missing in later parts
+**Fix:** Copy the implementation from the introducing part to all later parts, adapting as needed for context.
+
+### Tests fail after checkpoint changes
+**Fix:** Check if the test imports from src/ or uses getInitConfigPath - these may need aliases or the checkpoint may need to export the expected API.
+`,
+  },
+  {
     path: "ARCHITECTURE.md",
     content: `# ProtoAgent Architecture
 
@@ -493,7 +708,7 @@ A minimal, educational AI coding agent CLI written in TypeScript. It stays small
 
 ## Features
 
-- **Multi-provider chat** — OpenAI, Anthropic, Google Gemini, and Cerebras via the OpenAI SDK
+- **Multi-provider chat** — OpenAI, Anthropic, Google Gemini via the OpenAI SDK
 - **Built-in tools** — Read, write, edit, list, search, run shell commands, manage todos, and fetch web pages with \`webfetch\`
 - **Approval system** — Inline confirmation for file writes, file edits, and non-safe shell commands
 - **Session persistence** — Conversations and TODO state are saved automatically and can be resumed with \`--session\`
@@ -620,9 +835,6 @@ The codebase is organized so each part is easy to trace:
 - Gemini 3 Pro (Preview)
 - Gemini 2.5 Flash
 - Gemini 2.5 Pro
-
-### Cerebras
-- Cerebras — Llama 4 Scout 17B
 
 ## Why ProtoAgent?
 
@@ -1221,7 +1433,7 @@ Those are reasonable extension points, but they are outside the current scope of
     path: "package.json",
     content: `{
   "name": "protoagent",
-  "version": "0.1.14",
+  "version": "0.1.16",
   "type": "module",
   "files": [
     "dist",
@@ -1273,14 +1485,14 @@ Those are reasonable extension points, but they are outside the current scope of
     "he": "^1.2.0",
     "html-to-text": "^9.0.5",
     "ink": "^6.8.0",
-    "is-path-inside": "^4.0.0",
     "jsonc-parser": "^3.3.1",
     "leven": "^4.1.0",
     "openai": "^5.23.1",
     "react": "^19.1.1",
     "strip-ansi": "^7.2.0",
     "turndown": "^7.2.2",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
@@ -1321,32 +1533,27 @@ Renders the chat loop, tool call feedback, approval prompts,
 and cost/usage info. All heavy logic lives in \`agentic-loop.ts\`;
 this file is purely presentation + state wiring.
 
-Here's how the terminal UI is laid out (showcasing all options at once for demonstration, but in practice many elements are conditional on state):
+ACTUAL UI Layout:
 ┌─────────────────────────────────────────┐
-│  ProtoAgent  (BigText logo)             │  static, rendered once (printBanner)
-│  Model: Anthropic / claude-3-5 | Sess.. │  static header (printRuntimeHeader)
+│  ProtoAgent  (ASCII block logo)         │  static, rendered once
+│  Model: Provider / model | Session: id  │  static header
 │  Debug logs: /path/to/log               │  static, if --log-level set
+│  Config file: /path/to/config           │  static, if config exists
+│  MCPs: server1, server2                 │  static, if MCPs connected
 ├─────────────────────────────────────────┤
 │                                         │
-│  [System Prompt ▸ collapsed]            │  archived (memoized)
+│  Archived messages (Static scrollback): │
+│  > user message                         │
+│  assistant reply text                   │
+│  ▶ tool_name: result preview...         │
 │                                         │
-│  > user message                         │  archived (memoized)
+├ ─ ─ ─ ─ ─ live boundary ─ ─ ─ ─ ─ ─ ─ ─ ┤
 │                                         │
-│  assistant reply text                   │  archived (memoized)
+│  assistant streaming text...▍           │  live (re-renders per token)
 │                                         │
-│  [tool_name ▸ collapsed]                │  archived (memoized)
+│  ⠹ Running read_file...                 │  live, spinner + active tool
 │                                         │
-│  > user message                         │  archived (memoized)
-│                                         │
-├ ─ ─ ─ ─ ─ ─ ─ live boundary ─ ─ ─ ─ ─ ─ ┤
-│                                         │
-│  assistant streaming text...            │  live (re-renders, ~50ms debounce)
-│                                         │
-│  [tool_name ▸ collapsed]                │  live (re-renders on tool_result)
-│                                         │
-│  Thinking...                            │  live, only if last msg is user
-│                                         │
-│ ╭─ Approval Required ─────────────────╮ │  live, only when pending approval
+│ ╭─ Approval Required ─────────────────╮ │  live, when pending approval
 │ │  description / detail               │ │
 │ │  ○ Approve once                     │ │
 │ │  ○ Approve for session              │ │
@@ -1356,9 +1563,9 @@ Here's how the terminal UI is laid out (showcasing all options at once for demon
 │  [Error: message]                       │  live, inline thread errors
 │                                         │
 ├─────────────────────────────────────────┤
-│  tokens: 1234↓ 56↑ | ctx: 12% | \$0.02   │  static-ish, updates after each turn
+│  tokens: 1234↓ 56↑ | ctx: 12% | \$0.02   │  live, updates each turn
 ├─────────────────────────────────────────┤
-│  /quit  — Exit ProtoAgent               │  dynamic, shown when typing /
+│  /quit  — Exit ProtoAgent               │  dynamic, shown when typing / to show available commands
 ├─────────────────────────────────────────┤
 │  ⠹ Running read_file...                 │  dynamic, shown while loading
 ├─────────────────────────────────────────┤
@@ -1369,14 +1576,23 @@ Here's how the terminal UI is laid out (showcasing all options at once for demon
 │  Session saved. Resume with:            │  one-shot, shown on /quit
 │  protoagent --session abc12345          │
 └─────────────────────────────────────────┘
+
+NOTES:
+- System prompt is NOT displayed (filtered out in replay)
+- Tool results are flat text, not collapsible
+- "Working..." spinner shown when loading but not streaming
 */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, Static, useApp, useInput, useStdout } from 'ink';
 import { LeftBar } from './components/LeftBar.js';
-import { TextInput, Select } from '@inkjs/ui';
+import { CommandFilter, SLASH_COMMANDS } from './components/CommandFilter.js';
+import { ApprovalPrompt } from './components/ApprovalPrompt.js';
+import { UsageDisplay } from './components/UsageDisplay.js';
+import { InlineSetup } from './components/InlineSetup.js';
+import { TextInput } from '@inkjs/ui';
 import { OpenAI } from 'openai';
-import { readConfig, writeConfig, writeInitConfig, resolveApiKey, type Config, type InitConfigTarget, TargetSelection, ModelSelection, ApiKeyInput } from './config.js';
+import { readConfig, resolveApiKey, type Config } from './config.js';
 import { loadRuntimeConfig, getActiveRuntimeConfigPath } from './runtime-config.js';
 import { getProvider, getModelPricing, getRequestDefaultParams } from './providers.js';
 import {
@@ -1399,74 +1615,70 @@ import {
 import { clearTodos, getTodosForSession, setTodosForSession } from './tools/todo.js';
 import { initializeMcp, closeMcp, getConnectedMcpServers } from './mcp.js';
 import { generateSystemPrompt } from './system-prompt.js';
-import { renderFormattedText } from './utils/format-message.js';
+import { renderFormattedText, normalizeTranscriptText } from './utils/format-message.js';
+import { formatSubAgentActivity, formatToolActivity } from './utils/tool-display.js';
+import { useAgentEventHandler, type AssistantMessageRef, type StreamingBuffer, type InlineThreadError } from './hooks/useAgentEventHandler.js';
 
-interface InlineThreadError {
-  id: string;
-  message: string;
-  transient?: boolean;
-}
-
-// A single item rendered by <Static>. Each item is appended once and
-// permanently flushed to the terminal scrollback by Ink's Static component.
+// Static items archive completed messages to scrollback so users can scroll
+// up to read history while new AI content streams in the live area.
 interface StaticItem {
-  id: string;
+  id: string; // Unique key for React
   node: React.ReactNode;
 }
 
 type AddStaticFn = (node: React.ReactNode) => void;
 
-// ─── Scrollback helpers ───
-// These functions append text to the permanent scrollback buffer via the
-// <Static> component. Ink flushes new Static items within its own render
-// cycle, so there are no timing issues with write()/log-update.
-
+// Render the ProtoAgent ASCII logo in brand green (#09A469)
 function printBanner(addStatic: AddStaticFn): void {
+  const BRAND_GREEN = '#09A469';
   addStatic(
     <Text>
-      <Text color="#09A469">█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀</Text>
+      <Text color={BRAND_GREEN}>█▀█ █▀█ █▀█ ▀█▀ █▀█ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀</Text>
       {'\\n'}
-      <Text color="#09A469">█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █</Text>
+      <Text color={BRAND_GREEN}>█▀▀ █▀▄ █▄█  █  █▄█ █▀█ █▄█ ██▄ █ ▀█  █</Text>
       {'\\n'}
     </Text>
   );
 }
 
-function printRuntimeHeader(addStatic: AddStaticFn, config: Config, session: Session | null, dangerouslySkipPermissions: boolean): void {
+// Display runtime metadata: model, session, debug log path, config path, and connected MCPs
+function printRuntimeHeader(
+  addStatic: AddStaticFn,
+  config: Config,
+  session: Session | null,
+  dangerouslySkipPermissions: boolean
+): void {
   const provider = getProvider(config.provider);
-  let line = \`Model: \${provider?.name || config.provider} / \${config.model}\`;
-  if (dangerouslySkipPermissions) line += ' (auto-approve all)';
-  if (session) line += \` | Session: \${session.id}\`;
   
-  const lines: React.ReactNode[] = [<Text key="model" dimColor>{line}</Text>];
-  
+  let modelLine = \`Model: \${provider?.name || config.provider} / \${config.model}\`;
+  if (dangerouslySkipPermissions) modelLine += ' (auto-approve all)';
+  if (session) modelLine += \` | Session: \${session.id}\`;
+
+  const lines: React.ReactNode[] = [
+    <Text key="model" dimColor>{modelLine}</Text>
+  ];
+
   const logFilePath = logger.getLogFilePath();
   if (logFilePath) {
     lines.push(<Text key="log" dimColor>Debug logs: {logFilePath}</Text>);
   }
+
   const configPath = getActiveRuntimeConfigPath();
   if (configPath) {
     lines.push(<Text key="config" dimColor>Config file: {configPath}</Text>);
   }
+
   const mcpServers = getConnectedMcpServers();
   if (mcpServers.length > 0) {
     lines.push(<Text key="mcp" dimColor>MCPs: {mcpServers.join(', ')}</Text>);
   }
-  
+
   addStatic(
     <Text>
       {lines.map((l, i) => <React.Fragment key={i}>{l}{'\\n'}</React.Fragment>)}
       {'\\n'}
     </Text>
   );
-}
-
-function normalizeTranscriptText(text: string): string {
-  const normalized = text.replace(/\\r\\n/g, '\\n');
-  const lines = normalized.split('\\n');
-  while (lines.length > 0 && lines[0].trim() === '') lines.shift();
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
-  return lines.join('\\n');
 }
 
 function printMessageToScrollback(addStatic: AddStaticFn, role: 'user' | 'assistant', text: string): void {
@@ -1483,135 +1695,12 @@ function printMessageToScrollback(addStatic: AddStaticFn, role: 'user' | 'assist
     );
     return;
   }
-  // Apply Markdown formatting (bold, italic) to assistant messages
+  // Fallback is assistant, render with Markdown formatting (bold, italic)
   addStatic(<Text>{renderFormattedText(normalized)}{'\\n'}</Text>);
 }
 
-/**
- * Format a sub-agent tool call into a human-readable activity string.
- * Shows what the sub-agent is actually doing, e.g. "Sub-agent reading file package.json"
- */
-function formatSubAgentActivity(tool: string, args?: Record<string, unknown>): string {
-  if (!args || typeof args !== 'object') {
-    return \`Sub-agent running \${tool}...\`;
-  }
-
-  const argEntries = Object.entries(args);
-  if (argEntries.length === 0) {
-    return \`Sub-agent running \${tool}...\`;
-  }
-
-  // Extract the most meaningful argument based on the tool
-  let detail = '';
-  const firstValue = argEntries[0]?.[1];
-
-  switch (tool) {
-    case 'read_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'write_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'edit_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'list_directory':
-      detail = typeof args.directory_path === 'string' ? args.directory_path : '(current)';
-      break;
-    case 'search_files':
-      detail = typeof args.search_term === 'string' ? \`"\${args.search_term}"\` : '';
-      break;
-    case 'bash':
-      detail = typeof args.command === 'string'
-        ? args.command.split(/\\s+/).slice(0, 3).join(' ') + (args.command.split(/\\s+/).length > 3 ? '...' : '')
-        : '';
-      break;
-    case 'todo_write':
-      detail = Array.isArray(args.todos) ? \`\${args.todos.length} task(s)\` : '';
-      break;
-    case 'webfetch':
-      detail = typeof args.url === 'string' ? new URL(args.url).hostname : '';
-      break;
-    case 'sub_agent':
-      // Nested sub-agent
-      detail = 'nested task...';
-      break;
-    default:
-      // Use the first argument value as fallback
-      detail = typeof firstValue === 'string'
-        ? firstValue.length > 30 ? firstValue.slice(0, 30) + '...' : firstValue
-        : '';
-  }
-
-  if (detail) {
-    return \`Sub-agent \${tool.replace(/_/g, ' ')}: \${detail}\`;
-  }
-
-  return \`Sub-agent running \${tool}...\`;
-}
-
-/**
- * Format a tool call into a human-readable string showing the tool name and key argument.
- * Shows what the tool is actually doing, e.g. "read_file src/App.tsx"
- */
-function formatToolActivity(tool: string, args?: Record<string, unknown>): string {
-  if (!args || typeof args !== 'object') {
-    return tool;
-  }
-
-  let detail = '';
-
-  switch (tool) {
-    case 'read_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'write_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'edit_file':
-      detail = typeof args.file_path === 'string' ? args.file_path : '';
-      break;
-    case 'list_directory':
-      detail = typeof args.directory_path === 'string' ? args.directory_path : '(current)';
-      break;
-    case 'search_files':
-      detail = typeof args.search_term === 'string' ? \`"\${args.search_term}"\` : '';
-      break;
-    case 'bash':
-      detail = typeof args.command === 'string'
-        ? args.command.split(/\\s+/).slice(0, 3).join(' ') + (args.command.split(/\\s+/).length > 3 ? '...' : '')
-        : '';
-      break;
-    case 'todo_write':
-      detail = Array.isArray(args.todos) ? \`\${args.todos.length} task(s)\` : '';
-      break;
-    case 'todo_read':
-      detail = 'read';
-      break;
-    case 'webfetch':
-      detail = typeof args.url === 'string' ? new URL(args.url).hostname : '';
-      break;
-    case 'sub_agent':
-      detail = 'nested task...';
-      break;
-    default: {
-      // For unknown tools, use the first string argument
-      const firstEntry = Object.entries(args).find(([, v]) => typeof v === 'string');
-      if (firstEntry) {
-        const [, value] = firstEntry;
-        detail = String(value).length > 30 ? String(value).slice(0, 30) + '...' : String(value);
-      }
-    }
-  }
-
-  if (detail) {
-    return \`\${tool} \${detail}\`;
-  }
-
-  return tool;
-}
-
-function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[]): void {  for (const message of messages) {
+function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[]): void {
+  for (const message of messages) {
     const msgAny = message as any;
     if (message.role === 'system') continue;
     if (message.role === 'user' && typeof message.content === 'string') {
@@ -1645,8 +1734,9 @@ function replayMessagesToScrollback(addStatic: AddStaticFn, messages: Message[])
   }
 }
 
-// Returns only the last N displayable lines of text so the live streaming box
-// never grows taller than the terminal, preventing Ink's clearTerminal wipe.
+// Limit streaming text to viewport height to prevent overflow that would
+// trigger Ink's clearTerminal() and wipe scrollback history. Completed
+// lines are archived to <Static>; we only show the last N visible lines.
 const STREAMING_RESERVED_ROWS = 3; // usage bar + spinner + input line
 function clipToRows(text: string, terminalRows: number): string {
   const maxLines = Math.max(1, terminalRows - STREAMING_RESERVED_ROWS);
@@ -1662,19 +1752,13 @@ export interface AppProps {
   sessionId?: string;
 }
 
-// ─── Available slash commands ───
-const SLASH_COMMANDS = [
-  { name: '/help', description: 'Show all available commands' },
-  { name: '/quit', description: 'Exit ProtoAgent' },
-  { name: '/exit', description: 'Alias for /quit' },
-];
-
+// ─── Spinner frames for loading indicator ───
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+// ─── Help text derived from slash commands ───
 const HELP_TEXT = [
   'Commands:',
-  '  /help   - Show this help',
-  '  /quit   - Exit ProtoAgent',
-  '  /exit   - Alias for /quit',
+  ...SLASH_COMMANDS.map((cmd) => \`  \${cmd.name} - \${cmd.description}\`),
 ].join('\\n');
 
 function buildClient(config: Config): OpenAI {
@@ -1723,155 +1807,6 @@ function buildClient(config: Config): OpenAI {
   return new OpenAI(clientOptions);
 }
 
-// ─── Sub-components ───
-
-/** Shows filtered slash commands when user types /. */
-const CommandFilter: React.FC<{ inputText: string }> = ({ inputText }) => {
-  if (!inputText.startsWith('/')) return null;
-
-  const filtered = SLASH_COMMANDS.filter((cmd) =>
-    cmd.name.toLowerCase().startsWith(inputText.toLowerCase())
-  );
-
-  if (filtered.length === 0) return null;
-
-  return (
-    <Box flexDirection="column" marginBottom={1}>
-      {filtered.map((cmd) => (
-        <Text key={cmd.name} dimColor>
-          <Text color="green">{cmd.name}</Text> — {cmd.description}
-        </Text>
-      ))}
-    </Box>
-  );
-};
-
-/** Interactive approval prompt rendered inline. */
-const ApprovalPrompt: React.FC<{
-  request: ApprovalRequest;
-  onRespond: (response: ApprovalResponse) => void;
-}> = ({ request, onRespond }) => {
-  const sessionApprovalLabel = request.sessionScopeKey
-    ? 'Approve this operation for session'
-    : \`Approve all "\${request.type}" for session\`;
-
-  const items = [
-    { label: 'Approve once', value: 'approve_once' as const },
-    { label: sessionApprovalLabel, value: 'approve_session' as const },
-    { label: 'Reject', value: 'reject' as const },
-  ];
-
-  return (
-    <LeftBar color="green" marginTop={1} marginBottom={1}>
-      <Text color="green" bold>Approval Required</Text>
-      <Text>{request.description}</Text>
-      {request.detail && (
-        <Text dimColor>{request.detail.length > 200 ? request.detail.slice(0, 200) + '...' : request.detail}</Text>
-      )}
-      <Box marginTop={1}>
-        <Select
-          options={items.map((item) => ({ value: item.value, label: item.label }))}
-          onChange={(value) => onRespond(value as ApprovalResponse)}
-        />
-      </Box>
-    </LeftBar>
-  );
-};
-
-/** Cost/usage display in the status bar. */
-const UsageDisplay: React.FC<{
-  usage: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number } | null;
-  totalCost: number;
-}> = ({ usage, totalCost }) => {
-  if (!usage && totalCost === 0) return null;
-
-  return (
-    <Box marginTop={1}>
-      {usage && (
-        <Box>
-          <Box backgroundColor="#064e3b" paddingX={1}>
-            <Text color="white">tokens: </Text>
-            <Text color="white" bold>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
-          </Box>
-          <Box backgroundColor="#065f46" paddingX={1}>
-            <Text color="white">ctx: </Text>
-            <Text color="white" bold>{usage.contextPercent.toFixed(0)}%</Text>
-          </Box>
-        </Box>
-      )}
-      {totalCost > 0 && (
-        <Box backgroundColor="#064e3b" paddingX={1}>
-          <Text color="black">cost: </Text>
-          <Text color="black" bold>\${totalCost.toFixed(4)}</Text>
-        </Box>
-      )}
-    </Box>
-  );
-};
-
-/** Inline setup wizard — shown when no config exists. */
-const InlineSetup: React.FC<{
-  onComplete: (config: Config) => void;
-}> = ({ onComplete }) => {
-  const [setupStep, setSetupStep] = useState<'target' | 'provider' | 'api_key'>('target');
-  const [target, setTarget] = useState<InitConfigTarget>('project');
-  const [selectedProviderId, setSelectedProviderId] = useState('');
-  const [selectedModelId, setSelectedModelId] = useState('');
-
-  const handleModelSelect = (providerId: string, modelId: string) => {
-    setSelectedProviderId(providerId);
-    setSelectedModelId(modelId);
-    setSetupStep('api_key');
-  };
-
-  const handleConfigComplete = (config: Config) => {
-    writeInitConfig(target);
-    writeConfig(config, target);
-    onComplete(config);
-  };
-
-  if (setupStep === 'target') {
-    return (
-      <Box marginTop={1}>
-        <TargetSelection
-          title="First-time setup"
-          subtitle="Create a ProtoAgent runtime config:"
-          onSelect={(value) => {
-            setTarget(value);
-            setSetupStep('provider');
-          }}
-        />
-      </Box>
-    );
-  }
-
-  if (setupStep === 'provider') {
-    return (
-      <Box marginTop={1}>
-        <ModelSelection
-          setSelectedProviderId={setSelectedProviderId}
-          setSelectedModelId={setSelectedModelId}
-          onSelect={handleModelSelect}
-          title="First-time setup"
-        />
-      </Box>
-    );
-  }
-
-  return (
-    <Box marginTop={1}>
-      <ApiKeyInput
-        selectedProviderId={selectedProviderId}
-        selectedModelId={selectedModelId}
-        target={target}
-        title="First-time setup"
-        showProviderHeaders={false}
-        onComplete={handleConfigComplete}
-      />
-    </Box>
-  );
-};
-
 // ─── Main App ───
 export const App: React.FC<AppProps> = ({
   dangerouslySkipPermissions = false,
@@ -1883,14 +1818,8 @@ export const App: React.FC<AppProps> = ({
   const terminalRows = stdout?.rows ?? 24;
 
   // ─── Static scrollback state ───
-  // Each item appended here is rendered once by <Static> and permanently
-  // flushed to the terminal scrollback by Ink, within its own render cycle.
-  // Using <Static> items is important to avoid re-rendering issues, which hijack
-  // scrollback and copying when new AI message streams are coming in.
-  //
-  // staticCounterRef keeps ID generation local to this component instance,
-  // making it immune to Strict Mode double-invoke, HMR counter drift, and
-  // collisions if multiple App instances ever coexist.
+  // Each item is rendered once by <Static> and permanently flushed to scrollback.
+  // staticCounterRef generates unique IDs (s1, s2, s3...) for React keys.
   const staticCounterRef = useRef(0);
   const [staticItems, setStaticItems] = useState<StaticItem[]>([]);
   const addStatic = useCallback((node: React.ReactNode) => {
@@ -1903,12 +1832,6 @@ export const App: React.FC<AppProps> = ({
   const [config, setConfig] = useState<Config | null>(null);
   const [completionMessages, setCompletionMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
-  // isStreaming: true while the assistant is producing tokens.
-  // streamingText: the live in-progress token buffer shown in the dynamic Ink
-  // frame while the response streams. Cleared to '' at done and flushed to
-  // <Static> as a permanent scrollback item. Keeping it in React state (not a
-  // ref) is safe because the Ink frame height does NOT change as tokens arrive —
-  // the streaming box is always 1+ lines tall while loading=true.
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1943,11 +1866,7 @@ export const App: React.FC<AppProps> = ({
 
   // OpenAI client ref (stable across renders)
   const clientRef = useRef<OpenAI | null>(null);
-  const assistantMessageRef = useRef<{
-    message: any;
-    index: number;
-    kind: 'streaming_text' | 'tool_call_assistant';
-  } | null>(null);
+  const assistantMessageRef = useRef<AssistantMessageRef | null>(null);
 
   // Abort controller for cancelling the current completion
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -1955,15 +1874,28 @@ export const App: React.FC<AppProps> = ({
   // Buffer for streaming text that accumulates content and flushes complete lines to static
   // This prevents the live streaming area from growing unbounded - complete lines are
   // immediately flushed to <Static>, only the incomplete final line stays in the dynamic frame
-  const streamingBufferRef = useRef<{ unflushedContent: string; hasFlushedAnyLine: boolean }>({
+  const streamingBufferRef = useRef<StreamingBuffer>({
     unflushedContent: '',
     hasFlushedAnyLine: false,
   });
 
+  // Hook for handling agent events
+  const handleAgentEvent = useAgentEventHandler({
+    addStatic,
+    setCompletionMessages,
+    setIsStreaming,
+    setStreamingText,
+    setActiveTool,
+    setLastUsage,
+    setTotalCost,
+    setThreadErrors,
+    setError,
+    assistantMessageRef,
+    streamingBufferRef,
+  });
+
   const didPrintIntroRef = useRef(false);
   const printedThreadErrorIdsRef = useRef<Set<string>>(new Set());
-
-  // ─── Post-config initialization (reused after inline setup) ───
 
   const initializeWithConfig = useCallback(async (loadedConfig: Config) => {
     setConfig(loadedConfig);
@@ -2017,8 +1949,6 @@ export const App: React.FC<AppProps> = ({
     setInitialized(true);
   }, [dangerouslySkipPermissions, sessionId, addStatic]);
 
-  // ─── Initialization ───
-
   useEffect(() => {
     if (!loading) {
       setSpinnerFrame(0);
@@ -2038,8 +1968,6 @@ export const App: React.FC<AppProps> = ({
     }
   }, [error, addStatic]);
 
-
-
   useEffect(() => {
     for (const threadError of threadErrors) {
       if (threadError.transient || printedThreadErrorIdsRef.current.has(threadError.id)) {
@@ -2050,6 +1978,7 @@ export const App: React.FC<AppProps> = ({
     }
   }, [threadErrors, addStatic]);
 
+  // One-time initialization: logging, approval handlers, config loading
   useEffect(() => {
     const init = async () => {
       // Set log level and initialize log file
@@ -2098,15 +2027,14 @@ export const App: React.FC<AppProps> = ({
     };
   }, []);
 
-  // ─── Slash commands ───
-
   const handleSlashCommand = useCallback(async (cmd: string): Promise<boolean> => {
     const parts = cmd.trim().split(/\\s+/);
     const command = parts[0]?.toLowerCase();
 
     switch (command) {
-        case '/quit':
-        case '/exit':
+      case '/quit':
+      case '/exit':
+        // No active session: exit immediately. Otherwise: save before exit.
         if (!session) {
           exit();
           return true;
@@ -2138,8 +2066,6 @@ export const App: React.FC<AppProps> = ({
         return false;
     }
   }, [config, exit, session, completionMessages]);
-
-  // ─── Submit handler ───
 
   const handleSubmit = useCallback(async (value: string) => {
     const trimmed = value.trim();
@@ -2189,291 +2115,7 @@ export const App: React.FC<AppProps> = ({
         config.model,
         [...completionMessages, userMessage],
         trimmed,
-        (event: AgentEvent) => {
-          switch (event.type) {
-            case 'text_delta': {
-              const deltaText = event.content || '';
-
-              // First text delta of this turn: initialize ref, show streaming indicator.
-              if (!assistantMessageRef.current || assistantMessageRef.current.kind !== 'streaming_text') {
-                // Trim leading whitespace from first delta - LLMs often output leading \\n or spaces
-                const trimmedDelta = deltaText.replace(/^\\s+/, '');
-                const assistantMsg = { role: 'assistant', content: trimmedDelta, tool_calls: [] } as Message;
-                const idx = completionMessages.length + 1;
-                assistantMessageRef.current = { message: assistantMsg, index: idx, kind: 'streaming_text' };
-                setIsStreaming(true);
-                setCompletionMessages((prev) => [...prev, assistantMsg]);
-
-                // Initialize the streaming buffer and process the first chunk
-                // through the same split logic as subsequent deltas for consistency
-                const buffer = { unflushedContent: trimmedDelta, hasFlushedAnyLine: false };
-                streamingBufferRef.current = buffer;
-
-                // Process the first chunk: split on newlines and flush complete lines
-                const lines = buffer.unflushedContent.split('\\n');
-                if (lines.length > 1) {
-                  const completeLines = lines.slice(0, -1);
-                  const textToFlush = completeLines.join('\\n');
-                  if (textToFlush) {
-                    addStatic(renderFormattedText(textToFlush));
-                    buffer.hasFlushedAnyLine = true;
-                  }
-                  buffer.unflushedContent = lines[lines.length - 1];
-                }
-
-                setStreamingText(buffer.unflushedContent);
-              } else {
-                // Subsequent deltas — append to ref and buffer, then flush complete lines
-                assistantMessageRef.current.message.content += deltaText;
-
-                // Accumulate in buffer and flush complete lines to static
-                const buffer = streamingBufferRef.current;
-                buffer.unflushedContent += deltaText;
-
-                // Split on newlines to find complete lines
-                const lines = buffer.unflushedContent.split('\\n');
-
-                // If we have more than 1 element, there were newlines
-                if (lines.length > 1) {
-                  // All lines except the last one are complete (ended with \\n)
-                  const completeLines = lines.slice(0, -1);
-
-                  // Build the text to flush - each complete line gets a newline added back
-                  const textToFlush = completeLines.join('\\n');
-
-                  if (textToFlush) {
-                    addStatic(renderFormattedText(textToFlush));
-                    buffer.hasFlushedAnyLine = true;
-                  }
-
-                  // Keep only the last (incomplete) line in the buffer
-                  buffer.unflushedContent = lines[lines.length - 1];
-                }
-
-                // Show the incomplete line (if any) in the dynamic frame
-                setStreamingText(buffer.unflushedContent);
-              }
-              break;
-            }
-            case 'sub_agent_iteration':
-              if (event.subAgentTool) {
-                const { tool, status, args } = event.subAgentTool;
-                if (status === 'running') {
-                  setActiveTool(formatSubAgentActivity(tool, args));
-                } else {
-                  setActiveTool(null);
-                }
-              }
-              // Handle sub-agent usage update
-              if (event.subAgentUsage) {
-                setTotalCost((prev) => prev + event.subAgentUsage!.cost);
-              }
-              break;
-            case 'tool_call':
-              if (event.toolCall) {
-                const toolCall = event.toolCall;
-                setActiveTool(toolCall.name);
-
-                // If the model streamed some text before invoking this tool,
-                // flush any remaining unflushed content to <Static> now.
-                // The streaming buffer contains text that hasn't been flushed yet
-                // (the incomplete final line). We need to flush it before the tool call.
-                if (assistantMessageRef.current?.kind === 'streaming_text') {
-                  const buffer = streamingBufferRef.current;
-
-                  // Flush any remaining unflushed content
-                  if (buffer.unflushedContent) {
-                    addStatic(renderFormattedText(buffer.unflushedContent));
-                  }
-
-                  // Add spacing after the streamed text and before the tool call
-                  addStatic(renderFormattedText('\\n'));
-
-                  // Reset streaming state and buffer
-                  streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
-                  setIsStreaming(false);
-                  setStreamingText('');
-                  assistantMessageRef.current = null;
-                }
-
-                // Track the tool call in the ref WITHOUT triggering a render.
-                // The render will happen when tool_result arrives.
-                const existingRef = assistantMessageRef.current;
-                const assistantMsg = existingRef?.message
-                  ? {
-                      ...existingRef.message,
-                      tool_calls: [...(existingRef.message.tool_calls || [])],
-                    }
-                  : { role: 'assistant', content: '', tool_calls: [] as any[] };
-
-                const nextToolCall = {
-                  id: toolCall.id,
-                  type: 'function',
-                  function: { name: toolCall.name, arguments: toolCall.args },
-                };
-
-                const idx = assistantMsg.tool_calls.findIndex(
-                  (tc: any) => tc.id === toolCall.id
-                );
-                if (idx === -1) {
-                  assistantMsg.tool_calls.push(nextToolCall);
-                } else {
-                  assistantMsg.tool_calls[idx] = nextToolCall;
-                }
-
-                if (!existingRef) {
-                  // First tool call — we need to add the assistant message to state
-                  setCompletionMessages((prev) => {
-                    assistantMessageRef.current = {
-                      message: assistantMsg,
-                      index: prev.length,
-                      kind: 'tool_call_assistant',
-                    };
-                    return [...prev, assistantMsg as Message];
-                  });
-                } else {
-                  // Subsequent tool calls — just update the ref, no render
-                  assistantMessageRef.current = {
-                    ...existingRef,
-                    message: assistantMsg,
-                    kind: 'tool_call_assistant',
-                  };
-                }
-              }
-              break;
-            case 'tool_result':
-              if (event.toolCall) {
-                const toolCall = event.toolCall;
-                setActiveTool(null);
-
-                // Write the tool summary immediately — at this point loading is
-                // still true but the frame height is stable (spinner + input box).
-                // The next state change (setActiveTool(null)) doesn't affect
-                // frame height so write() restores the correct frame.
-                const compactResult = (toolCall.result || '')
-                  .replace(/\\s+/g, ' ')
-                  .trim()
-                  .slice(0, 180);
-                
-                // Parse tool args to show relevant parameter
-                let toolDisplay = toolCall.name;
-                try {
-                  const args = JSON.parse(toolCall.args || '{}');
-                  toolDisplay = formatToolActivity(toolCall.name, args);
-                } catch {
-                  // If parsing fails, just use the tool name
-                }
-                
-                addStatic(<Text dimColor>{'▶ '}{toolDisplay}{': '}{compactResult}{'\\n'}</Text>);
-
-                // Flush the assistant message + tool result into completionMessages
-                // for session saving.
-                setCompletionMessages((prev) => {
-                  const updated = [...prev];
-                  // Sync assistant message
-                  if (assistantMessageRef.current) {
-                    updated[assistantMessageRef.current.index] = {
-                      ...assistantMessageRef.current.message,
-                    };
-                  }
-                  // Append tool result with args for replay
-                  updated.push({
-                    role: 'tool',
-                    tool_call_id: toolCall.id,
-                    content: toolCall.result || '',
-                    name: toolCall.name,
-                    args: toolCall.args,
-                  } as any);
-                  return updated;
-                });
-              }
-              break;
-            case 'usage':
-              if (event.usage) {
-                setLastUsage(event.usage);
-                setTotalCost((prev) => prev + event.usage!.cost);
-              }
-              break;
-            case 'error':
-              if (event.error) {
-                const errorMessage = event.error;
-                setThreadErrors((prev) => {
-                  if (event.transient) {
-                    return [
-                      ...prev.filter((threadError) => !threadError.transient),
-                      {
-                        id: \`\${Date.now()}-\${prev.length}\`,
-                        message: errorMessage,
-                        transient: true,
-                      },
-                    ];
-                  }
-
-                  if (prev[prev.length - 1]?.message === errorMessage) {
-                    return prev;
-                  }
-
-                  return [
-                    ...prev,
-                    {
-                      id: \`\${Date.now()}-\${prev.length}\`,
-                      message: errorMessage,
-                      transient: false,
-                    },
-                  ];
-                });
-              } else {
-                setError('Unknown error');
-              }
-              break;
-            case 'iteration_done':
-              if (assistantMessageRef.current?.kind === 'tool_call_assistant') {
-                assistantMessageRef.current = null;
-              }
-              break;
-            case 'done':
-              if (assistantMessageRef.current?.kind === 'streaming_text') {
-                const finalRef = assistantMessageRef.current;
-                const buffer = streamingBufferRef.current;
-
-                // Flush any remaining unflushed content from the buffer
-                // This is the final incomplete line that was being displayed live
-                if (buffer.unflushedContent) {
-                  // If we've already flushed some lines, just append the remainder
-                  // Otherwise, normalize and flush the full content
-                  if (buffer.hasFlushedAnyLine) {
-                    addStatic(renderFormattedText(buffer.unflushedContent));
-                  } else {
-                    // Nothing was flushed yet, normalize the full content
-                    const normalized = normalizeTranscriptText(finalRef.message.content || '');
-                    if (normalized) {
-                      addStatic(renderFormattedText(normalized));
-                    }
-                  }
-                }
-
-                // Add final spacing after the streamed text
-                // Always add one newline - the user message adds another for blank line separation
-                if (buffer.unflushedContent) {
-                  addStatic(renderFormattedText('\\n'));
-                }
-
-                // Clear streaming state and buffer
-                setIsStreaming(false);
-                setStreamingText('');
-                streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
-                setCompletionMessages((prev) => {
-                  const updated = [...prev];
-                  updated[finalRef.index] = { ...finalRef.message };
-                  return updated;
-                });
-                assistantMessageRef.current = null;
-              }
-              setActiveTool(null);
-              setThreadErrors((prev) => prev.filter((threadError) => !threadError.transient));
-              break;
-          }
-        },
+        handleAgentEvent,
         {
           pricing: pricing || undefined,
           abortSignal: abortControllerRef.current.signal,
@@ -2499,8 +2141,6 @@ export const App: React.FC<AppProps> = ({
     }
   }, [loading, config, completionMessages, session, handleSlashCommand, addStatic]);
 
-  // ─── Keyboard shortcuts ───
-
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
       exit();
@@ -2510,8 +2150,6 @@ export const App: React.FC<AppProps> = ({
       abortControllerRef.current.abort();
     }
   });
-
-  // ─── Render ───
 
   return (
     <Box flexDirection="column">
@@ -2612,85 +2250,37 @@ export const App: React.FC<AppProps> = ({
 `,
   },
   {
-    path: "src/agentic-loop.ts",
-    content: `/**
- * The agentic loop — the core of ProtoAgent.
- *
- * This module implements the standard tool-use loop:
- *
- *  1. Send the conversation to the LLM with tool definitions
- *  2. If the response contains tool_calls:
- *     a. Execute each tool
- *     b. Append the results to the conversation
- *     c. Go to step 1
- *  3. If the response is plain text:
- *     a. Return it to the caller (the UI renders it)
- *
- * The loop is a plain TypeScript module — not an Ink component.
- * The UI subscribes to events emitted by the loop and updates
- * React state accordingly. This keeps the core logic testable
- * and UI-independent.
- */
+    path: "src/agentic-loop/errors.ts",
+    content: `// Error handling module for the agentic loop.
+// Handles API errors with various retry strategies:
+// - 400 errors: JSON repair, orphaned tool cleanup, truncation, "continue" prompts
+// - 429 errors: rate limit backoff
+// - 5xx errors: exponential backoff
+// - Context window exceeded: forced compaction
 
-import type OpenAI from 'openai';
-import { setMaxListeners } from 'node:events';
-import { getAllTools, handleToolCall } from './tools/index.js';
-import { generateSystemPrompt } from './system-prompt.js';
-import { subAgentTool, runSubAgent, type SubAgentProgressHandler } from './sub-agent.js';
-import {
-  estimateTokens,
-  estimateConversationTokens,
-  createUsageInfo,
-  getContextInfo,
-  type ModelPricing,
-} from './utils/cost-tracker.js';
-import { compactIfNeeded } from './utils/compactor.js';
-import { logger } from './utils/logger.js';
+import type { Message, AgentEventHandler } from '../agentic-loop.js';
+import type { ModelPricing } from '../utils/cost-tracker.js';
+import { compactIfNeeded } from '../utils/compactor.js';
+import { logger } from '../utils/logger.js';
 
-// ─── Types ───
-
-export type Message = OpenAI.Chat.Completions.ChatCompletionMessageParam;
-
-export interface ToolCallEvent {
-  id: string;
-  name: string;
-  args: string;
-  status: 'running' | 'done' | 'error';
-  result?: string;
+// Retry state tracked across loop iterations.
+export interface RetryState {
+  repairCount: number;
+  contextCount: number;
+  truncateCount: number;
+  continueCount: number;
+  retriggerCount: number; // For AI stopping after tool call
 }
 
-export interface AgentEvent {
-  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done' | 'sub_agent_iteration';
-  content?: string;
-  toolCall?: ToolCallEvent;
-  /** Emitted while a sub-agent is executing — carries the child tool name and iteration status.
-   *  Distinct from \`tool_call\` so the UI can show it as a nested progress indicator
-   *  without adding it to the parent's tool-call message history. */
-  subAgentTool?: { tool: string; status: 'running' | 'done' | 'error'; iteration: number; args?: Record<string, unknown> };
-  usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
-  /** Emitted when a sub-agent completes, carrying its accumulated usage. */
-  subAgentUsage?: { inputTokens: number; outputTokens: number; cost: number };
-  error?: string;
-  transient?: boolean;
-}
+const LIMITS = {
+  MAX_REPAIR: 2,
+  MAX_CONTEXT: 2,
+  MAX_TRUNCATE: 5,
+  MAX_CONTINUE: 1,
+};
 
-export type AgentEventHandler = (event: AgentEvent) => void;
-
-// ─── Agentic Loop ───
-
-export interface AgenticLoopOptions {
-  maxIterations?: number;
-  pricing?: ModelPricing;
-  abortSignal?: AbortSignal;
-  sessionId?: string;
-  requestDefaults?: Record<string, unknown>;
-}
-
-function emitAbortAndFinish(onEvent: AgentEventHandler): void {
-  onEvent({ type: 'done' });
-}
-
-async function sleepWithAbort(delayMs: number, abortSignal?: AbortSignal): Promise<void> {
+// Sleep with abort signal support.
+export async function sleepWithAbort(delayMs: number, abortSignal?: AbortSignal): Promise<void> {
   if (!abortSignal) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     return;
@@ -2716,248 +2306,604 @@ async function sleepWithAbort(delayMs: number, abortSignal?: AbortSignal): Promi
   });
 }
 
-/** @internal exported for unit testing only */
-export function appendStreamingFragment(current: string, fragment: string): string {
-  if (!fragment) return current;
-  if (!current) return fragment;
-  // Some providers resend the full accumulated value instead of a delta.
-  // These two guards handle that case without corrupting normal incremental deltas.
-  if (current === fragment) return current;
-  if (fragment.startsWith(current)) return fragment;
-
-  // Normal case: incremental delta, just append.
-  // The previous partial-overlap loop was removed because it caused false-positive
-  // deduplication: short JSON tokens (e.g. \`", "\`) would coincidentally match the
-  // tail of \`current\`, silently stripping characters from valid argument payloads.
-  return current + fragment;
+// Result of attempting to handle an API error.
+export interface ErrorHandlerResult {
+  handled: boolean;
+  shouldAbort: boolean;
+  silentRetry: boolean;
+  errorMessage?: string;
+  transient?: boolean;
 }
 
-function collapseRepeatedString(value: string): string {
-  if (!value) return value;
-
-  for (let size = 1; size <= Math.floor(value.length / 2); size++) {
-    if (value.length % size !== 0) continue;
-    const candidate = value.slice(0, size);
-    if (candidate.repeat(value.length / size) === value) {
-      return candidate;
-    }
-  }
-
-  return value;
-}
-
-function normalizeToolName(name: string, validToolNames: Set<string>): string {
-  if (!name) return name;
-  if (validToolNames.has(name)) return name;
-
-  const collapsed = collapseRepeatedString(name);
-  if (validToolNames.has(collapsed)) {
-    return collapsed;
-  }
-
-  return name;
-}
-
-function extractFirstCompleteJsonValue(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-
-  const opening = trimmed[0];
-  const closing = opening === '{' ? '}' : opening === '[' ? ']' : null;
-  if (!closing) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = 0; i < trimmed.length; i++) {
-    const char = trimmed[i];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\\\') {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (char === opening) depth++;
-    if (char === closing) depth--;
-
-    if (depth === 0) {
-      return trimmed.slice(0, i + 1);
-    }
-  }
-
-  return null;
-}
-
-/**
- * Repair invalid JSON escape sequences in a string value.
- *
- * JSON only allows: \\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX
- * Models sometimes emit \\| \\! \\- etc. (e.g. grep regex args) which make
- * JSON.parse throw, and Anthropic strict-validates tool_call arguments on
- * every subsequent request, bricking the session permanently.
- *
- * We double the backslash for any \\X where X is not a valid JSON escape char.
- */
-function repairInvalidEscapes(value: string): string {
-  // Match a backslash followed by any character that is NOT a valid JSON escape
-  // Valid escapes: " \\ / b f n r t u
-  return value.replace(/\\\\([^"\\\\\\/bfnrtu])/g, '\\\\\\\\\$1');
-}
-
-function normalizeJsonArguments(argumentsText: string): string {
-  const trimmed = argumentsText.trim();
-  if (!trimmed) return argumentsText;
-
-  try {
-    JSON.parse(trimmed);
-    return trimmed;
-  } catch {
-    // Fall through to repair heuristics.
-  }
-
-  const collapsed = collapseRepeatedString(trimmed);
-  if (collapsed !== trimmed) {
-    try {
-      JSON.parse(collapsed);
-      return collapsed;
-    } catch {
-      // Fall through to next heuristic.
-    }
-  }
-
-  const firstJsonValue = extractFirstCompleteJsonValue(trimmed);
-  if (firstJsonValue) {
-    try {
-      JSON.parse(firstJsonValue);
-      return firstJsonValue;
-    } catch {
-      // Give up and return the original text below.
-    }
-  }
-
-  // Heuristic: repair invalid escape sequences (e.g. \\| from grep regex args)
-  const repaired = repairInvalidEscapes(trimmed);
-  if (repaired !== trimmed) {
-    try {
-      JSON.parse(repaired);
-      return repaired;
-    } catch {
-      // Try repair + first-value extraction together
-      const repairedFirst = extractFirstCompleteJsonValue(repaired);
-      if (repairedFirst) {
-        try {
-          JSON.parse(repairedFirst);
-          return repairedFirst;
-        } catch { /* give up */ }
-      }
-    }
-  }
-
-  return argumentsText;
-}
-
-function sanitizeToolCall(
-  toolCall: any,
-  validToolNames: Set<string>
-): { toolCall: any; changed: boolean } {
-  const originalName = toolCall.function?.name || '';
-  const originalArgs = toolCall.function?.arguments || '';
-  const normalizedName = normalizeToolName(originalName, validToolNames);
-  const normalizedArgs = normalizeJsonArguments(originalArgs);
-  const changed = normalizedName !== originalName || normalizedArgs !== originalArgs;
-
-  if (!changed) {
-    return { toolCall, changed: false };
-  }
-
-  return {
-    changed: true,
-    toolCall: {
-      ...toolCall,
-      function: {
-        ...toolCall.function,
-        name: normalizedName,
-        arguments: normalizedArgs,
-      },
-    },
-  };
-}
-
-function sanitizeMessagesForRetry(
+// Handle an API error with appropriate retry strategy.
+export async function handleApiError(
+  apiError: any,
   messages: Message[],
-  validToolNames: Set<string>
-): { messages: Message[]; changed: boolean } {
-  let changed = false;
+  _validToolNames: Set<string>,
+  pricing: ModelPricing | undefined,
+  retryState: RetryState,
+  iterationCount: number,
+  onEvent: AgentEventHandler,
+  client?: any,
+  model?: string,
+  requestDefaults?: Record<string, unknown>,
+  sessionId?: string
+): Promise<ErrorHandlerResult> {
+  const errMsg = apiError?.message || 'Unknown API error';
+  const status = apiError?.status;
 
-  const sanitizedMessages = messages.map((message) => {
-    const msgAny = message as any;
-    if (message.role !== 'assistant' || !Array.isArray(msgAny.tool_calls) || msgAny.tool_calls.length === 0) {
-      return message;
-    }
+  logger.error(\`API error: \${errMsg}\`, { status, code: apiError?.code });
 
-    const nextToolCalls = msgAny.tool_calls.map((toolCall: any) => {
-      const sanitized = sanitizeToolCall(toolCall, validToolNames);
-      changed = changed || sanitized.changed;
-      return sanitized.toolCall;
+  const retryableStatus = status === 408 || status === 409 || status === 425;
+  const retryableCode = ['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ENETUNREACH', 'EAI_AGAIN'].includes(apiError?.code);
+
+  // Context window exceeded - force compaction (check before generic 400 handling)
+  const isContextTooLong =
+    status === 400 &&
+    /prompt.*too long|context.*length|maximum.*token|tokens?.*exceed/i.test(errMsg);
+
+  if (isContextTooLong && retryState.contextCount < LIMITS.MAX_CONTEXT) {
+    retryState.contextCount++;
+    logger.warn(\`Prompt too long (attempt \${retryState.contextCount})\`);
+    onEvent({
+      type: 'error',
+      error: 'Prompt too long. Compacting conversation...',
+      transient: true,
     });
 
-    return {
-      ...msgAny,
-      tool_calls: nextToolCalls,
-    } as Message;
-  });
+    if (pricing && client && model) {
+      try {
+        const compacted = await compactIfNeeded(
+          client,
+          model,
+          messages,
+          pricing.contextWindow,
+          requestDefaults || {},
+          sessionId
+        );
+        messages.length = 0;
+        messages.push(...compacted);
+      } catch (compactErr) {
+        logger.error(\`Compaction failed: \${compactErr}\`);
+      }
+    }
 
-  return { messages: sanitizedMessages, changed };
+    // Truncate oversized tool results as fallback
+    const MAX_TOOL_CHARS = 20_000;
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i] as any;
+      if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > MAX_TOOL_CHARS) {
+        messages[i] = {
+          ...m,
+          content: m.content.slice(0, MAX_TOOL_CHARS) + '\\n... (truncated)',
+        };
+      }
+    }
+
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // Rate limit - backoff
+  if (status === 429) {
+    const retryAfter = parseInt(apiError?.headers?.['retry-after'] || '5', 10);
+    const backoff = Math.min(retryAfter * 1000, 60_000);
+    logger.info(\`Rate limited, retrying in \${backoff / 1000}s...\`);
+    onEvent({ type: 'error', error: \`Rate limited. Retrying...\`, transient: true });
+    await sleepWithAbort(backoff);
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // Server error - exponential backoff
+  if (status >= 500 || retryableStatus || retryableCode) {
+    const backoff = Math.min(2 ** iterationCount * 1000, 30_000);
+    logger.info(\`Request failed, retrying in \${backoff / 1000}s...\`);
+    onEvent({ type: 'error', error: \`Request failed. Retrying...\`, transient: true });
+    await sleepWithAbort(backoff);
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // Generic 400 errors - try repair/truncate/continue
+  if (status === 400) {
+    return await handle400Error(messages, retryState, onEvent);
+  }
+
+  // Non-retryable
+  return { handled: false, shouldAbort: false, silentRetry: false, errorMessage: errMsg };
 }
 
-/**
- * Remove orphaned tool result messages that don't have a matching tool_call_id
- * in any assistant message. This happens when messages are truncated and the
- * assistant's tool_calls are removed but the tool results remain.
- */
-function removeOrphanedToolResults(messages: Message[]): { messages: Message[]; changed: boolean } {
-  // Collect all valid tool_call_ids from assistant messages
-  const validToolCallIds = new Set<string>();
-  for (const message of messages) {
-    const msgAny = message as any;
-    if (message.role === 'assistant' && Array.isArray(msgAny.tool_calls)) {
-      for (const tc of msgAny.tool_calls) {
-        if (tc.id) {
-          validToolCallIds.add(tc.id);
+// Handle 400 errors: repair JSON → remove orphaned → truncate → continue.
+async function handle400Error(
+  messages: Message[],
+  retryState: RetryState,
+  onEvent: AgentEventHandler
+): Promise<ErrorHandlerResult> {
+  // 1. Try JSON repairs on tool arguments
+  // Models sometimes emit invalid escape sequences in tool args (e.g., \\| from grep regex)
+  // which cause JSON.parse to fail. These persist across requests unless repaired.
+  if (retryState.repairCount < LIMITS.MAX_REPAIR) {
+    let repaired = false;
+
+    for (const msg of messages) {
+      const msgAny = msg as any;
+      if (msg.role === 'assistant' && Array.isArray(msgAny.tool_calls)) {
+        for (const tc of msgAny.tool_calls) {
+          const args = tc.function?.arguments;
+          if (args && typeof args === 'string') {
+            const fixed = repairInvalidEscapes(args);
+            if (fixed !== args) {
+              tc.function.arguments = fixed;
+              repaired = true;
+            }
+          }
         }
       }
     }
+
+    if (repaired) {
+      retryState.repairCount++;
+      logger.warn('400 response: repaired invalid JSON escapes');
+      return { handled: true, shouldAbort: false, silentRetry: true };
+    }
   }
 
-  // Filter out tool messages with orphaned tool_call_ids
-  const filteredMessages = messages.filter((message) => {
-    const msgAny = message as any;
-    if (message.role === 'tool' && msgAny.tool_call_id) {
+  // 2. Remove orphaned tool results
+  // This happens when messages are truncated and the assistant's tool_calls are
+  // removed but the tool results remain. The API rejects orphaned tool results.
+  const cleaned = removeOrphanedToolResults(messages);
+  if (cleaned.changed) {
+    messages.length = 0;
+    messages.push(...cleaned.messages);
+    logger.warn('400 response: removed orphaned tool results');
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // 3. Truncate messages progressively
+  // If repairs didn't work, remove the last message (usually the problematic one)
+  // and retry. We keep at least system + 1 user message.
+  if (retryState.truncateCount < LIMITS.MAX_TRUNCATE && messages.length > 2) {
+    retryState.truncateCount++;
+    const removed = messages.splice(-1);
+    logger.debug('400 error: removed last message', {
+      role: removed[0]?.role,
+      remaining: messages.length,
+    });
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // 4. Try "continue" prompt
+  // Sometimes the model just needs a nudge to continue after getting stuck.
+  if (retryState.continueCount < LIMITS.MAX_CONTINUE) {
+    retryState.continueCount++;
+    messages.push({ role: 'user', content: 'continue' } as Message);
+    logger.warn('400 error: adding "continue" message');
+    onEvent({ type: 'error', error: 'Retrying with "continue"...', transient: true });
+    return { handled: true, shouldAbort: false, silentRetry: true };
+  }
+
+  // All strategies exhausted
+  return {
+    handled: false,
+    shouldAbort: false,
+    silentRetry: false,
+    errorMessage: 'Could not recover from error. Try /clear to start fresh.',
+  };
+}
+
+// Repair invalid JSON escape sequences.
+// Models sometimes emit \\| \\! \\- etc. (e.g. grep regex args).
+function repairInvalidEscapes(value: string): string {
+  return value.replace(/\\\\([^"\\\\\\/bfnrtu])/g, '\\\\\\\\\$1');
+}
+
+// Remove orphaned tool result messages that don't have a matching tool_call_id.
+function removeOrphanedToolResults(messages: Message[]): { messages: Message[]; changed: boolean } {
+  const validToolCallIds = new Set<string>();
+
+  for (const msg of messages) {
+    const msgAny = msg as any;
+    if (msg.role === 'assistant' && Array.isArray(msgAny.tool_calls)) {
+      for (const tc of msgAny.tool_calls) {
+        if (tc.id) validToolCallIds.add(tc.id);
+      }
+    }
+  }
+
+  const filtered = messages.filter((msg) => {
+    const msgAny = msg as any;
+    if (msg.role === 'tool' && msgAny.tool_call_id) {
       const isOrphaned = !validToolCallIds.has(msgAny.tool_call_id);
       if (isOrphaned) {
-        logger.warn('Removing orphaned tool result', {
-          tool_call_id: msgAny.tool_call_id,
-          contentPreview: msgAny.content?.slice(0, 100),
-        });
+        logger.warn('Removing orphaned tool result', { id: msgAny.tool_call_id });
       }
       return !isOrphaned;
     }
     return true;
   });
 
-  return { messages: filteredMessages, changed: filteredMessages.length !== messages.length };
+  return { messages: filtered, changed: filtered.length !== messages.length };
+}
+`,
+  },
+  {
+    path: "src/agentic-loop/executor.ts",
+    content: `/**
+ * Tool execution module for the agentic loop.
+ *
+ * Handles execution of tool calls including special handling for
+ * sub-agents and proper abort signal management between tool calls.
+ */
+
+import type { AgentEventHandler, ToolCallEvent } from '../agentic-loop.js';
+import { handleToolCall } from '../tools/index.js';
+import { runSubAgent, type SubAgentProgressHandler, type SubAgentUsage } from '../sub-agent.js';
+import { logger } from '../utils/logger.js';
+
+/**
+ * Context for tool execution, passed through from the main loop.
+ */
+export interface ToolExecutionContext {
+  sessionId?: string;
+  abortSignal?: AbortSignal;
+  requestDefaults: Record<string, unknown>;
+  client: any;  // OpenAI client
+  model: string;
+  pricing?: any;  // ModelPricing
+}
+
+/**
+ * Execute all tool calls from an assistant message.
+ *
+ * Handles:
+ * - Abort checking between tool calls
+ * - Sub-agent special case with progress reporting
+ * - Error handling and result accumulation
+ * - Pending tool call tracking for abort scenarios
+ *
+ * Returns true if execution completed normally, false if aborted.
+ */
+export async function executeToolCalls(
+  toolCalls: any[],
+  messages: any[],
+  onEvent: AgentEventHandler,
+  context: ToolExecutionContext
+): Promise<{ completed: boolean; shouldAbort: boolean }> {
+  const { sessionId, abortSignal, requestDefaults, client, model, pricing } = context;
+
+  // Track which tool_call_ids still need a tool result message.
+  // This set is used to inject stub responses on abort, preventing
+  // orphaned tool_call_ids from permanently bricking the session.
+  const pendingToolCallIds = new Set<string>(
+    toolCalls.map((tc: any) => tc.id as string)
+  );
+
+  const injectStubsForPendingToolCalls = () => {
+    for (const id of pendingToolCallIds) {
+      messages.push({
+        role: 'tool',
+        tool_call_id: id,
+        content: 'Aborted by user.',
+      } as any);
+    }
+  };
+
+  for (const toolCall of toolCalls) {
+    // Check abort between tool calls
+    if (abortSignal?.aborted) {
+      logger.debug('Agentic loop aborted between tool calls');
+      injectStubsForPendingToolCalls();
+      return { completed: false, shouldAbort: true };
+    }
+
+    const { name, arguments: argsStr } = toolCall.function;
+
+    onEvent({
+      type: 'tool_call',
+      toolCall: { id: toolCall.id, name, args: argsStr, status: 'running' } as ToolCallEvent,
+    });
+
+    try {
+      const args = JSON.parse(argsStr);
+      let result: string;
+
+      // Handle sub-agent tool specially
+      if (name === 'sub_agent') {
+        const subProgress: SubAgentProgressHandler = (evt) => {
+          onEvent({
+            type: 'sub_agent_iteration',
+            subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration, args: evt.args },
+          });
+        };
+        const subResult = await runSubAgent(
+          client,
+          model,
+          args.task,
+          args.max_iterations,
+          requestDefaults,
+          subProgress,
+          abortSignal,
+          pricing,
+        );
+        result = subResult.response;
+        // Emit sub-agent usage for the UI to add to total cost
+        if (subResult.usage.inputTokens > 0 || subResult.usage.outputTokens > 0) {
+          onEvent({
+            type: 'sub_agent_iteration',
+            subAgentUsage: subResult.usage as any,
+          });
+        }
+      } else {
+        result = await handleToolCall(name, args, { sessionId, abortSignal });
+      }
+
+      logger.info('Tool completed', {
+        tool: name,
+        resultLength: result.length,
+      });
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: result,
+      } as any);
+      pendingToolCallIds.delete(toolCall.id);
+
+      onEvent({
+        type: 'tool_result',
+        toolCall: { id: toolCall.id, name, args: argsStr, status: 'done', result } as ToolCallEvent,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: \`Error: \${errMsg}\`,
+      } as any);
+      pendingToolCallIds.delete(toolCall.id);
+
+      // If the tool was aborted, inject stubs for remaining pending calls and stop
+      if (abortSignal?.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message === 'Operation aborted'))) {
+        logger.debug('Agentic loop aborted during tool execution');
+        injectStubsForPendingToolCalls();
+        return { completed: false, shouldAbort: true };
+      }
+
+      onEvent({
+        type: 'tool_result',
+        toolCall: { id: toolCall.id, name, args: argsStr, status: 'error', result: errMsg } as ToolCallEvent,
+      });
+    }
+  }
+
+  return { completed: true, shouldAbort: false };
+}
+`,
+  },
+  {
+    path: "src/agentic-loop/stream.ts",
+    content: `/**
+ * Stream processing module for the agentic loop.
+ *
+ * Handles accumulation of streaming response chunks into a complete
+ * assistant message, including content, tool calls, and usage data.
+ */
+
+import type OpenAI from 'openai';
+import type { AgentEventHandler } from '../agentic-loop.js';
+import { estimateTokens, estimateConversationTokens, createUsageInfo, getContextInfo, type ModelPricing } from '../utils/cost-tracker.js';
+import { logger } from '../utils/logger.js';
+
+/**
+ * Accumulated result from processing a streaming response.
+ */
+export interface StreamResult {
+  assistantMessage: {
+    role: 'assistant';
+    content: string;
+    tool_calls: any[];
+  };
+  hasToolCalls: boolean;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cost: number;
+    contextPercent: number;
+  };
+}
+
+/**
+ * Process a streaming API response, accumulating content and tool calls.
+ *
+ * Emits text_delta events for immediate UI display and usage info
+ * when available. Returns the complete accumulated message.
+ */
+export async function processStream(
+  stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>,
+  messages: any[],
+  model: string,
+  pricing: ModelPricing | undefined,
+  onEvent: AgentEventHandler
+): Promise<StreamResult> {
+  const assistantMessage = {
+    role: 'assistant' as const,
+    content: '',
+    tool_calls: [] as any[],
+  };
+
+  let streamedContent = '';
+  let hasToolCalls = false;
+  let actualUsage: OpenAI.CompletionUsage | undefined;
+
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta;
+
+    if (chunk.usage) {
+      actualUsage = chunk.usage;
+    }
+
+    // Stream text content (and return to UI for immediate display via onEvent)
+    if (delta?.content) {
+      streamedContent += delta.content;
+      assistantMessage.content = streamedContent;
+      if (!hasToolCalls) {
+        onEvent({ type: 'text_delta', content: delta.content });
+      }
+    }
+
+    // Accumulate tool calls across stream chunks
+    if (delta?.tool_calls) {
+      hasToolCalls = true;
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index || 0;
+        if (!assistantMessage.tool_calls[idx]) {
+          assistantMessage.tool_calls[idx] = {
+            id: '',
+            type: 'function',
+            function: { name: '', arguments: '' },
+          };
+        }
+        if (tc.id) assistantMessage.tool_calls[idx].id = tc.id;
+        if (tc.function?.name) {
+          assistantMessage.tool_calls[idx].function.name += tc.function.name;
+        }
+        if (tc.function?.arguments) {
+          assistantMessage.tool_calls[idx].function.arguments += tc.function.arguments;
+        }
+        // Gemini 3+ models include an \`extra_content\` field on tool calls
+        // containing a \`thought_signature\`. This MUST be preserved and sent
+        // back in subsequent requests, otherwise Gemini returns a 400.
+        // See: https://ai.google.dev/gemini-api/docs/openai
+        // See also: https://gist.github.com/thomasgauvin/3cfe8e907c957fba4e132e6cf0f06292
+        if ((tc as any).extra_content) {
+          assistantMessage.tool_calls[idx].extra_content = (tc as any).extra_content;
+        }
+      }
+    }
+  }
+
+  // Calculate usage metrics
+  const inputTokens = actualUsage?.prompt_tokens ?? estimateConversationTokens(messages);
+  const outputTokens = actualUsage?.completion_tokens ?? estimateTokens(assistantMessage.content || '');
+  const cachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens;
+  const cost = pricing
+    ? createUsageInfo(inputTokens, outputTokens, pricing, cachedTokens).estimatedCost
+    : 0;
+  const contextPercent = pricing
+    ? getContextInfo(messages, pricing).utilizationPercentage
+    : 0;
+
+  // Log API response with usage info at INFO level
+  logger.info('Received API response', {
+    model,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    cost: cost > 0 ? \`\$\${cost.toFixed(4)}\` : 'N/A',
+    contextPercent: contextPercent > 0 ? \`\${contextPercent.toFixed(1)}%\` : 'N/A',
+    hasToolCalls: assistantMessage.tool_calls.length > 0,
+    contentLength: assistantMessage.content?.length || 0,
+  });
+
+  onEvent({
+    type: 'usage',
+    usage: { inputTokens, outputTokens, cost, contextPercent },
+  });
+
+  // Log the full assistant message for debugging
+  logger.debug('Assistant response details', {
+    contentLength: assistantMessage.content?.length || 0,
+    contentPreview: assistantMessage.content?.slice(0, 200) || '(empty)',
+    toolCallsCount: assistantMessage.tool_calls?.length || 0,
+    toolCalls: assistantMessage.tool_calls?.map((tc: any) => ({
+      id: tc.id,
+      name: tc.function?.name,
+      argsPreview: tc.function?.arguments?.slice(0, 100),
+    })),
+  });
+
+  return {
+    assistantMessage,
+    hasToolCalls,
+    usage: { inputTokens, outputTokens, cost, contextPercent },
+  };
+}
+`,
+  },
+  {
+    path: "src/agentic-loop.ts",
+    content: `/**
+ * The agentic loop — the core of ProtoAgent.
+ *
+ * This module implements the standard tool-use loop:
+ *
+ *  1. Send the conversation to the LLM with tool definitions
+ *  2. If the response contains tool_calls:
+ *     a. Execute each tool
+ *     b. Append the results to the conversation
+ *     c. Go to step 1
+ *  3. If the response is plain text:
+ *     a. Return it to the caller (the UI renders it)
+ *
+ * The loop is a plain TypeScript module — not an Ink component.
+ * The UI subscribes to events emitted by the loop and updates
+ * React state accordingly. This keeps the core logic testable
+ * and UI-independent.
+ */
+
+import type OpenAI from 'openai';
+import { setMaxListeners } from 'node:events';
+import { getAllTools } from './tools/index.js';
+import { generateSystemPrompt } from './system-prompt.js';
+import { subAgentTool, type SubAgentUsage } from './sub-agent.js';
+import {
+  getContextInfo,
+  type ModelPricing,
+} from './utils/cost-tracker.js';
+import { compactIfNeeded } from './utils/compactor.js';
+import { logger } from './utils/logger.js';
+import { processStream } from './agentic-loop/stream.js';
+import { executeToolCalls, type ToolExecutionContext } from './agentic-loop/executor.js';
+import { handleApiError, type RetryState } from './agentic-loop/errors.js';
+
+// ─── Types ───
+
+export type Message = OpenAI.Chat.Completions.ChatCompletionMessageParam;
+
+export interface ToolCallEvent {
+  id: string;
+  name: string;
+  args: string;
+  status: 'running' | 'done' | 'error';
+  result?: string;
+}
+
+export interface AgentEvent {
+  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done' | 'sub_agent_iteration';
+  content?: string;
+  toolCall?: ToolCallEvent;
+  /** Emitted while a sub-agent is executing — carries the child tool name and iteration status.
+   *  Distinct from \`tool_call\` so the UI can show it as a nested progress indicator
+   *  without adding it to the parent's tool-call message history. */
+  subAgentTool?: { tool: string; status: 'running' | 'done' | 'error'; iteration: number; args?: Record<string, unknown> };
+  usage?: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number };
+  /** Emitted when a sub-agent completes, carrying its accumulated usage. */
+  subAgentUsage?: SubAgentUsage;
+  error?: string;
+  transient?: boolean;
+}
+
+export type AgentEventHandler = (event: AgentEvent) => void;
+
+export interface AgenticLoopOptions {
+  maxIterations?: number;
+  pricing?: ModelPricing;
+  abortSignal?: AbortSignal;
+  sessionId?: string;
+  requestDefaults?: Record<string, unknown>;
+}
+
+function emitAbortAndFinish(onEvent: AgentEventHandler): void {
+  onEvent({ type: 'done' });
 }
 
 function getValidToolNames(): Set<string> {
@@ -2968,12 +2914,13 @@ function getValidToolNames(): Set<string> {
   );
 }
 
+
+
 /**
  * Process a single user input through the agentic loop.
  *
  * Takes the full conversation history (including system message),
- * appends the user message, runs the loop, and returns the updated
- * message history.
+ * runs the loop, and returns the updated message history.
  *
  * The \`onEvent\` callback is called for each event (text deltas,
  * tool calls, usage info, etc.) so the UI can render progress.
@@ -2993,7 +2940,7 @@ export async function runAgenticLoop(
   const requestDefaults = options.requestDefaults || {};
 
   // The same AbortSignal is passed into every OpenAI SDK call and every
-  // sleepWithAbort() across all loop iterations and sub-agent calls.
+  // sleep across all loop iterations and sub-agent calls.
   // The SDK attaches an 'abort' listener per request, so on a long run
   // the default limit of 10 listeners is quickly exceeded, producing the
   // MaxListenersExceededWarning.  AbortSignal is a Web API EventTarget,
@@ -3016,14 +2963,14 @@ export async function runAgenticLoop(
   }
 
   let iterationCount = 0;
-  let repairRetryCount = 0;
-  let contextRetryCount = 0;
-  let retriggerCount = 0;
-  let truncateRetryCount = 0;
-  let continueRetryCount = 0;
+  const retryState: RetryState = {
+    repairCount: 0,
+    contextCount: 0,
+    truncateCount: 0,
+    continueCount: 0,
+    retriggerCount: 0,
+  };
   const MAX_RETRIGGERS = 3;
-  const MAX_TRUNCATE_RETRIES = 5;
-  const MAX_CONTINUE_RETRIES = 1;
   const validToolNames = getValidToolNames();
 
   while (iterationCount < maxIterations) {
@@ -3036,7 +2983,11 @@ export async function runAgenticLoop(
 
     iterationCount++;
 
-    // Check for compaction
+    // Check for compaction when we have pricing info (includes context window).
+    // Compaction preserves: (1) the system prompt at index 0, (2) any skill_content
+    // tool messages, and (3) the 5 most recent messages. Middle messages are
+    // summarized into a secondary system message. The length=0 + spread reassigns
+    // the array in place with the compacted structure.
     if (pricing) {
       const contextInfo = getContextInfo(updatedMessages, pricing);
       if (contextInfo.needsCompaction) {
@@ -3045,11 +2996,10 @@ export async function runAgenticLoop(
           model,
           updatedMessages,
           pricing.contextWindow,
-          contextInfo.currentTokens,
           requestDefaults,
           sessionId
         );
-        // Replace messages in-place
+        // Replace messages in-place with compacted version
         updatedMessages.length = 0;
         updatedMessages.push(...compacted);
       }
@@ -3068,165 +3018,35 @@ export async function runAgenticLoop(
         messagesCount: updatedMessages.length,
       });
 
-      // Log message structure for debugging provider compatibility
-      for (const msg of updatedMessages) {
-        const m = msg as any;
-        if (m.role === 'tool') {
-          logger.trace('Message payload', {
-            role: m.role,
-            tool_call_id: m.tool_call_id,
-            contentLength: m.content?.length,
-            contentPreview: m.content?.slice(0, 100),
-          });
-        } else if (m.role === 'assistant' && m.tool_calls?.length) {
-          logger.trace('Message payload', {
-            role: m.role,
-            toolCalls: m.tool_calls.map((tc: any) => ({
-              id: tc.id,
-              name: tc.function?.name,
-              argsLength: tc.function?.arguments?.length,
-            })),
-          });
-        } else {
-          logger.trace('Message payload', {
-            role: m.role,
-            contentLength: m.content?.length,
-          });
-        }
-      }
+      // Debug: log message roles and sizes
+      logger.trace('Messages', { msgs: updatedMessages.map((m: any) => ({
+        role: m.role,
+        len: m.content?.length || m.tool_calls?.length || 0,
+      })) });
 
-        const stream = await client.chat.completions.create({
-         ...requestDefaults,
-         model,
-         messages: updatedMessages,
-         tools: allTools,
-         tool_choice: 'auto',
-         stream: true,
-         stream_options: { include_usage: true },
-       }, {
+      const stream = await client.chat.completions.create({
+        ...requestDefaults,
+        model,
+        messages: updatedMessages,
+        tools: allTools,
+        tool_choice: 'auto',
+        stream: true,
+        stream_options: { include_usage: true },
+      }, {
         signal: abortSignal,
       });
 
-      // Accumulate the streamed response
-      assistantMessage = {
-        role: 'assistant',
-        content: '',
-        tool_calls: [],
-      };
-      let streamedContent = '';
-      let hasToolCalls = false;
-      let actualUsage: OpenAI.CompletionUsage | undefined;
-
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta;
-
-        if (chunk.usage) {
-          actualUsage = chunk.usage;
-        }
-
-        // Stream text content (and return to UI for immediate display via onEvent)
-        if (delta?.content) {
-          streamedContent += delta.content;
-          assistantMessage.content = streamedContent;
-          if (!hasToolCalls) {
-            onEvent({ type: 'text_delta', content: delta.content });
-          }
-        }
-
-        // Accumulate tool calls across stream chunks
-        if (delta?.tool_calls) {
-          hasToolCalls = true;
-          for (const tc of delta.tool_calls) {
-            const idx = tc.index || 0;
-            if (!assistantMessage.tool_calls[idx]) {
-              assistantMessage.tool_calls[idx] = {
-                id: '',
-                type: 'function',
-                function: { name: '', arguments: '' },
-              };
-            }
-            if (tc.id) assistantMessage.tool_calls[idx].id = tc.id;
-            if (tc.function?.name) {
-              assistantMessage.tool_calls[idx].function.name = appendStreamingFragment(
-                assistantMessage.tool_calls[idx].function.name,
-                tc.function.name
-              );
-            }
-            if (tc.function?.arguments) {
-              assistantMessage.tool_calls[idx].function.arguments = appendStreamingFragment(
-                assistantMessage.tool_calls[idx].function.arguments,
-                tc.function.arguments
-              );
-            }
-            // Gemini 3+ models include an \`extra_content\` field on tool calls
-            // containing a \`thought_signature\`. This MUST be preserved and sent
-            // back in subsequent requests, otherwise Gemini returns a 400.
-            // See: https://ai.google.dev/gemini-api/docs/openai
-            // See also: https://gist.github.com/thomasgauvin/3cfe8e907c957fba4e132e6cf0f06292
-            if ((tc as any).extra_content) {
-              assistantMessage.tool_calls[idx].extra_content = (tc as any).extra_content;
-            }
-          }
-        }
-      }
-
-      // Log API response with usage info at INFO level
-      {
-        const inputTokens = actualUsage?.prompt_tokens ?? estimateConversationTokens(updatedMessages);
-        const outputTokens = actualUsage?.completion_tokens ?? estimateTokens(assistantMessage.content || '');
-        const cachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens;
-        const cost = pricing
-          ? createUsageInfo(inputTokens, outputTokens, pricing, cachedTokens).estimatedCost
-          : 0;
-        const contextPercent = pricing
-          ? getContextInfo(updatedMessages, pricing).utilizationPercentage
-          : 0;
-
-        logger.info('Received API response', {
-          model,
-          inputTokens,
-          outputTokens,
-          cachedTokens,
-          cost: cost > 0 ? \`\$\${cost.toFixed(4)}\` : 'N/A',
-          contextPercent: contextPercent > 0 ? \`\${contextPercent.toFixed(1)}%\` : 'N/A',
-          hasToolCalls: assistantMessage.tool_calls.length > 0,
-          contentLength: assistantMessage.content?.length || 0,
-        });
-
-        onEvent({
-          type: 'usage',
-          usage: { inputTokens, outputTokens, cost, contextPercent },
-        });
-      }
-
-      // Log the full assistant message for debugging
-      logger.debug('Assistant response details', {
-        contentLength: assistantMessage.content?.length || 0,
-        contentPreview: assistantMessage.content?.slice(0, 200) || '(empty)',
-        toolCallsCount: assistantMessage.tool_calls?.length || 0,
-        toolCalls: assistantMessage.tool_calls?.map((tc: any) => ({
-          id: tc.id,
-          name: tc.function?.name,
-          argsPreview: tc.function?.arguments?.slice(0, 100),
-        })),
-      });
+      // Process the streaming response
+      const streamResult = await processStream(stream, updatedMessages, model, pricing, onEvent);
+      assistantMessage = streamResult.assistantMessage;
 
       // Handle tool calls
-      if (assistantMessage.tool_calls.length > 0) {
+      if (streamResult.hasToolCalls) {
         // Reset retrigger count on valid tool call response
-        retriggerCount = 0;
+        retryState.retriggerCount = 0;
+
         // Clean up empty tool_calls entries (from sparse array)
         assistantMessage.tool_calls = assistantMessage.tool_calls.filter(Boolean);
-        assistantMessage.tool_calls = assistantMessage.tool_calls.map((toolCall: any) => {
-          const sanitized = sanitizeToolCall(toolCall, validToolNames);
-          if (sanitized.changed) {
-            logger.warn('Sanitized streamed tool call', {
-              originalName: toolCall.function?.name,
-              sanitizedName: sanitized.toolCall.function?.name,
-            });
-          }
-          return sanitized.toolCall;
-        });
 
         // Validate that all tool calls have valid JSON arguments
         const invalidToolCalls = assistantMessage.tool_calls.filter((tc: any) => {
@@ -3259,112 +3079,26 @@ export async function runAgenticLoop(
 
         updatedMessages.push(assistantMessage);
 
-        // Track which tool_call_ids still need a tool result message.
-        // This set is used to inject stub responses on abort, preventing
-        // orphaned tool_call_ids from permanently bricking the session.
-        const pendingToolCallIds = new Set<string>(
-          assistantMessage.tool_calls.map((tc: any) => tc.id as string)
-        );
-
-        const injectStubsForPendingToolCalls = () => {
-          for (const id of pendingToolCallIds) {
-            updatedMessages.push({
-              role: 'tool',
-              tool_call_id: id,
-              content: 'Aborted by user.',
-            } as any);
-          }
+        // Execute tool calls
+        const toolContext: ToolExecutionContext = {
+          sessionId,
+          abortSignal,
+          requestDefaults,
+          client,
+          model,
+          pricing,
         };
 
-        for (const toolCall of assistantMessage.tool_calls) {
-          // Check abort between tool calls
-          if (abortSignal?.aborted) {
-            logger.debug('Agentic loop aborted between tool calls');
-            injectStubsForPendingToolCalls();
-            emitAbortAndFinish(onEvent);
-            return updatedMessages;
-          }
+        const executionResult = await executeToolCalls(
+          assistantMessage.tool_calls,
+          updatedMessages,
+          onEvent,
+          toolContext
+        );
 
-          const { name, arguments: argsStr } = toolCall.function;
-
-          onEvent({
-            type: 'tool_call',
-            toolCall: { id: toolCall.id, name, args: argsStr, status: 'running' },
-          });
-
-          try {
-            const args = JSON.parse(argsStr);
-            let result: string;
-
-            // Handle sub-agent tool specially
-            if (name === 'sub_agent') {
-              const subProgress: SubAgentProgressHandler = (evt) => {
-                onEvent({
-                  type: 'sub_agent_iteration',
-                  subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration, args: evt.args },
-                });
-              };
-              const subResult = await runSubAgent(
-                client,
-                model,
-                args.task,
-                args.max_iterations,
-                requestDefaults,
-                subProgress,
-                abortSignal,
-                pricing,
-              );
-              result = subResult.response;
-              // Emit sub-agent usage for the UI to add to total cost
-              if (subResult.usage.inputTokens > 0 || subResult.usage.outputTokens > 0) {
-                onEvent({
-                  type: 'sub_agent_iteration',
-                  subAgentUsage: subResult.usage,
-                });
-              }
-            } else {
-              result = await handleToolCall(name, args, { sessionId, abortSignal });
-            }
-
-            logger.info('Tool completed', {
-              tool: name,
-              resultLength: result.length,
-            });
-
-            updatedMessages.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              content: result,
-            } as any);
-            pendingToolCallIds.delete(toolCall.id);
-
-            onEvent({
-              type: 'tool_result',
-              toolCall: { id: toolCall.id, name, args: argsStr, status: 'done', result },
-            });
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-
-            updatedMessages.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              content: \`Error: \${errMsg}\`,
-            } as any);
-            pendingToolCallIds.delete(toolCall.id);
-
-            // If the tool was aborted, inject stubs for remaining pending calls and stop
-            if (abortSignal?.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message === 'Operation aborted'))) {
-              logger.debug('Agentic loop aborted during tool execution');
-              injectStubsForPendingToolCalls();
-              emitAbortAndFinish(onEvent);
-              return updatedMessages;
-            }
-
-            onEvent({
-              type: 'tool_result',
-              toolCall: { id: toolCall.id, name, args: argsStr, status: 'error', result: errMsg },
-            });
-          }
+        if (executionResult.shouldAbort) {
+          emitAbortAndFinish(onEvent);
+          return updatedMessages;
         }
 
         // Signal UI that this iteration's tool calls are all done,
@@ -3382,21 +3116,21 @@ export async function runAgenticLoop(
           content: assistantMessage.content,
         } as Message);
         // Reset retrigger count on valid content response
-        retriggerCount = 0;
+        retryState.retriggerCount = 0;
       }
 
       // Check if we need to retrigger: if the last message is a tool result
       // but we got no assistant response (empty content, no tool_calls), the AI
       // may have stopped prematurely. Inject a 'continue' prompt and retry.
       const lastMessage = updatedMessages[updatedMessages.length - 1];
-      if (lastMessage?.role === 'tool' && retriggerCount < MAX_RETRIGGERS) {
-        retriggerCount++;
+      if (lastMessage?.role === 'tool' && retryState.retriggerCount < MAX_RETRIGGERS) {
+        retryState.retriggerCount++;
         logger.warn('AI stopped after tool call without responding; retriggering', {
-          retriggerCount,
+          retriggerCount: retryState.retriggerCount,
           maxRetriggers: MAX_RETRIGGERS,
           lastMessageRole: lastMessage.role,
           assistantContent: assistantMessage.content || '(empty)',
-          hasToolCalls: assistantMessage.tool_calls.length > 0,
+          hasToolCalls: assistantMessage.tool_calls?.length > 0,
         });
         // Inject a 'continue' prompt to help the AI continue
         updatedMessages.push({
@@ -3406,12 +3140,13 @@ export async function runAgenticLoop(
         continue;
       }
 
-      repairRetryCount = 0;
-      retriggerCount = 0;
+      // Reset retry counts on successful completion
+      retryState.repairCount = 0;
+      retryState.retriggerCount = 0;
       onEvent({ type: 'done' });
       return updatedMessages;
 
-      } catch (apiError: any) {
+    } catch (apiError: any) {
       if (abortSignal?.aborted || apiError?.name === 'AbortError' || apiError?.message === 'Operation aborted') {
         logger.debug('Agentic loop request aborted');
         // If we have a partial assistant message with tool_calls, we need to
@@ -3446,192 +3181,45 @@ export async function runAgenticLoop(
         return updatedMessages;
       }
 
-      const errMsg = apiError?.message || 'Unknown API error';
+      // Handle API errors with retry strategies
+      const errorResult = await handleApiError(
+        apiError,
+        updatedMessages,
+        validToolNames,
+        pricing,
+        retryState,
+        iterationCount,
+        onEvent,
+        client,
+        model,
+        requestDefaults,
+        sessionId
+      );
 
-      // Try to extract response body for more details
-      let responseBody: string | undefined;
-      try {
-        if (apiError?.response) {
-          responseBody = JSON.stringify(apiError.response);
-        } else if (apiError?.error) {
-          responseBody = JSON.stringify(apiError.error);
-        }
-      } catch { /* ignore */ }
-
-      logger.error(\`API error: \${errMsg}\`, {
-        status: apiError?.status,
-        code: apiError?.code,
-        responseBody,
-        headers: apiError?.headers ? Object.fromEntries(
-          Object.entries(apiError.headers).filter(([k]) =>
-            ['content-type', 'x-error', 'retry-after'].includes(k.toLowerCase())
-          )
-        ) : undefined,
-      });
-
-      // Log the last few messages to help debug format issues
-      logger.debug('Messages at time of error', {
-        lastMessages: updatedMessages.slice(-3).map((m: any) => ({
-          role: m.role,
-          hasToolCalls: !!(m.tool_calls?.length),
-          tool_call_id: m.tool_call_id,
-          contentPreview: m.content?.slice(0, 150),
-        })),
-      });
-
-      const retryableStatus = apiError?.status === 408 || apiError?.status === 409 || apiError?.status === 425;
-      const retryableCode = ['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ENETUNREACH', 'EAI_AGAIN'].includes(apiError?.code);
-
-      // Handle 400 errors: try sanitization first, then truncate messages
-      if (apiError?.status === 400) {
-        // Try sanitization first
-        if (repairRetryCount < 2) {
-          const sanitized = sanitizeMessagesForRetry(updatedMessages, getValidToolNames());
-          if (sanitized.changed) {
-            repairRetryCount++;
-            updatedMessages.length = 0;
-            updatedMessages.push(...sanitized.messages);
-            logger.warn('400 response after malformed tool payload; retrying with sanitized messages', {
-              repairRetryCount,
-            });
-            // Silently retry without showing error to user
-            continue;
-          }
-        }
-
-        // Try removing orphaned tool results
-        const orphanedRemoved = removeOrphanedToolResults(updatedMessages);
-        if (orphanedRemoved.changed) {
-          updatedMessages.length = 0;
-          updatedMessages.push(...orphanedRemoved.messages);
-          logger.warn('400 response after orphaned tool results; retrying with cleaned messages');
-          // Silently retry without showing error to user
-          continue;
-        }
-
-        // If sanitization didn't help, try removing messages one at a time (up to 5)
-        if (truncateRetryCount < MAX_TRUNCATE_RETRIES) {
-          truncateRetryCount++;
-          const removedCount = Math.min(1, Math.max(0, updatedMessages.length - 2)); // Remove 1 at a time, keep system + at least 1 user
-          if (removedCount > 0) {
-            const removed = updatedMessages.splice(-removedCount);
-            logger.debug('400 error: removing message from history to attempt fix', {
-              truncateRetryCount,
-              maxRetries: MAX_TRUNCATE_RETRIES,
-              removedCount,
-              removedRoles: removed.map((m: any) => m.role),
-              removedPreviews: removed.map((m: any) => ({
-                role: m.role,
-                content: m.content?.slice(0, 100),
-                tool_calls: m.tool_calls?.map((tc: any) => tc.function?.name),
-              })),
-            });
-            // Silently retry without showing error to user
-            continue;
-          }
-        }
-
-        // After truncation retries exhausted, try adding a "continue" message
-        if (continueRetryCount < MAX_CONTINUE_RETRIES) {
-          continueRetryCount++;
-          updatedMessages.push({ role: 'user', content: 'continue' } as Message);
-          logger.warn('400 error: adding "continue" message to retry', {
-            continueRetryCount,
-            messageCount: updatedMessages.length,
-          });
-          onEvent({
-            type: 'error',
-            error: 'Request failed. Retrying with "continue"...',
-            transient: true,
-          });
-          continue;
-        }
+      if (errorResult.shouldAbort) {
+        emitAbortAndFinish(onEvent);
+        return updatedMessages;
       }
 
-      // Handle context-window-exceeded (prompt too long) — attempt forced compaction
-      // This fires when our token estimate was too low (e.g. base64 images from MCP tools)
-      // and the request actually hit the hard provider limit.
-      const isContextTooLong =
-        apiError?.status === 400 &&
-        typeof errMsg === 'string' &&
-        /prompt.{0,30}too long|context.{0,30}length|maximum.{0,30}token|tokens?.{0,10}exceed/i.test(errMsg);
-
-      if (isContextTooLong && contextRetryCount < 2) {
-        contextRetryCount++;
-        logger.warn(\`Prompt too long (attempt \${contextRetryCount}); forcing compaction\`, { errMsg });
+      if (!errorResult.handled) {
+        // Non-retryable error
         onEvent({
           type: 'error',
-          error: 'Prompt too long. Compacting conversation and retrying...',
-          transient: true,
-        });
-
-        if (pricing) {
-          // Use the normal LLM-based compaction path
-          try {
-            const compacted = await compactIfNeeded(
-              client, model, updatedMessages, pricing.contextWindow,
-              // Pass the context window itself as currentTokens to force compaction
-              pricing.contextWindow,
-              requestDefaults, sessionId
-            );
-            updatedMessages.length = 0;
-            updatedMessages.push(...compacted);
-          } catch (compactErr) {
-            logger.error(\`Forced compaction failed: \${compactErr}\`);
-            // Fall through to truncation fallback below
-          }
-        }
-
-        // Fallback: truncate any tool result messages whose content looks like
-        // base64 or is extremely large (e.g. MCP screenshot data)
-        const MAX_TOOL_RESULT_CHARS = 20_000;
-        for (let i = 0; i < updatedMessages.length; i++) {
-          const m = updatedMessages[i] as any;
-          if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > MAX_TOOL_RESULT_CHARS) {
-            updatedMessages[i] = {
-              ...m,
-              content: m.content.slice(0, MAX_TOOL_RESULT_CHARS) + '\\n... (truncated — content was too large)',
-            };
-          }
-        }
-
-        continue;
-      }
-
-      // Retry on 429 (rate limit) with backoff
-      if (apiError?.status === 429) {
-        const retryAfter = parseInt(apiError?.headers?.['retry-after'] || '5', 10);
-        const backoff = Math.min(retryAfter * 1000, 60_000);
-        logger.info(\`Rate limited, retrying in \${backoff / 1000}s...\`);
-        onEvent({ type: 'error', error: \`Rate limited. Retrying in \${backoff / 1000}s...\`, transient: true });
-        await sleepWithAbort(backoff, abortSignal);
-        continue;
-      }
-
-      // Retry on transient request failures
-      if (apiError?.status >= 500 || retryableStatus || retryableCode) {
-        const backoff = Math.min(2 ** iterationCount * 1000, 30_000);
-        logger.info(\`Request failed, retrying in \${backoff / 1000}s...\`);
-        onEvent({ type: 'error', error: \`Request failed. Retrying in \${backoff / 1000}s...\`, transient: true });
-        await sleepWithAbort(backoff, abortSignal);
-        continue;
-      }
-
-      // 400 error that couldn't be fixed by sanitization or truncation
-      if (apiError?.status === 400) {
-        onEvent({
-          type: 'error',
-          error: \`Request failed: \${errMsg}\\n\\nThe conversation history could not be automatically repaired. Try /clear to start fresh.\`,
-          transient: false,
+          error: errorResult.errorMessage || 'Unknown error',
+          transient: errorResult.transient,
         });
         onEvent({ type: 'done' });
         return updatedMessages;
       }
 
-      // Non-retryable error
-      onEvent({ type: 'error', error: errMsg });
-      onEvent({ type: 'done' });
-      return updatedMessages;
+      // If handled but not silently, the error was already emitted
+      if (!errorResult.silentRetry) {
+        onEvent({ type: 'done' });
+        return updatedMessages;
+      }
+
+      // Silent retry - continue the loop
+      continue;
     }
   }
 
@@ -3773,6 +3361,173 @@ program.parse(process.argv);
 `,
   },
   {
+    path: "src/components/ApprovalPrompt.tsx",
+    content: `import React from 'react';
+import { Box, Text } from 'ink';
+import { Select } from '@inkjs/ui';
+import { LeftBar } from './LeftBar.js';
+import type { ApprovalRequest, ApprovalResponse } from '../utils/approval.js';
+
+export interface ApprovalPromptProps {
+  request: ApprovalRequest;
+  onRespond: (response: ApprovalResponse) => void;
+}
+
+/**
+ * Interactive approval prompt rendered inline.
+ */
+export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({ request, onRespond }) => {
+  const sessionApprovalLabel = request.sessionScopeKey
+    ? 'Approve this operation for session'
+    : \`Approve all "\${request.type}" for session\`;
+
+  const items = [
+    { label: 'Approve once', value: 'approve_once' as const },
+    { label: sessionApprovalLabel, value: 'approve_session' as const },
+    { label: 'Reject', value: 'reject' as const },
+  ];
+
+  return (
+    <LeftBar color="green" marginTop={1} marginBottom={1}>
+      <Text color="green" bold>Approval Required</Text>
+      <Text>{request.description}</Text>
+      {request.detail && (
+        <Text dimColor>{request.detail.length > 200 ? request.detail.slice(0, 200) + '...' : request.detail}</Text>
+      )}
+      <Box marginTop={1}>
+        <Select
+          options={items.map((item) => ({ value: item.value, label: item.label }))}
+          onChange={(value) => onRespond(value as ApprovalResponse)}
+        />
+      </Box>
+    </LeftBar>
+  );
+};
+`,
+  },
+  {
+    path: "src/components/CommandFilter.tsx",
+    content: `import React from 'react';
+import { Box, Text } from 'ink';
+
+// ─── Available slash commands ───
+export const SLASH_COMMANDS = [
+  { name: '/help', description: 'Show all available commands' },
+  { name: '/quit', description: 'Exit ProtoAgent' },
+  { name: '/exit', description: 'Alias for /quit' },
+];
+
+export interface CommandFilterProps {
+  inputText: string;
+}
+
+/**
+ * Shows filtered slash commands when user types /.
+ */
+export const CommandFilter: React.FC<CommandFilterProps> = ({ inputText }) => {
+  if (!inputText.startsWith('/')) return null;
+
+  const filtered = SLASH_COMMANDS.filter((cmd) =>
+    cmd.name.toLowerCase().startsWith(inputText.toLowerCase())
+  );
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      {filtered.map((cmd) => (
+        <Text key={cmd.name} dimColor>
+          <Text color="green">{cmd.name}</Text> — {cmd.description}
+        </Text>
+      ))}
+    </Box>
+  );
+};
+`,
+  },
+  {
+    path: "src/components/InlineSetup.tsx",
+    content: `import React, { useState } from 'react';
+import { Box } from 'ink';
+import {
+  writeConfig,
+  writeInitConfig,
+  type Config,
+  type InitConfigTarget,
+  TargetSelection,
+  ModelSelection,
+  ApiKeyInput,
+} from '../config.js';
+
+export interface InlineSetupProps {
+  onComplete: (config: Config) => void;
+}
+
+/**
+ * Inline setup wizard — shown when no config exists.
+ */
+export const InlineSetup: React.FC<InlineSetupProps> = ({ onComplete }) => {
+  const [setupStep, setSetupStep] = useState<'target' | 'provider' | 'api_key'>('target');
+  const [target, setTarget] = useState<InitConfigTarget>('project');
+  const [selectedProviderId, setSelectedProviderId] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState('');
+
+  const handleModelSelect = (providerId: string, modelId: string) => {
+    setSelectedProviderId(providerId);
+    setSelectedModelId(modelId);
+    setSetupStep('api_key');
+  };
+
+  const handleConfigComplete = (config: Config) => {
+    writeInitConfig(target);
+    writeConfig(config, target);
+    onComplete(config);
+  };
+
+  if (setupStep === 'target') {
+    return (
+      <Box marginTop={1}>
+        <TargetSelection
+          title="First-time setup"
+          subtitle="Create a ProtoAgent runtime config:"
+          onSelect={(value) => {
+            setTarget(value);
+            setSetupStep('provider');
+          }}
+        />
+      </Box>
+    );
+  }
+
+  if (setupStep === 'provider') {
+    return (
+      <Box marginTop={1}>
+        <ModelSelection
+          setSelectedProviderId={setSelectedProviderId}
+          setSelectedModelId={setSelectedModelId}
+          onSelect={handleModelSelect}
+          title="First-time setup"
+        />
+      </Box>
+    );
+  }
+
+  return (
+    <Box marginTop={1}>
+      <ApiKeyInput
+        selectedProviderId={selectedProviderId}
+        selectedModelId={selectedModelId}
+        target={target}
+        title="First-time setup"
+        showProviderHeaders={false}
+        onComplete={handleConfigComplete}
+      />
+    </Box>
+  );
+};
+`,
+  },
+  {
     path: "src/components/LeftBar.tsx",
     content: `/**
  * LeftBar — renders a bold green vertical bar (│) on the left side of
@@ -3831,6 +3586,47 @@ export const LeftBar: React.FC<LeftBarProps> = ({
 `,
   },
   {
+    path: "src/components/UsageDisplay.tsx",
+    content: `import React from 'react';
+import { Box, Text } from 'ink';
+
+export interface UsageDisplayProps {
+  usage: { inputTokens: number; outputTokens: number; cost: number; contextPercent: number } | null;
+  totalCost: number;
+}
+
+/**
+ * Cost/usage display in the status bar.
+ */
+export const UsageDisplay: React.FC<UsageDisplayProps> = ({ usage, totalCost }) => {
+  if (!usage && totalCost === 0) return null;
+
+  return (
+    <Box marginTop={1}>
+      {usage && (
+        <Box>
+          <Box backgroundColor="#064e3b" paddingX={1}>
+            <Text color="white">tokens: </Text>
+            <Text color="white" bold>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
+          </Box>
+          <Box backgroundColor="#065f46" paddingX={1}>
+            <Text color="white">ctx: </Text>
+            <Text color="white" bold>{usage.contextPercent.toFixed(0)}%</Text>
+          </Box>
+        </Box>
+      )}
+      {totalCost > 0 && (
+        <Box backgroundColor="#064e3b" paddingX={1}>
+          <Text color="black">cost: </Text>
+          <Text color="black" bold>\${totalCost.toFixed(4)}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+};
+`,
+  },
+  {
     path: "src/config.tsx",
     content: `import { readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
@@ -3839,7 +3635,13 @@ import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import { Select, TextInput, PasswordInput } from '@inkjs/ui';
 import { parse } from 'jsonc-parser';
-import { getActiveRuntimeConfigPath, type RuntimeConfigFile, type RuntimeProviderConfig } from './runtime-config.js';
+import { z } from 'zod';
+import { 
+  getActiveRuntimeConfigPath, 
+  type RuntimeConfigFile, 
+  type RuntimeProviderConfig,
+  RuntimeConfigFileSchema 
+} from './runtime-config.js';
 import { getAllProviders, getProvider } from './providers.js';
 
 export interface Config {
@@ -3938,7 +3740,7 @@ export const getRuntimeConfigPath = (target: InitConfigTarget, cwd = process.cwd
   return target === 'project' ? getProjectRuntimeConfigPath(cwd) : getUserRuntimeConfigPath();
 };
 
-const RUNTIME_CONFIG_TEMPLATE = \`{
+export const RUNTIME_CONFIG_TEMPLATE = \`{
   // Add project or user-wide ProtoAgent runtime config here.
   // Example uses:
   // - choose the active provider/model by making it the first provider
@@ -4014,13 +3816,24 @@ function readRuntimeConfigFileSync(configPath: string): RuntimeConfigFile | null
     if (errors.length > 0 || !isPlainObject(parsed)) {
       return null;
     }
-    return parsed as RuntimeConfigFile;
+    
+    // Validate against zod schema
+    const result = RuntimeConfigFileSchema.safeParse(parsed);
+    if (!result.success) {
+      console.error('Invalid runtime config format:', result.error.issues.map(i => \`\${i.path.join('.')}: \${i.message}\`).join(', '));
+      return null;
+    }
+    
+    return result.data as RuntimeConfigFile;
   } catch (error) {
     console.error('Error reading runtime config file:', error);
     return null;
   }
 }
 
+// Returns the first provider with a valid model from the runtime config.
+// The active provider/model is determined by order: first provider in the
+// config with at least one model, and the first model under that provider.
 function getConfiguredProviderAndModel(runtimeConfig: RuntimeConfigFile): Config | null {
   for (const [providerId, providerConfig] of Object.entries(runtimeConfig.providers || {})) {
     const modelId = Object.keys(providerConfig.models || {})[0];
@@ -4044,30 +3857,39 @@ function writeRuntimeConfigFile(configPath: string, runtimeConfig: RuntimeConfig
   hardenPermissions(configPath, CONFIG_FILE_MODE);
 }
 
-function upsertSelectedConfig(runtimeConfig: RuntimeConfigFile, config: Config): RuntimeConfigFile {
-  const existingProviders = runtimeConfig.providers || {};
-  const currentProvider = existingProviders[config.provider] || {};
+// Merges a new provider/model configuration into the existing runtime config.
+// Used by writeConfig() to add/update a provider without losing existing data.
+// - newConfig: the provider/model to add (from user running 'configure' command)
+// - existingRuntimeConfig: the current runtime config file content (may be empty)
+function upsertSelectedConfig(
+  existingRuntimeConfig: RuntimeConfigFile,
+  newConfig: Config
+): RuntimeConfigFile {
+  const existingProviders = existingRuntimeConfig.providers || {};
+  const currentProvider = existingProviders[newConfig.provider] || {};
   const currentModels = currentProvider.models || {};
-  const selectedModelConfig = currentModels[config.model] || {};
+  const selectedModelConfig = currentModels[newConfig.model] || {};
 
   const nextProvider: RuntimeProviderConfig = {
     ...currentProvider,
-    ...(config.apiKey?.trim() ? { apiKey: config.apiKey.trim() } : {}),
+    ...(newConfig.apiKey?.trim() ? { apiKey: newConfig.apiKey.trim() } : {}),
     models: Object.fromEntries([
-      [config.model, selectedModelConfig],
-      ...Object.entries(currentModels).filter(([modelId]) => modelId !== config.model),
+      [newConfig.model, selectedModelConfig],
+      ...Object.entries(currentModels).filter(([modelId]) => modelId !== newConfig.model),
     ]),
   };
 
-  if (!config.apiKey?.trim()) {
+  if (!newConfig.apiKey?.trim()) {
     delete nextProvider.apiKey;
   }
 
   return {
-    ...runtimeConfig,
+    ...existingRuntimeConfig,
     providers: Object.fromEntries([
-      [config.provider, nextProvider],
-      ...Object.entries(existingProviders).filter(([providerId]) => providerId !== config.provider),
+      [newConfig.provider, nextProvider],
+      ...Object.entries(existingProviders).filter(
+        ([providerId]) => providerId !== newConfig.provider
+      ),
     ]),
   };
 }
@@ -4092,8 +3914,17 @@ export function writeInitConfig(
   return { path: configPath, status: alreadyExists ? 'overwritten' : 'created' };
 }
 
-export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd = process.cwd()): Config | null => {
-  const configPath = target === 'active' ? getActiveRuntimeConfigPath() : getRuntimeConfigPath(target, cwd);
+// Reads the provider/model config from a runtime config file.
+// - 'project': read from <cwd>/.protoagent/protoagent.jsonc
+// - 'user': read from ~/.config/protoagent/protoagent.jsonc
+// - 'active' (default): check project config first, fall back to user config
+//   This is what the agent uses at runtime to determine which provider/model to use.
+export const readConfig = (
+  target: InitConfigTarget | 'active' = 'active',
+  cwd = process.cwd()
+): Config | null => {
+  const configPath =
+    target === 'active' ? getActiveRuntimeConfigPath() : getRuntimeConfigPath(target, cwd);
   if (!configPath) {
     return null;
   }
@@ -4105,6 +3936,8 @@ export const readConfig = (target: InitConfigTarget | 'active' = 'active', cwd =
 
   return getConfiguredProviderAndModel(runtimeConfig);
 };
+
+
 
 export const writeConfig = (config: Config, target: InitConfigTarget = 'user', cwd = process.cwd()) => {
   const configPath = getRuntimeConfigPath(target, cwd);
@@ -4348,43 +4181,22 @@ export const ConfigureComponent = () => {
 export const InitComponent = () => {
   const [selectedTarget, setSelectedTarget] = useState<InitConfigTarget | null>(null);
   const [result, setResult] = useState<{ path: string; status: InitConfigWriteStatus } | null>(null);
-  const options: Array<{ label: string; value: InitConfigTarget; description: string }> = [
-    {
-      label: 'Project config',
-      value: 'project',
-      description: getProjectRuntimeConfigPath(),
-    },
-    {
-      label: 'Shared user config',
-      value: 'user',
-      description: getUserRuntimeConfigPath(),
-    },
-  ];
-  const activeTarget = selectedTarget ?? 'project';
-  const activeOption = options.find((option) => option.value === activeTarget) ?? options[0];
 
   // Step 1: Show target selection
   if (!selectedTarget && !result) {
     return (
-      <Box flexDirection="column">
-        <Text>Create a ProtoAgent runtime config:</Text>
-        <Text dimColor>Select where to write \`protoagent.jsonc\`.</Text>
-        <Text dimColor>{activeOption.description}</Text>
-        <Box marginTop={1}>
-          <Select
-            options={options.map((option) => ({ label: option.label, value: option.value }))}
-            onChange={(value) => {
-              const target = value as InitConfigTarget;
-              const configPath = getRuntimeConfigPath(target);
-              if (existsSync(configPath)) {
-                setSelectedTarget(target);
-                return;
-              }
-              setResult(writeInitConfig(target));
-            }}
-          />
-        </Box>
-      </Box>
+      <TargetSelection
+        title="Create a ProtoAgent runtime config"
+        subtitle="Select where to write \`protoagent.jsonc\`"
+        onSelect={(target) => {
+          const configPath = getRuntimeConfigPath(target);
+          if (existsSync(configPath)) {
+            setSelectedTarget(target);
+            return;
+          }
+          setResult(writeInitConfig(target));
+        }}
+      />
     );
   }
 
@@ -4410,19 +4222,542 @@ export const InitComponent = () => {
   }
 
   // Step 3: Show result
-  const color = result.status === 'exists' ? 'yellow' : 'green';
-  const message = result.status === 'created'
-    ? 'Created ProtoAgent config:'
-    : result.status === 'overwritten'
-      ? 'Overwrote ProtoAgent config:'
-      : 'ProtoAgent config already exists:';
-  return (
-    <Box flexDirection="column">
-      <Text color={color}>{message}</Text>
-      <Text>{result.path}</Text>
-    </Box>
-  );
+  if (result) {
+    const color = result.status === 'exists' ? 'yellow' : 'green';
+    const message = result.status === 'created'
+      ? 'Created ProtoAgent config:'
+      : result.status === 'overwritten'
+        ? 'Overwrote ProtoAgent config:'
+        : 'ProtoAgent config already exists:';
+    return (
+      <Box flexDirection="column">
+        <Text color={color}>{message}</Text>
+        <Text>{result.path}</Text>
+      </Box>
+    );
+  }
+
+  return null;
 };
+`,
+  },
+  {
+    path: "src/hooks/useAgentEventHandler.tsx",
+    content: `import React, { useCallback } from 'react';
+import { Text } from 'ink';
+import type { AgentEvent, Message } from '../agentic-loop.js';
+import { renderFormattedText, normalizeTranscriptText } from '../utils/format-message.js';
+import { formatSubAgentActivity, formatToolActivity } from '../utils/tool-display.js';
+
+export interface AssistantMessageRef {
+  message: any;
+  index: number;
+  kind: 'streaming_text' | 'tool_call_assistant';
+}
+
+export interface StreamingBuffer {
+  unflushedContent: string;
+  hasFlushedAnyLine: boolean;
+}
+
+export interface InlineThreadError {
+  id: string;
+  message: string;
+  transient?: boolean;
+}
+
+interface UseAgentEventHandlerOptions {
+  addStatic: (node: React.ReactNode) => void;
+  setCompletionMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  setIsStreaming: React.Dispatch<React.SetStateAction<boolean>>;
+  setStreamingText: React.Dispatch<React.SetStateAction<string>>;
+  setActiveTool: React.Dispatch<React.SetStateAction<string | null>>;
+  setLastUsage: React.Dispatch<React.SetStateAction<AgentEvent['usage'] | null>>;
+  setTotalCost: React.Dispatch<React.SetStateAction<number>>;
+  setThreadErrors: React.Dispatch<React.SetStateAction<InlineThreadError[]>>;
+  setError: React.Dispatch<React.SetStateAction<string | null>>;
+  assistantMessageRef: React.MutableRefObject<AssistantMessageRef | null>;
+  streamingBufferRef: React.MutableRefObject<StreamingBuffer>;
+}
+
+export function useAgentEventHandler(options: UseAgentEventHandlerOptions) {
+  const {
+    addStatic,
+    setCompletionMessages,
+    setIsStreaming,
+    setStreamingText,
+    setActiveTool,
+    setLastUsage,
+    setTotalCost,
+    setThreadErrors,
+    setError,
+    assistantMessageRef,
+    streamingBufferRef,
+  } = options;
+
+  return useCallback((event: AgentEvent) => {
+    switch (event.type) {
+      case 'text_delta': {
+        handleTextDelta(event as AgentEvent & { type: 'text_delta' }, {
+          addStatic,
+          setCompletionMessages,
+          setIsStreaming,
+          setStreamingText,
+          assistantMessageRef,
+          streamingBufferRef,
+        });
+        break;
+      }
+      case 'sub_agent_iteration': {
+        handleSubAgentIteration(event as AgentEvent & { type: 'sub_agent_iteration' }, {
+          setActiveTool,
+          setTotalCost,
+        });
+        break;
+      }
+      case 'tool_call': {
+        handleToolCall(event as AgentEvent & { type: 'tool_call' }, {
+          addStatic,
+          setCompletionMessages,
+          setActiveTool,
+          assistantMessageRef,
+          streamingBufferRef,
+          setIsStreaming,
+          setStreamingText,
+        });
+        break;
+      }
+      case 'tool_result': {
+        handleToolResult(event as AgentEvent & { type: 'tool_result' }, {
+          addStatic,
+          setCompletionMessages,
+          setActiveTool,
+          assistantMessageRef,
+        });
+        break;
+      }
+      case 'usage': {
+        handleUsage(event as AgentEvent & { type: 'usage' }, { setLastUsage, setTotalCost });
+        break;
+      }
+      case 'error': {
+        handleError(event as AgentEvent & { type: 'error' }, { setThreadErrors, setError });
+        break;
+      }
+      case 'iteration_done': {
+        handleIterationDone({ assistantMessageRef });
+        break;
+      }
+      case 'done': {
+        handleDone(event as AgentEvent & { type: 'done' }, {
+          addStatic,
+          setCompletionMessages,
+          setIsStreaming,
+          setStreamingText,
+          setActiveTool,
+          setThreadErrors,
+          assistantMessageRef,
+          streamingBufferRef,
+        });
+        break;
+      }
+    }
+  }, [
+    addStatic,
+    setCompletionMessages,
+    setIsStreaming,
+    setStreamingText,
+    setActiveTool,
+    setLastUsage,
+    setTotalCost,
+    setThreadErrors,
+    setError,
+    assistantMessageRef,
+    streamingBufferRef,
+  ]);
+}
+
+// Shared base interface for contexts that need static scrollback access
+interface StaticContext {
+  addStatic: (node: React.ReactNode) => void;
+}
+
+// Shared base interface for contexts that need streaming state
+interface StreamingContext extends StaticContext {
+  setIsStreaming: React.Dispatch<React.SetStateAction<boolean>>;
+  setStreamingText: React.Dispatch<React.SetStateAction<string>>;
+  assistantMessageRef: React.MutableRefObject<AssistantMessageRef | null>;
+  streamingBufferRef: React.MutableRefObject<StreamingBuffer>;
+}
+
+// Helper to flush streaming buffer to static and reset state
+function flushStreamingBuffer(ctx: StreamingContext) {
+  const { addStatic, setIsStreaming, setStreamingText, streamingBufferRef } = ctx;
+  const buffer = streamingBufferRef.current;
+
+  if (buffer.unflushedContent) {
+    addStatic(renderFormattedText(buffer.unflushedContent));
+  }
+
+  streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
+  setIsStreaming(false);
+  setStreamingText('');
+}
+
+interface TextDeltaContext extends StreamingContext {
+  setCompletionMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+}
+
+function handleTextDelta(
+  event: AgentEvent & { type: 'text_delta' },
+  ctx: TextDeltaContext
+) {
+  const deltaText = event.content || '';
+  const { assistantMessageRef, streamingBufferRef, addStatic, setCompletionMessages, setIsStreaming, setStreamingText } = ctx;
+
+  // First text delta of this turn: initialize ref, show streaming indicator.
+  if (!assistantMessageRef.current || assistantMessageRef.current.kind !== 'streaming_text') {
+    // Trim leading whitespace from first delta - LLMs often output leading \\n or spaces
+    const trimmedDelta = deltaText.replace(/^\\s+/, '');
+    const assistantMsg = { role: 'assistant', content: trimmedDelta, tool_calls: [] } as Message;
+    
+    // Use functional update to get correct index
+    setCompletionMessages((prev) => {
+      const idx = prev.length;
+      assistantMessageRef.current = { message: assistantMsg, index: idx, kind: 'streaming_text' };
+      return [...prev, assistantMsg];
+    });
+    
+    setIsStreaming(true);
+
+    // Initialize the streaming buffer and process the first chunk
+    const buffer = { unflushedContent: trimmedDelta, hasFlushedAnyLine: false };
+    streamingBufferRef.current = buffer;
+
+    // Process the first chunk: split on newlines and flush complete lines
+    const lines = buffer.unflushedContent.split('\\n');
+    if (lines.length > 1) {
+      const completeLines = lines.slice(0, -1);
+      const textToFlush = completeLines.join('\\n');
+      if (textToFlush) {
+        addStatic(renderFormattedText(textToFlush));
+        buffer.hasFlushedAnyLine = true;
+      }
+      buffer.unflushedContent = lines[lines.length - 1];
+    }
+
+    setStreamingText(buffer.unflushedContent);
+  } else {
+    // Subsequent deltas — append to ref and buffer, then flush complete lines
+    assistantMessageRef.current.message.content += deltaText;
+
+    // Accumulate in buffer and flush complete lines to static
+    const buffer = streamingBufferRef.current;
+    buffer.unflushedContent += deltaText;
+
+    // Split on newlines to find complete lines
+    const lines = buffer.unflushedContent.split('\\n');
+
+    // If we have more than 1 element, there were newlines
+    if (lines.length > 1) {
+      // All lines except the last one are complete (ended with \\n)
+      const completeLines = lines.slice(0, -1);
+
+      // Build the text to flush - each complete line gets a newline added back
+      const textToFlush = completeLines.join('\\n');
+
+      if (textToFlush) {
+        addStatic(renderFormattedText(textToFlush));
+        buffer.hasFlushedAnyLine = true;
+      }
+
+      // Keep only the last (incomplete) line in the buffer
+      buffer.unflushedContent = lines[lines.length - 1];
+    }
+
+    // Show the incomplete line (if any) in the dynamic frame
+    setStreamingText(buffer.unflushedContent);
+  }
+}
+
+interface SubAgentIterationContext {
+  setActiveTool: React.Dispatch<React.SetStateAction<string | null>>;
+  setTotalCost: React.Dispatch<React.SetStateAction<number>>;
+}
+
+function handleSubAgentIteration(
+  event: AgentEvent & { type: 'sub_agent_iteration' },
+  ctx: SubAgentIterationContext
+) {
+  const { setActiveTool, setTotalCost } = ctx;
+  
+  if (event.subAgentTool) {
+    const { tool, status, args } = event.subAgentTool;
+    if (status === 'running') {
+      setActiveTool(formatSubAgentActivity(tool, args));
+    } else {
+      setActiveTool(null);
+    }
+  }
+  // Handle sub-agent usage update
+  if (event.subAgentUsage) {
+    setTotalCost((prev) => prev + event.subAgentUsage!.estimatedCost);
+  }
+}
+
+interface ToolCallContext extends StreamingContext {
+  setActiveTool: React.Dispatch<React.SetStateAction<string | null>>;
+  setCompletionMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+}
+
+function handleToolCall(
+  event: AgentEvent & { type: 'tool_call' },
+  ctx: ToolCallContext
+) {
+  const { setCompletionMessages, setActiveTool, assistantMessageRef } = ctx;
+  
+  if (!event.toolCall) return;
+  
+  const toolCall = event.toolCall;
+  setActiveTool(toolCall.name);
+
+  // If the model streamed some text before invoking this tool,
+  // flush any remaining unflushed content to <Static> now.
+  if (assistantMessageRef.current?.kind === 'streaming_text') {
+    // Flush buffer and add spacing before the tool call
+    flushStreamingBuffer(ctx);
+    ctx.addStatic(renderFormattedText('\\n'));
+    assistantMessageRef.current = null;
+  }
+
+  // Track the tool call in the ref WITHOUT triggering a render.
+  // The render will happen when tool_result arrives.
+  const existingRef = assistantMessageRef.current;
+  const assistantMsg = existingRef?.message
+    ? {
+        ...existingRef.message,
+        tool_calls: [...(existingRef.message.tool_calls || [])],
+      }
+    : { role: 'assistant', content: '', tool_calls: [] as any[] };
+
+  const nextToolCall = {
+    id: toolCall.id,
+    type: 'function',
+    function: { name: toolCall.name, arguments: toolCall.args },
+  };
+
+  const idx = assistantMsg.tool_calls.findIndex(
+    (tc: any) => tc.id === toolCall.id
+  );
+  if (idx === -1) {
+    assistantMsg.tool_calls.push(nextToolCall);
+  } else {
+    assistantMsg.tool_calls[idx] = nextToolCall;
+  }
+
+  if (!existingRef) {
+    // First tool call — we need to add the assistant message to state
+    setCompletionMessages((prev) => {
+      assistantMessageRef.current = {
+        message: assistantMsg,
+        index: prev.length,
+        kind: 'tool_call_assistant',
+      };
+      return [...prev, assistantMsg as Message];
+    });
+  } else {
+    // Subsequent tool calls — just update the ref, no render
+    assistantMessageRef.current = {
+      ...existingRef,
+      message: assistantMsg,
+      kind: 'tool_call_assistant',
+    };
+  }
+}
+
+interface ToolResultContext extends StaticContext {
+  setCompletionMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  setActiveTool: React.Dispatch<React.SetStateAction<string | null>>;
+  assistantMessageRef: React.MutableRefObject<AssistantMessageRef | null>;
+}
+
+function handleToolResult(
+  event: AgentEvent & { type: 'tool_result' },
+  ctx: ToolResultContext
+) {
+  const { addStatic, setCompletionMessages, setActiveTool, assistantMessageRef } = ctx;
+  
+  if (!event.toolCall) return;
+  
+  const toolCall = event.toolCall;
+  setActiveTool(null);
+
+  // Write the tool summary immediately — at this point loading is
+  // still true but the frame height is stable (spinner + input box).
+  // The next state change (setActiveTool(null)) doesn't affect
+  // frame height so write() restores the correct frame.
+  const compactResult = (toolCall.result || '')
+    .replace(/\\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+
+  // Parse tool args to show relevant parameter
+  let toolDisplay = toolCall.name;
+  try {
+    const args = JSON.parse(toolCall.args || '{}');
+    toolDisplay = formatToolActivity(toolCall.name, args);
+  } catch {
+    // If parsing fails, just use the tool name
+  }
+
+  addStatic(<Text dimColor>{'▶ '}{toolDisplay}{': '}{compactResult}{'\\n'}</Text>);
+
+  // Flush the assistant message + tool result into completionMessages
+  // for session saving.
+  setCompletionMessages((prev) => {
+    const updated = [...prev];
+    // Sync assistant message
+    if (assistantMessageRef.current) {
+      updated[assistantMessageRef.current.index] = {
+        ...assistantMessageRef.current.message,
+      };
+    }
+    // Append tool result with args for replay
+    updated.push({
+      role: 'tool',
+      tool_call_id: toolCall.id,
+      content: toolCall.result || '',
+      name: toolCall.name,
+      args: toolCall.args,
+    } as any);
+    return updated;
+  });
+}
+
+interface UsageContext {
+  setLastUsage: React.Dispatch<React.SetStateAction<AgentEvent['usage'] | null>>;
+  setTotalCost: React.Dispatch<React.SetStateAction<number>>;
+}
+
+function handleUsage(
+  event: AgentEvent & { type: 'usage' },
+  ctx: UsageContext
+) {
+  const { setLastUsage, setTotalCost } = ctx;
+  
+  if (event.usage) {
+    setLastUsage(event.usage);
+    setTotalCost((prev) => prev + event.usage!.cost);
+  }
+}
+
+interface ErrorContext {
+  setThreadErrors: React.Dispatch<React.SetStateAction<InlineThreadError[]>>;
+  setError: React.Dispatch<React.SetStateAction<string | null>>;
+}
+
+function handleError(
+  event: AgentEvent & { type: 'error' },
+  ctx: ErrorContext
+) {
+  const { setThreadErrors, setError } = ctx;
+  
+  if (event.error) {
+    const errorMessage = event.error;
+    setThreadErrors((prev) => {
+      if (event.transient) {
+        return [
+          ...prev.filter((threadError) => !threadError.transient),
+          {
+            id: \`\${Date.now()}-\${prev.length}\`,
+            message: errorMessage,
+            transient: true,
+          },
+        ];
+      }
+
+      if (prev[prev.length - 1]?.message === errorMessage) {
+        return prev;
+      }
+
+      return [
+        ...prev,
+        {
+          id: \`\${Date.now()}-\${prev.length}\`,
+          message: errorMessage,
+          transient: false,
+        },
+      ];
+    });
+  } else {
+    setError('Unknown error');
+  }
+}
+
+interface IterationDoneContext {
+  assistantMessageRef: React.MutableRefObject<AssistantMessageRef | null>;
+}
+
+function handleIterationDone(ctx: IterationDoneContext) {
+  const { assistantMessageRef } = ctx;
+  
+  if (assistantMessageRef.current?.kind === 'tool_call_assistant') {
+    assistantMessageRef.current = null;
+  }
+}
+
+interface DoneContext extends StreamingContext {
+  setCompletionMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  setActiveTool: React.Dispatch<React.SetStateAction<string | null>>;
+  setThreadErrors: React.Dispatch<React.SetStateAction<InlineThreadError[]>>;
+}
+
+function handleDone(
+  _event: AgentEvent & { type: 'done' },
+  ctx: DoneContext
+) {
+  const { setCompletionMessages, setActiveTool, setThreadErrors, assistantMessageRef, streamingBufferRef } = ctx;
+  
+  if (assistantMessageRef.current?.kind === 'streaming_text') {
+    const finalRef = assistantMessageRef.current;
+    const buffer = streamingBufferRef.current;
+
+    // Flush any remaining unflushed content from the buffer
+    // This is the final incomplete line that was being displayed live
+    if (buffer.unflushedContent) {
+      // If we've already flushed some lines, just append the remainder
+      // Otherwise, normalize and flush the full content
+      if (buffer.hasFlushedAnyLine) {
+        ctx.addStatic(renderFormattedText(buffer.unflushedContent));
+      } else {
+        // Nothing was flushed yet, normalize the full content
+        const normalized = normalizeTranscriptText(finalRef.message.content || '');
+        if (normalized) {
+          ctx.addStatic(renderFormattedText(normalized));
+        }
+      }
+    }
+
+    // Add final spacing after the streamed text
+    // Always add one newline - the user message adds another for blank line separation
+    if (buffer.unflushedContent) {
+      ctx.addStatic(renderFormattedText('\\n'));
+    }
+
+    // Clear streaming state and buffer
+    ctx.setIsStreaming(false);
+    ctx.setStreamingText('');
+    streamingBufferRef.current = { unflushedContent: '', hasFlushedAnyLine: false };
+    setCompletionMessages((prev) => {
+      const updated = [...prev];
+      updated[finalRef.index] = { ...finalRef.message };
+      return updated;
+    });
+    assistantMessageRef.current = null;
+  }
+  setActiveTool(null);
+  setThreadErrors((prev) => prev.filter((threadError) => !threadError.transient));
+}
 `,
   },
   {
@@ -4573,6 +4908,9 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
       });
 
       registerDynamicHandler(toolName, async (args: unknown) => {
+        // Note: Errors from this handler are caught and formatted by
+        // handleToolCall() in tools/index.ts, which wraps all tool calls
+        // in a try/catch and returns \`Error executing \${toolName}: \${msg}\`
         const result = await conn.client.callTool({
           name: tool.name,
           arguments: (args && typeof args === 'object' ? args : {}) as Record<string, unknown>,
@@ -4816,7 +5154,58 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse, printParseErrorCode } from 'jsonc-parser';
+import { z } from 'zod';
 import { logger } from './utils/logger.js';
+
+// ─── Zod Schemas for Runtime Validation ───
+
+export const RuntimeModelConfigSchema = z.object({
+  name: z.string().optional(),
+  contextWindow: z.number().optional(),
+  inputPricePerMillion: z.number().optional(),
+  outputPricePerMillion: z.number().optional(),
+  cachedPricePerMillion: z.number().optional(),
+  defaultParams: z.record(z.unknown()).optional(),
+});
+
+export const RuntimeProviderConfigSchema = z.object({
+  name: z.string().optional(),
+  baseURL: z.string().optional(),
+  apiKey: z.string().optional(),
+  apiKeyEnvVar: z.string().optional(),
+  headers: z.record(z.string()).optional(),
+  defaultParams: z.record(z.unknown()).optional(),
+  models: z.record(RuntimeModelConfigSchema).optional(),
+});
+
+export const StdioServerConfigSchema = z.object({
+  type: z.literal('stdio'),
+  command: z.string(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string()).optional(),
+  cwd: z.string().optional(),
+  enabled: z.boolean().optional(),
+  timeoutMs: z.number().optional(),
+});
+
+export const HttpServerConfigSchema = z.object({
+  type: z.literal('http'),
+  url: z.string(),
+  headers: z.record(z.string()).optional(),
+  enabled: z.boolean().optional(),
+  timeoutMs: z.number().optional(),
+});
+
+export const RuntimeMcpServerConfigSchema = z.union([StdioServerConfigSchema, HttpServerConfigSchema]);
+
+export const RuntimeConfigFileSchema = z.object({
+  providers: z.record(z.any()).optional(),
+  mcp: z.object({
+    servers: z.record(z.any()).optional(),
+  }).optional(),
+});
+
+// ─── TypeScript Interfaces (kept for backward compatibility) ───
 
 export interface RuntimeModelConfig {
   name?: string;
@@ -4840,6 +5229,10 @@ export interface RuntimeProviderConfig {
   name?: string;
   baseURL?: string;
   apiKey?: string;
+  /**
+   * Name of an environment variable to read the API key from.
+   * Resolved at runtime by config.tsx's resolveApiKey() function.
+   */
   apiKeyEnvVar?: string;
   headers?: Record<string, string>;
   defaultParams?: Record<string, unknown>;
@@ -4910,6 +5303,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Replaces \${ENV_VAR} placeholders in a string with actual environment variable values.
+ * Logs a warning if the environment variable is not set (replaces with empty string).
+ */
 function interpolateString(value: string, sourcePath: string): string {
   return value.replace(/\\\$\\{([A-Z0-9_]+)\\}/gi, (_match, envVar: string) => {
     const resolved = process.env[envVar];
@@ -4921,6 +5318,10 @@ function interpolateString(value: string, sourcePath: string): string {
   });
 }
 
+/**
+ * Recursively interpolates environment variables in all string values within a config object.
+ * Handles nested objects and arrays. Filters out empty header values.
+ */
 function interpolateValue<T>(value: T, sourcePath: string): T {
   if (typeof value === 'string') {
     return interpolateString(value, sourcePath) as T;
@@ -4935,6 +5336,7 @@ function interpolateValue<T>(value: T, sourcePath: string): T {
     for (const [key, entry] of Object.entries(value)) {
       const interpolated = interpolateValue(entry, sourcePath);
       if (key === 'headers' && isPlainObject(interpolated)) {
+        // Filter out headers with empty values (from unset env vars)
         const filtered = Object.fromEntries(
           Object.entries(interpolated).filter(([, headerValue]) => typeof headerValue !== 'string' || headerValue.length > 0)
         );
@@ -4949,6 +5351,11 @@ function interpolateValue<T>(value: T, sourcePath: string): T {
   return value;
 }
 
+/**
+ * Removes reserved API parameters from provider and model defaultParams.
+ * Prevents users from accidentally overriding critical parameters like
+ * 'model', 'messages', 'tools' that are managed by the agentic loop.
+ */
 function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfigFile {
   const nextProviders = Object.fromEntries(
     Object.entries(config.providers || {}).map(([providerId, provider]) => {
@@ -5001,42 +5408,6 @@ function sanitizeDefaultParamsInConfig(config: RuntimeConfigFile): RuntimeConfig
   };
 }
 
-function mergeRuntimeConfig(base: RuntimeConfigFile, overlay: RuntimeConfigFile): RuntimeConfigFile {
-  const mergedProviders: Record<string, RuntimeProviderConfig> = {
-    ...(base.providers || {}),
-  };
-
-  for (const [providerId, providerConfig] of Object.entries(overlay.providers || {})) {
-    const currentProvider = mergedProviders[providerId] || {};
-    mergedProviders[providerId] = {
-      ...currentProvider,
-      ...providerConfig,
-      models: {
-        ...(currentProvider.models || {}),
-        ...(providerConfig.models || {}),
-      },
-    };
-  }
-
-  const mergedServers: Record<string, RuntimeMcpServerConfig> = {
-    ...(base.mcp?.servers || {}),
-  };
-
-  for (const [serverName, serverConfig] of Object.entries(overlay.mcp?.servers || {})) {
-    const currentServer = mergedServers[serverName];
-    mergedServers[serverName] = currentServer && isPlainObject(currentServer)
-      ? { ...currentServer, ...serverConfig }
-      : serverConfig;
-  }
-
-  return {
-    providers: mergedProviders,
-    mcp: {
-      servers: mergedServers,
-    },
-  };
-}
-
 async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigFile | null> {
   try {
     const content = await fs.readFile(configPath, 'utf8');
@@ -5051,7 +5422,15 @@ async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigF
     if (!isPlainObject(parsed)) {
       throw new Error(\`Failed to parse \${configPath}: top-level value must be an object\`);
     }
-    return sanitizeDefaultParamsInConfig(interpolateValue(parsed as RuntimeConfigFile, configPath));
+    
+    // Validate against zod schema for better error messages
+    const result = RuntimeConfigFileSchema.safeParse(parsed);
+    if (!result.success) {
+      const issues = result.error.issues.map(i => \`\${i.path.join('.')}: \${i.message}\`).join(', ');
+      throw new Error(\`Invalid runtime config in \${configPath}: \${issues}\`);
+    }
+    
+    return sanitizeDefaultParamsInConfig(interpolateValue(result.data as RuntimeConfigFile, configPath));
   } catch (error: any) {
     if (error?.code === 'ENOENT') {
       return null;
@@ -5072,7 +5451,7 @@ export async function loadRuntimeConfig(forceReload = false): Promise<RuntimeCon
     const fileConfig = await readRuntimeConfigFile(configPath);
     if (fileConfig) {
       logger.debug('Loaded runtime config', { path: configPath });
-      loaded = mergeRuntimeConfig(DEFAULT_RUNTIME_CONFIG, fileConfig);
+      loaded = fileConfig;
     }
   }
 
@@ -5622,7 +6001,7 @@ import { handleToolCall, getAllTools } from './tools/index.js';
 import { generateSystemPrompt } from './system-prompt.js';
 import { logger } from './utils/logger.js';
 import { clearTodos } from './tools/todo.js';
-import type { ModelPricing } from './utils/cost-tracker.js';
+import { calculateCost, type ModelPricing, type UsageInfo } from './utils/cost-tracker.js';
 
 export const subAgentTool = {
   type: 'function' as const,
@@ -5651,11 +6030,8 @@ export const subAgentTool = {
 
 export type SubAgentProgressHandler = (event: { tool: string; status: 'running' | 'done' | 'error'; iteration: number; args?: Record<string, unknown> }) => void;
 
-export interface SubAgentUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cost: number;
-}
+/** Sub-agent usage stats (uses main UsageInfo type for consistency). */
+export type SubAgentUsage = UsageInfo;
 
 export interface SubAgentResult {
   response: string;
@@ -5702,7 +6078,7 @@ Do NOT ask the user questions — work autonomously with the tools available.\`;
     for (let i = 0; i < maxIterations; i++) {
       // Check abort at the top of each iteration
       if (abortSignal?.aborted) {
-        return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+        return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
       }
 
       let assistantMessage: any;
@@ -5768,24 +6144,19 @@ Do NOT ask the user questions — work autonomously with the tools available.\`;
         // Accumulate usage for this iteration
         const iterationInputTokens = actualUsage?.prompt_tokens || 0;
         const iterationOutputTokens = actualUsage?.completion_tokens || 0;
+        const iterationCachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens || 0;
         totalInputTokens += iterationInputTokens;
         totalOutputTokens += iterationOutputTokens;
 
-        // Calculate cost if pricing is available
+        // Calculate cost if pricing is available (handles cached token discount)
         if (pricing && (iterationInputTokens > 0 || iterationOutputTokens > 0)) {
-          const cachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens;
-          if (cachedTokens && cachedTokens > 0 && pricing.cachedPerToken != null) {
-            const uncachedTokens = iterationInputTokens - cachedTokens;
-            totalCost += uncachedTokens * pricing.inputPerToken + cachedTokens * pricing.cachedPerToken + iterationOutputTokens * pricing.outputPerToken;
-          } else {
-            totalCost += iterationInputTokens * pricing.inputPerToken + iterationOutputTokens * pricing.outputPerToken;
-          }
+          totalCost += calculateCost(iterationInputTokens, iterationOutputTokens, pricing, iterationCachedTokens);
         }
       } catch (err) {
         // If aborted during streaming, return gracefully
         if (abortSignal?.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message === 'Operation aborted'))) {
           logger.debug('Sub-agent aborted during streaming');
-          return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+          return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
         }
         throw err;
       }
@@ -5822,7 +6193,7 @@ Do NOT ask the user questions — work autonomously with the tools available.\`;
         for (const toolCall of assistantMessage.tool_calls) {
           // Check abort between tool calls
           if (abortSignal?.aborted) {
-            return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+            return { response: '(sub-agent aborted)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
           }
 
           const { name, arguments: argsStr } = toolCall.function;
@@ -5862,16 +6233,16 @@ Do NOT ask the user questions — work autonomously with the tools available.\`;
           role: 'assistant',
           content: message.content,
         });
-        return { response: message.content, usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+        return { response: message.content, usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
       }
       // The model produced an empty text response (e.g. it only called tools
       // and issued no final summary).  Log it and return a sentinel so the
       // parent agent knows the sub-agent finished but had nothing to say.
       logger.debug('Sub-agent returned empty content', { iteration: i });
-      return { response: '(sub-agent completed with no response)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+      return { response: '(sub-agent completed with no response)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
     }
 
-    return { response: '(sub-agent reached iteration limit)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cost: totalCost } };
+    return { response: '(sub-agent reached iteration limit)', usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, estimatedCost: totalCost } };
   } finally {
     op.end();
     clearTodos(subAgentSessionId);
@@ -7876,7 +8247,6 @@ export async function webfetch(
 import fs, { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
-import { findSimilarPaths } from '../utils/path-suggestions.js';
 import { requestApproval } from '../utils/approval.js';
 import { recordRead } from '../utils/file-time.js';
 
@@ -7897,21 +8267,8 @@ export const writeFileTool = {
 };
 
 export async function writeFile(filePath: string, content: string, sessionId?: string): Promise<string> {
-  let validated: string;
-  try {
-    validated = await validatePath(filePath);
-  } catch (err: any) {
-    // If file not found, try to suggest similar paths
-    if (err.message?.includes('does not exist') || err.code === 'ENOENT') {
-      const suggestions = await findSimilarPaths(filePath);
-      let msg = \`File not found: '\${filePath}'\`;
-      if (suggestions.length > 0) {
-        msg += '\\nDid you mean one of these?\\n' + suggestions.map(s => \`  \${s}\`).join('\\n');
-      }
-      return msg;
-    }
-    throw err;
-  }
+  // validatePath handles non-existent files by validating the parent directory
+  const validated = await validatePath(filePath);
 
   // Request approval
   const preview = content.length > 500
@@ -8111,10 +8468,10 @@ export async function compactIfNeeded(
   model: string,
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   contextWindow: number,
-  currentTokens: number,
   requestDefaults: Record<string, unknown> = {},
   sessionId?: string
 ): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
+  const currentTokens = estimateConversationTokens(messages);
   const utilisation = (currentTokens / contextWindow) * 100;
   if (utilisation < 90) return messages;
 
@@ -8370,6 +8727,20 @@ export function clearSession(sessionId: string): void {
     path: "src/utils/format-message.tsx",
     content: `import React from 'react';
 import { Text } from 'ink';
+
+/**
+ * Normalize text for transcript display.
+ * - Collapses multiple consecutive newlines into a single newline
+ * - Trims leading/trailing whitespace
+ * - Returns empty string if text is empty/whitespace only
+ */
+export function normalizeTranscriptText(text: string): string {
+  if (!text || !text.trim()) {
+    return '';
+  }
+  // Collapse multiple newlines to single, trim ends
+  return text.replace(/\\n{2,}/g, '\\n').trim();
+}
 
 /**
  * Parse Markdown-style formatting and render as Ink Text elements.
@@ -8712,13 +9083,17 @@ export async function findSimilarPaths(requestedPath: string): Promise<string[]>
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import isPathInside from 'is-path-inside';
 
 const workingDirectory = process.cwd();
 let allowedRoots: string[] = [];
 
+function isWithinRoot(targetPath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 function isAllowedPath(targetPath: string): boolean {
-  return isPathInside(targetPath, workingDirectory) || allowedRoots.some((root) => isPathInside(targetPath, root));
+  return isWithinRoot(targetPath, workingDirectory) || allowedRoots.some((root) => isWithinRoot(targetPath, root));
 }
 
 export async function setAllowedPathRoots(roots: string[]): Promise<void> {
@@ -8781,6 +9156,66 @@ export async function validatePath(requestedPath: string): Promise<string> {
 
 export function getWorkingDirectory(): string {
   return workingDirectory;
+}
+`,
+  },
+  {
+    path: "src/utils/tool-display.ts",
+    content: `// Extract the most meaningful detail from tool args based on tool type
+export function extractToolDetail(tool: string, args: Record<string, unknown>): string {
+  switch (tool) {
+    case 'read_file':
+    case 'write_file':
+    case 'edit_file':
+      return typeof args.file_path === 'string' ? args.file_path : '';
+    case 'list_directory':
+      return typeof args.directory_path === 'string' ? args.directory_path : '(current)';
+    case 'search_files':
+      return typeof args.search_term === 'string' ? \`"\${args.search_term}"\` : '';
+    case 'bash':
+      if (typeof args.command !== 'string') return '';
+      const parts = args.command.split(/\\s+/);
+      return parts.slice(0, 3).join(' ') + (parts.length > 3 ? '...' : '');
+    case 'todo_write':
+      return Array.isArray(args.todos) ? \`\${args.todos.length} task(s)\` : '';
+    case 'todo_read':
+      return 'read';
+    case 'webfetch':
+      return typeof args.url === 'string' ? new URL(args.url).hostname : '';
+    case 'sub_agent':
+      return 'nested task...';
+    default: {
+      // Fallback: first string argument, truncated to 30 chars
+      const firstEntry = Object.entries(args).find(([, v]) => typeof v === 'string');
+      if (!firstEntry) return '';
+      const value = String(firstEntry[1]);
+      return value.length > 30 ? value.slice(0, 30) + '...' : value;
+    }
+  }
+}
+
+// Format sub-agent activity: "Sub-agent read_file: src/App.tsx"
+export function formatSubAgentActivity(tool: string, args?: Record<string, unknown>): string {
+  if (!args || typeof args !== 'object') {
+    return \`Sub-agent running \${tool}...\`;
+  }
+
+  const detail = extractToolDetail(tool, args);
+  if (!detail) {
+    return \`Sub-agent running \${tool}...\`;
+  }
+
+  return \`Sub-agent \${tool.replace(/_/g, ' ')}: \${detail}\`;
+}
+
+// Format tool activity: "read_file src/App.tsx"
+export function formatToolActivity(tool: string, args?: Record<string, unknown>): string {
+  if (!args || typeof args !== 'object') {
+    return tool;
+  }
+
+  const detail = extractToolDetail(tool, args);
+  return detail ? \`\${tool} \${detail}\` : tool;
 }
 `,
   },
