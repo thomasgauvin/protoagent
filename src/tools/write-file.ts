@@ -5,7 +5,6 @@
 import fs, { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
-import { findSimilarPaths } from '../utils/path-suggestions.js';
 import { requestApproval } from '../utils/approval.js';
 import { recordRead } from '../utils/file-time.js';
 
@@ -26,21 +25,8 @@ export const writeFileTool = {
 };
 
 export async function writeFile(filePath: string, content: string, sessionId?: string): Promise<string> {
-  let validated: string;
-  try {
-    validated = await validatePath(filePath);
-  } catch (err: any) {
-    // If file not found, try to suggest similar paths
-    if (err.message?.includes('does not exist') || err.code === 'ENOENT') {
-      const suggestions = await findSimilarPaths(filePath);
-      let msg = `File not found: '${filePath}'`;
-      if (suggestions.length > 0) {
-        msg += '\nDid you mean one of these?\n' + suggestions.map(s => `  ${s}`).join('\n');
-      }
-      return msg;
-    }
-    throw err;
-  }
+  // validatePath handles non-existent files by validating the parent directory
+  const validated = await validatePath(filePath);
 
   // Request approval
   const preview = content.length > 500
