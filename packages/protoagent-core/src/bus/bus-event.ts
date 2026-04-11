@@ -139,6 +139,25 @@ export const AgentErrorEvent = defineEvent(
   })
 );
 
+// Queue events
+export const MessageQueuedEvent = defineEvent(
+  'queue.message_queued',
+  z.object({
+    sessionId: z.string(),
+    messageId: z.string(),
+    queuePosition: z.number(),
+  })
+);
+
+export const MessageStartedEvent = defineEvent(
+  'queue.message_started',
+  z.object({
+    sessionId: z.string(),
+    messageId: z.string(),
+    content: z.string(),
+  })
+);
+
 // Session events
 export const SessionCreatedEvent = defineEvent(
   'session.created',
@@ -168,5 +187,7 @@ export type ProtoAgentEvent =
   | ReturnType<typeof SubAgentCompleteEvent.create>
   | ReturnType<typeof AgentCompleteEvent.create>
   | ReturnType<typeof AgentErrorEvent.create>
+  | ReturnType<typeof MessageQueuedEvent.create>
+  | ReturnType<typeof MessageStartedEvent.create>
   | ReturnType<typeof SessionCreatedEvent.create>
   | ReturnType<typeof SessionUpdatedEvent.create>;

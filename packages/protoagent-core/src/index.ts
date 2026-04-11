@@ -10,4 +10,6 @@ export * from './bus/bus-event.js';
 
 export { toolRegistry, type ToolDefinition, type ToolHandler } from './tools/tool-registry.js';
 
+export { initializeMcp, closeMcp, getConnectedMcpServers } from './mcp/mcp-client.js';
+
 export { app } from './server/server.js';
