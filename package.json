@@ -1,14 +1,11 @@
 {
   "name": "protoagent",
-  "version": "0.1.21",
+  "version": "0.2.0",
   "type": "module",
-  "files": [
-    "dist",
-    "README.md"
+  "private": true,
+  "workspaces": [
+    "packages/*"
   ],
-  "bin": {
-    "protoagent": "./dist/cli.js"
-  },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "dev": "tsx src/cli.tsx",
@@ -20,7 +17,9 @@
     "docs:dev:worker": "cd docs/worker && npm exec wrangler -- dev --port 8787 --ip 0.0.0.0",
     "docs:dev:docs": "vitepress dev docs --port 5173 --host",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "server": "cd packages/protoagent-core && npm run start",
+    "tui": "cd packages/protoagent-tui && npm run start"
   },
   "author": "Thomas Gauvin",
   "license": "MIT",
@@ -39,7 +38,8 @@
     "anthropic",
     "gemini",
     "terminal",
-    "typescript"
+    "typescript",
+    "opentui"
   ],
   "engines": {
     "node": ">=20"
