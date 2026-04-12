@@ -10,7 +10,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch",
+    "dev": "npm run build && node dist/server/server.js",
+    "dev:watch": "tsc --watch",
     "start": "node dist/server/server.js"
   },
   "dependencies": {
