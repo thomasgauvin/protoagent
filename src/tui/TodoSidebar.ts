@@ -147,10 +147,16 @@ export class TodoSidebar {
     const parts: string[] = []
     if (usage.inputTokens) parts.push(`in:${usage.inputTokens}`)
     if (usage.outputTokens) parts.push(`out:${usage.outputTokens}`)
-    if (usage.contextPercent) parts.push(`ctx:${usage.contextPercent.toFixed(0)}%`)
-    parts.push(`$${totalCost.toFixed(4)}`)
-    this.usageText.content = t`${fg(DIM)(parts.join(' · '))}`
-  }
+     if (usage.contextPercent) parts.push(`ctx:${usage.contextPercent.toFixed(0)}%`)
+     parts.push(`$${totalCost.toFixed(4)}`)
+     this.usageText.content = t`${fg(DIM)(parts.join(' · '))}`
+   }
+
+   /** Clear queued messages display (no-op - queued messages shown in status bar) */
+   clearQueuedMessages(): void {
+     // Queued messages are managed by StatusBar, not TodoSidebar
+     // This method exists for API compatibility
+   }
 
   private _redrawRows(): void {
     // Remove existing rows

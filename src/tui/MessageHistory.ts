@@ -116,6 +116,7 @@ export class MessageHistory {
    */
   setMessages(messages: Message[], currentStreamingText?: string, isStreaming?: boolean): void {
     const visible = messages.filter((m: any) => m.role !== 'system')
+    const wasAtBottom = this.isAtBottom()
 
     // Append newly arrived messages
     if (visible.length !== this._messageCount) {
@@ -130,7 +131,10 @@ export class MessageHistory {
         }
       }
       this._messageCount = visible.length
-      this.scrollToBottom()
+      // Only auto-scroll if user was already at the bottom
+      if (wasAtBottom) {
+        this.scrollToBottom()
+      }
     }
 
     // Streaming text
@@ -155,7 +159,10 @@ export class MessageHistory {
       const body = styledText(clean)
       const cursor = t`${fg(DIM)('▍')}`
       this.streamingText!.content = new StyledText([...body.chunks, ...cursor.chunks])
-      this.scrollToBottom()
+      // Always scroll to bottom while streaming
+      if (wasAtBottom) {
+        this.scrollToBottom()
+      }
     } else {
       this._removeStreamingBox()
     }
@@ -335,12 +342,18 @@ export class MessageHistory {
     this._clearLiveToolRows()
   }
 
-  scrollToBottom(): void {
-    const max = Math.max(0, this.scrollBox.scrollHeight - this.scrollBox.viewport.height)
-    this.scrollBox.scrollTop = max
-  }
+   scrollToBottom(): void {
+     const max = Math.max(0, this.scrollBox.scrollHeight - this.scrollBox.viewport.height)
+     this.scrollBox.scrollTop = max
+   }
 
-  focus(): void {
-    this.scrollBox.focus()
-  }
+   /** Check if scroll position is at the bottom (with 5px tolerance) */
+   private isAtBottom(): boolean {
+     const maxScroll = Math.max(0, this.scrollBox.scrollHeight - this.scrollBox.viewport.height)
+     return this.scrollBox.scrollTop >= maxScroll - 5
+   }
+
+   focus(): void {
+     this.scrollBox.focus()
+   }
 }

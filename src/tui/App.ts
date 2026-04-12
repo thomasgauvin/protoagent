@@ -32,7 +32,7 @@ import {
   type Message,
   type AgentEvent,
 } from '../agentic-loop.js'
-import { setDangerouslySkipPermissions, setApprovalHandler, clearApprovalHandler } from '../tools/index.js'
+import { setDangerouslySkipPermissions, setApprovalHandler } from '../tools/index.js'
 import type { ApprovalRequest, ApprovalResponse } from '../utils/approval.js'
 import { setLogLevel, LogLevel, initLogFile, logger } from '../utils/logger.js'
 import {
@@ -72,7 +72,7 @@ import { McpManager } from '../mcp/manager.js'
 import { ApprovalManager } from '../utils/approval-manager.js'
 
 import { MessageHistory } from './MessageHistory.js'
-import { TodoSidebar, type QueueItem } from './TodoSidebar.js'
+import { TodoSidebar } from './TodoSidebar.js'
 import { InputBar, type SubmitMode } from './InputBar.js'
 import { StatusBar } from './StatusBar.js'
 import { WelcomeScreen } from './WelcomeScreen.js'
@@ -345,19 +345,14 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     
     // Add approval to tree
     leftPanel.add(approvalRoot)
-    
-    // Set approval handler to intercept y/s/n keys in the input
-    inputBar.setApprovalHandler(() => {
-      // y = approve_once, s = approve_session, n = reject
-      // The actual handling is done in the keypress handler
-    })
-  }
+     
+     // Approval prompts are displayed via the main renderer.keyInput handler
+   }
 
   function hideApprovalPrompt(): void {
     // Remove approval from tree
     try { leftPanel.remove(approvalRoot.id) } catch {}
     pendingApproval = null
-    inputBar.setApprovalHandler(null)
   }
 
   // ─── Agent event handler ───
@@ -780,7 +775,8 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
 
   // ─── SIGTERM handler (clean shutdown on kill) ───
   process.on('SIGTERM', async () => {
-    clearApprovalHandler()
+    // Don't call global clearApprovalHandler() - it affects all tabs in multi-tab mode
+    // Each tab's approvalManager will be garbage collected naturally
     await mcpManager.close()
     statusBar.destroy()
     renderer.destroy()
@@ -817,8 +813,6 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     client = buildClient(config)
 
      const provider = getProvider(config.provider)
-     statusBar.setSession('…', provider?.name || config.provider, config.model)
-     todoSidebar.setSession('…', provider?.name || config.provider, config.model)
      welcomeScreen.setInfo(provider?.name || config.provider, config.model)
      modelInfoText.content = t`${fg(DIM)(`… · ${provider?.name || config.provider} · ${config.model}`)}`
 
@@ -837,13 +831,11 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
         loadQueueFromSession(loadedSession.queuedMessages, loadedSession.id)
         session = loadedSession
         completionMessages = loadedSession.completionMessages
-        msgHistory.setMessages(completionMessages)
-        todoSidebar.setTodos(getTodosForSession(session.id))
-        statusBar.setSession(session.id.slice(0, 8), provider?.name || config.provider, config.model)
-        todoSidebar.setSession(session.id.slice(0, 8), provider?.name || config.provider, config.model)
-        welcomeScreen.setInfo(provider?.name || config.provider, config.model, session.id.slice(0, 8))
-        modelInfoText.content = t`${fg(DIM)(`${session.id.slice(0, 8)} · ${provider?.name || config.provider} · ${config.model}`)}`
-        updateQueuedMessages()
+         msgHistory.setMessages(completionMessages)
+         todoSidebar.setTodos(getTodosForSession(session.id))
+         welcomeScreen.setInfo(provider?.name || config.provider, config.model, session.id.slice(0, 8))
+         modelInfoText.content = t`${fg(DIM)(`${session.id.slice(0, 8)} · ${provider?.name || config.provider} · ${config.model}`)}`
+         updateQueuedMessages()
       } else {
         statusBar.setError(`Session "${options.sessionId}" not found. Starting new session.`)
       }
@@ -855,13 +847,11 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
       const newSession = createSession(config.model, config.provider)
       clearTodos(newSession.id)
       clearMessageQueue(newSession.id)
-      newSession.completionMessages = initialMsgs
-      session = newSession
-      statusBar.setSession(session.id.slice(0, 8), provider?.name || config.provider, config.model)
-      todoSidebar.setSession(session.id.slice(0, 8), provider?.name || config.provider, config.model)
-      welcomeScreen.setInfo(provider?.name || config.provider, config.model, session.id.slice(0, 8))
-      modelInfoText.content = t`${fg(DIM)(`${session.id.slice(0, 8)} · ${provider?.name || config.provider} · ${config.model}`)}`
-      updateQueuedMessages()
+       newSession.completionMessages = initialMsgs
+       session = newSession
+       welcomeScreen.setInfo(provider?.name || config.provider, config.model, session.id.slice(0, 8))
+       modelInfoText.content = t`${fg(DIM)(`${session.id.slice(0, 8)} · ${provider?.name || config.provider} · ${config.model}`)}`
+       updateQueuedMessages()
     }
   } catch (err: any) {
     statusBar.setError(`Initialization failed: ${err.message}`)

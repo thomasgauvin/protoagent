@@ -34,7 +34,6 @@ export class InputBar {
 
   private onSubmitCb: (value: string, mode: SubmitMode) => void
   private _isLoading = false
-  private approvalHandler: (() => void) | null = null
 
   constructor(renderer: CliRenderer, onSubmit: (value: string, mode: SubmitMode) => void) {
     this.renderer = renderer
@@ -89,23 +88,13 @@ export class InputBar {
       const value = this.input.editBuffer.getText()
       const trimmed = value.trim()
       if (!trimmed) return
-      this.input.setText('')
+      this.input.clear()
       const mode: SubmitMode = this._isLoading ? 'interject' : 'send'
       this.onSubmitCb(trimmed, mode)
     }
 
-    // Intercept keys for approval mode, queue shortcuts, and Enter to submit
+    // Intercept keys for queue shortcuts, and Enter to submit
     this.input.onKeyDown = (key) => {
-      // Check for approval keys before typing into input
-      if (this.approvalHandler) {
-        const seq = key.sequence?.toLowerCase()
-        if (seq === 'y' || seq === 's' || seq === 'n') {
-          key.preventDefault()
-          this.approvalHandler()
-          return
-        }
-      }
-
       // Enter to submit (or interject if loading) - only if no modifier (allows text wrapping)
       if (!key.meta && !key.ctrl && (key.name === 'return' || key.name === 'linefeed' || key.name === 'enter')) {
         key.preventDefault()
@@ -143,10 +132,6 @@ export class InputBar {
     } else {
       this.input.placeholder = 'Message…  (Enter to send, Ctrl+Enter for newline)'
     }
-  }
-
-  setApprovalHandler(handler: (() => void) | null): void {
-    this.approvalHandler = handler
   }
 
   private _updateModeLabel(): void {
