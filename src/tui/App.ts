@@ -346,6 +346,9 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     
     // Add approval to tree
     leftPanel.add(approvalRoot)
+    
+    // Update status bar to show approval waiting
+    statusBar.setAwaitingApproval(true)
      
      // Approval prompts are displayed via the main renderer.keyInput handler
    }
@@ -354,6 +357,9 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     // Remove approval from tree
     try { leftPanel.remove(approvalRoot.id) } catch {}
     pendingApproval = null
+    
+    // Update status bar to clear approval waiting
+    statusBar.setAwaitingApproval(false)
   }
 
   // ─── Agent event handler ───

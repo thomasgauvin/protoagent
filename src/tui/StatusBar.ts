@@ -1,7 +1,10 @@
 /**
  * StatusBar — bottom status row + usage row.
  *
- * Status:  spinner + active tool (or blank when idle)
+ * Status:  6-dot indicator + active tool (or blank when idle)
+ *          - Working (green dots animated)
+ *          - Idle (grey dots all filled)
+ *          - Approval waiting (yellow dots all filled)
  * Usage:   token cost display
  *
  * The old headerRoot (top header bar) has been removed — the welcome screen
@@ -22,7 +25,15 @@ const DIM = '#666666'
 const RED = '#f7768e'
 const YELLOW = '#e0af68'
 
+// 6-dot spinner frames for working status
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+// State indicator (6 filled dots in different colors)
+const STATUS_INDICATORS = {
+  working: '● ● ● ● ● ●',    // Animated green
+  idle: '● ● ● ● ● ●',        // All grey
+  approval: '● ● ● ● ● ●',    // All yellow
+}
 
 export class StatusBar {
   private renderer: CliRenderer
@@ -46,6 +57,7 @@ export class StatusBar {
   private _interjectCount = 0
   private _error: string | null = null
   private _destroyed = false
+  private _awaitingApproval = false
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer
@@ -120,6 +132,11 @@ export class StatusBar {
     this._updateStatus()
   }
 
+  setAwaitingApproval(awaiting: boolean): void {
+    this._awaitingApproval = awaiting
+    this._updateStatus()
+  }
+
   showCopied(charCount: number): void {
     const msg = `Copied ${charCount} chars to clipboard`
     this.statusText.content = t`${fg(GREEN)(msg)}`
@@ -144,21 +161,40 @@ export class StatusBar {
       this.statusText.content = t`${fg(RED)(`Error: ${this._error}`)}`
       return
     }
+
+    // Build status line with indicator + info
+    let statusLine = ''
+    let statusColor = DIM
+
     if (this._loading) {
+      // Working: animated green dots
       const spinner = SPINNER_FRAMES[this._spinnerFrame]
+      // Create animated effect by varying dot visibility
+      const workingIndicator = spinner.repeat(6)
+      statusLine = `${workingIndicator}`
+      statusColor = GREEN
       const label = this._activeTool ? `Running ${this._activeTool}…` : 'Thinking…'
-      const parts: string[] = [`${spinner} ${label}`]
-      if (this._interjectCount > 0) parts.push(`[${this._interjectCount} interject]`)
-      if (this._queuedCount > 0) parts.push(`[${this._queuedCount} queued]`)
-      this.statusText.content = t`${fg(GREEN)(parts.join('  '))}`
+      statusLine += `  ${label}`
+    } else if (this._awaitingApproval) {
+      // Approval waiting: yellow dots all filled
+      statusLine = `${STATUS_INDICATORS.approval}  Awaiting approval…`
+      statusColor = YELLOW
     } else {
-      const parts: string[] = []
-      if (this._interjectCount > 0) parts.push(`[${this._interjectCount} interject]`)
-      if (this._queuedCount > 0) parts.push(`[${this._queuedCount} queued]`)
-      this.statusText.content = parts.length
-        ? t`${fg(YELLOW)(parts.join('  '))}`
-        : t``
+      // Idle: grey dots all filled
+      statusLine = STATUS_INDICATORS.idle
+      statusColor = DIM
     }
+
+    // Add queue info
+    const queueInfo: string[] = []
+    if (this._interjectCount > 0) queueInfo.push(`[${this._interjectCount} interject]`)
+    if (this._queuedCount > 0) queueInfo.push(`[${this._queuedCount} queued]`)
+
+    if (queueInfo.length > 0) {
+      statusLine += `  ${queueInfo.join('  ')}`
+    }
+
+    this.statusText.content = statusLine ? t`${fg(statusColor)(statusLine)}` : t``
   }
 
   private _updateUsage(): void {
