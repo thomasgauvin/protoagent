@@ -816,13 +816,16 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     config = loadedConfig
     client = buildClient(config)
 
-    const provider = getProvider(config.provider)
-    statusBar.setSession('…', provider?.name || config.provider, config.model)
-    todoSidebar.setSession('…', provider?.name || config.provider, config.model)
-    welcomeScreen.setInfo(provider?.name || config.provider, config.model)
-    modelInfoText.content = t`${fg(DIM)(`… · ${provider?.name || config.provider} · ${config.model}`)}`
+     const provider = getProvider(config.provider)
+     statusBar.setSession('…', provider?.name || config.provider, config.model)
+     todoSidebar.setSession('…', provider?.name || config.provider, config.model)
+     welcomeScreen.setInfo(provider?.name || config.provider, config.model)
+     modelInfoText.content = t`${fg(DIM)(`… · ${provider?.name || config.provider} · ${config.model}`)}`
 
-     await mcpManager.initialize()
+     // Initialize MCP servers in the background without blocking UI
+     mcpManager.initialize().catch((err) => {
+       logger.error(`MCP initialization failed: ${err.message}`)
+     })
 
     let loadedSession: Session | null = null
     if (options.sessionId) {

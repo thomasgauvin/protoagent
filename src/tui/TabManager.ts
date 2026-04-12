@@ -41,6 +41,7 @@ export class TabManager {
   private config: Config
   private tabs = new Map<string, TabApp>()
   private activeTabId: string | null = null
+  private currentlyVisibleContainerId: string | null = null
   private sidebar: BoxRenderable
   private contentBox: BoxRenderable
   private nextTabId = 0
@@ -116,7 +117,7 @@ export class TabManager {
       flexGrow: 1,
       maxHeight: '100%',
     })
-    this.contentBox.add(tabContainer)
+    // Don't add to contentBox yet - only add when tab becomes active
     this.tabContainers.set(tabId, tabContainer)
 
     const tabApp = new TabApp({
@@ -175,6 +176,14 @@ export class TabManager {
 
     logger.debug(`Switching to tab: ${tabId}`)
     
+    // Remove old tab container from contentBox
+    if (this.currentlyVisibleContainerId) {
+      const oldContainer = this.tabContainers.get(this.currentlyVisibleContainerId)
+      if (oldContainer) {
+        this.contentBox.remove(oldContainer.id)
+      }
+    }
+    
     // Deactivate old tab
     if (this.activeTabId && this.activeTabId !== tabId) {
       const oldTab = this.tabs.get(this.activeTabId)
@@ -188,6 +197,13 @@ export class TabManager {
     const newTab = this.tabs.get(tabId)
     if (newTab) {
       newTab.setActive(true)
+    }
+    
+    // Add new tab container to contentBox
+    const newContainer = this.tabContainers.get(tabId)
+    if (newContainer) {
+      this.contentBox.add(newContainer)
+      this.currentlyVisibleContainerId = tabId
     }
     
     this.updateTabButtonStyles()
@@ -209,6 +225,17 @@ export class TabManager {
       this.sidebar.remove(button.id)
       this.tabButtons.delete(tabId)
     }
+
+    // Remove container if it's currently visible
+    if (this.currentlyVisibleContainerId === tabId) {
+      const container = this.tabContainers.get(tabId)
+      if (container) {
+        this.contentBox.remove(container.id)
+      }
+      this.currentlyVisibleContainerId = null
+    }
+
+    this.tabContainers.delete(tabId)
 
     if (this.activeTabId === tabId) {
       const tabIds = Array.from(this.tabs.keys())
