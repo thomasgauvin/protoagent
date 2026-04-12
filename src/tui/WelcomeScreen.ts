@@ -103,12 +103,33 @@ export class WelcomeScreen {
     })
     inputBox.add(this.input)
 
+    // Handle submit from textarea (Meta+Enter)
     this.input.onSubmit = () => {
       const value = this.input.editBuffer.getText()
       const trimmed = value.trim()
       if (!trimmed) return
       this.input.clear()
       this.onSubmitCb(trimmed)
+    }
+
+    // Intercept Enter key to submit message (reusing InputBar logic)
+    this.input.onKeyDown = (key) => {
+      // Enter to submit - only if no modifier (allows text wrapping with Ctrl+Enter)
+      if (!key.meta && !key.ctrl && (key.name === 'return' || key.name === 'linefeed' || key.name === 'enter')) {
+        key.preventDefault()
+        const value = this.input.editBuffer.getText()
+        const trimmed = value.trim()
+        if (!trimmed) return
+        this.input.clear()
+        this.onSubmitCb(trimmed)
+        return
+      }
+
+      // Ctrl+Enter or Meta+Enter to insert newline (allows multiline input)
+      if ((key.ctrl || key.meta) && (key.name === 'return' || key.name === 'linefeed' || key.name === 'enter')) {
+        // Let the default behavior insert newline
+        return
+      }
     }
 
     // Click anywhere on the welcome screen to focus the input

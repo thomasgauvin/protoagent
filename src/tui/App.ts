@@ -83,6 +83,7 @@ const SLASH_COMMANDS = [
   { name: '/pop', description: 'Pop next queued message' },
   { name: '/clear', description: 'Clear the queue' },
   { name: '/q', description: 'Queue a message to run after current task' },
+  { name: '/rename', description: 'Rename the current tab' },
   { name: '/reconnect', description: 'Reconnect all MCP servers' },
   { name: '/quit', description: 'Exit ProtoAgent' },
   { name: '/exit', description: 'Alias for /quit' },
@@ -625,12 +626,28 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
         }
         return true
       }
-      case '/clear':
+       case '/clear':
         clearMessageQueue(session?.id)
         queuedCount = 0
         statusBar.setQueueState(0, pendingInterjects.length)
         todoSidebar.clearQueuedMessages()
         return true
+      case '/rename': {
+        // Extract new title from command: /rename new title
+        const parts = cmd.trim().split(/\s+/)
+        const newTitle = parts.slice(1).join(' ').trim()
+        if (!newTitle) {
+          statusBar.setError('Usage: /rename <new title>')
+          return true
+        }
+        if (options.onTitleUpdate) {
+          options.onTitleUpdate(newTitle)
+        }
+        completionMessages = [...completionMessages, { role: 'user', content: `[renamed to: ${newTitle}]` } as any]
+        completionMessages = [...completionMessages, { role: 'assistant', content: `Tab renamed to: ${newTitle}` } as any]
+        msgHistory.setMessages(completionMessages)
+        return true
+      }
       case '/reconnect': {
         statusBar.setError(null)
         statusBar.setLoading(true, 'Reconnecting MCPs...')
