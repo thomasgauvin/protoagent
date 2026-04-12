@@ -1,6 +1,7 @@
 /**
  * ProtoAgent TUI Client — Communicates with the core server.
  */
+import { EventSource } from 'eventsource';
 
 export interface ClientConfig {
   serverUrl: string;
