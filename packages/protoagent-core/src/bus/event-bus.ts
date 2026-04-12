@@ -23,7 +23,7 @@ export class EventBus {
   ): () => void {
     const id = crypto.randomUUID();
     const subs = this.subscriptions.get(eventType) ?? [];
-    subs.push({ id, handler: handler as EventHandler, filter });
+    subs.push({ id, handler: handler as EventHandler, filter: filter as FilterFn | undefined });
     this.subscriptions.set(eventType, subs);
 
     return () => this.unsubscribe(eventType, id);
@@ -31,7 +31,7 @@ export class EventBus {
 
   subscribeAll<T>(handler: EventHandler<T>, filter?: FilterFn<T>): () => void {
     const id = crypto.randomUUID();
-    this.globalHandlers.push({ id, handler: handler as EventHandler, filter });
+    this.globalHandlers.push({ id, handler: handler as EventHandler, filter: filter as FilterFn | undefined });
     return () => this.unsubscribeGlobal(id);
   }
 

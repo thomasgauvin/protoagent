@@ -115,9 +115,9 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
         const isScreenshot = SCREENSHOT_TOOLS.has(toolName);
         const timeoutMs = isScreenshot ? SCREENSHOT_TIMEOUT : DEFAULT_MCP_TIMEOUT;
 
-        // Create timeout promise
+        // Create abortable timeout promise that also respects external abort signal
         const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => {
+          const timeoutId = setTimeout(() => {
             reject(new Error(
               `MCP tool call timed out after ${timeoutMs}ms. ` +
               (isScreenshot
@@ -125,6 +125,14 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
                 : 'The tool took too long to respond.')
             ));
           }, timeoutMs);
+
+          // Also listen to external abort signal
+          if (context.abortSignal) {
+            context.abortSignal.addEventListener('abort', () => {
+              clearTimeout(timeoutId);
+              reject(new Error('MCP tool call aborted'));
+            }, { once: true });
+          }
         });
 
         // Create the actual tool call promise
@@ -143,7 +151,7 @@ async function registerMcpTools(conn: McpConnection): Promise<void> {
           return JSON.stringify(result);
         })();
 
-        // Race between timeout and tool completion
+        // Race between timeout/abort and tool completion
         try {
           return await Promise.race([toolCallPromise, timeoutPromise]);
         } catch (err: any) {

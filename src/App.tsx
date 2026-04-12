@@ -615,6 +615,18 @@ export const App: React.FC<AppProps> = ({
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
+      // Save session on Ctrl+C before exiting (graceful shutdown)
+      if (session) {
+        const updatedSession: Session = {
+          ...session,
+          completionMessages,
+          todos: getTodosForSession(session.id),
+          title: generateTitle(completionMessages),
+        };
+        saveSession(updatedSession).catch((err: any) => {
+          console.error('Failed to save session on exit:', err.message);
+        });
+      }
       exit();
     }
     if (key.escape && loading && abortControllerRef.current) {

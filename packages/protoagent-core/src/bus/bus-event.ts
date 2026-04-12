@@ -2,7 +2,10 @@
  * Typed event bus for internal communication.
  * Inspired by OpenCode's event architecture.
  */
-import { z, type ZodType, type ZodInfer } from 'zod';
+import { z, type ZodType } from 'zod';
+
+// Helper type to infer Zod schema type
+type ZodInfer<T extends ZodType> = z.infer<T>;
 
 export type EventMetadata = {
   timestamp: number;

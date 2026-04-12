@@ -32,8 +32,10 @@ app.get('/events', (c) => {
   return new Response(
     new ReadableStream({
       start(controller) {
+        const encoder = new TextEncoder();
+
         // Send initial connection message
-        controller.enqueue(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'connected' })}\n\n`));
 
         // Subscribe to events
         const unsubscribe = eventBus.subscribeAll((event: EventEnvelope) => {
@@ -43,7 +45,7 @@ app.get('/events', (c) => {
           }
 
           try {
-            controller.enqueue(`data: ${JSON.stringify(event)}\n\n`);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
           } catch {
             // Client disconnected
             unsubscribe();
@@ -53,7 +55,7 @@ app.get('/events', (c) => {
         // Heartbeat every 10s to keep connection alive
         const heartbeat = setInterval(() => {
           try {
-            controller.enqueue(`:heartbeat\n\n`);
+            controller.enqueue(encoder.encode(`:heartbeat\n\n`));
           } catch {
             clearInterval(heartbeat);
             unsubscribe();
@@ -105,14 +107,17 @@ app.delete('/sessions/:id', async (c) => {
 // Agent execution
 app.post('/agent/run', async (c) => {
   const body = await c.req.json();
-  const { sessionId, message, config } = body;
+  const { sessionId, message, content, config } = body;
 
-  if (!sessionId || !message) {
-    return c.json({ error: 'sessionId and message required' }, 400);
+  if (!sessionId || (!message && !content)) {
+    return c.json({ error: 'sessionId and message/content required' }, 400);
   }
 
+  // Support both old format (message: string) and new format (content: array)
+  const messageContent = content || message;
+
   // Start agent loop (runs asynchronously, emits events)
-  agentService.run(sessionId, message, config).catch((err) => {
+  agentService.run(sessionId, messageContent, config).catch((err) => {
     console.error('Agent execution error:', err);
   });
 

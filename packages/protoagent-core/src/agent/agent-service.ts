@@ -482,6 +482,7 @@ export class AgentService {
       let usage = {
         inputTokens: 0,
         outputTokens: 0,
+        totalTokens: 0,
         estimatedCost: 0,
       };
 
@@ -506,6 +507,7 @@ export class AgentService {
         if (response.usage) {
           usage.inputTokens += response.usage.prompt_tokens;
           usage.outputTokens += response.usage.completion_tokens;
+          usage.totalTokens = usage.inputTokens + usage.outputTokens;
         }
 
         messages.push(message);
@@ -603,7 +605,12 @@ export class AgentService {
           sessionId,
           subAgentId,
           response: '(sub-agent reached iteration limit)',
-          usage,
+          usage: {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            totalTokens: usage.inputTokens + usage.outputTokens,
+            estimatedCost: usage.estimatedCost,
+          },
         })
       );
     } finally {

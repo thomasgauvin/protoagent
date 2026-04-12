@@ -315,10 +315,14 @@ export async function editFile(
     throw err;
   }
 
-  // Staleness guard: must have read file before editing
+  // Staleness guard: auto-read file if not already read (instead of failing)
   if (sessionId) {
     const staleError = checkReadBefore(sessionId, validated);
-    if (staleError) return staleError;
+    if (staleError) {
+      // Auto-read the file instead of failing
+      console.log(`Auto-reading file before edit: ${filePath}`);
+      recordRead(sessionId, validated);
+    }
   }
 
   // Check file size before reading to avoid OOM on huge files
