@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js';
 export interface ToolExecutionContext {
   sessionId?: string;
   abortSignal?: AbortSignal;
+  approvalManager?: any;  // ApprovalManager for per-tab approval handling
   requestDefaults: Record<string, unknown>;
   client: any;  // OpenAI client
   model: string;
@@ -41,7 +42,7 @@ async function executeSingleTool(
   onEvent: AgentEventHandler,
   context: ToolExecutionContext
 ): Promise<ToolResult> {
-  const { sessionId, abortSignal, requestDefaults, client, model, pricing } = context;
+  const { sessionId, abortSignal, approvalManager, requestDefaults, client, model, pricing } = context;
   const { id, function: fn } = toolCall;
   const { name, arguments: argsStr } = fn;
 
@@ -79,7 +80,7 @@ async function executeSingleTool(
         });
       }
     } else {
-      result = await handleToolCall(name, args, { sessionId, abortSignal });
+      result = await handleToolCall(name, args, { sessionId, abortSignal, approvalManager });
     }
 
     logger.info('Tool completed', { tool: name, resultLength: result.length });

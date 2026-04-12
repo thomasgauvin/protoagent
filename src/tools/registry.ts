@@ -241,15 +241,15 @@ export class ToolRegistry {
         case 'read_file':
           return await readFile(args.file_path, args.offset, args.limit, context.sessionId);
         case 'write_file':
-          return await writeFile(args.file_path, args.content, context.sessionId);
+          return await writeFile(args.file_path, args.content, context.sessionId, context.approvalManager);
         case 'edit_file':
-          return await editFile(args.file_path, args.old_string, args.new_string, args.expected_replacements, context.sessionId);
+          return await editFile(args.file_path, args.old_string, args.new_string, args.expected_replacements, context.sessionId, context.approvalManager);
         case 'list_directory':
           return await listDirectory(args.directory_path);
         case 'search_files':
           return await searchFiles(args.search_term, args.directory_path, args.case_sensitive, args.file_extensions);
         case 'bash':
-          return await runBash(args.command, args.timeout_ms, context.sessionId, context.abortSignal);
+          return await runBash(args.command, args.timeout_ms, context.sessionId, context.abortSignal, context.approvalManager);
         case 'todo_read':
           return readTodos(context.sessionId);
         case 'todo_write':

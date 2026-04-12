@@ -143,12 +143,15 @@ export class TabManager {
    * Add a clickable tab button in the sidebar
    */
   private addTabButton(tabId: string): void {
+    // Row container: title + close button
     const tabButton = new BoxRenderable(this.renderer, {
       id: `tab-button-${tabId}`,
+      flexDirection: 'row',
       paddingLeft: 1,
       paddingRight: 1,
       marginBottom: 1,
-      onMouseDown: () => this.switchTab(tabId),
+      alignItems: 'center',
+      justifyContent: 'space-between',
     })
 
     const tabApp = this.tabs.get(tabId)
@@ -156,8 +159,22 @@ export class TabManager {
     const tabText = new TextRenderable(this.renderer, {
       id: `tab-button-text-${tabId}`,
       content: `○ ${tabTitle}`,
+      flexGrow: 1,
+      onMouseDown: () => this.switchTab(tabId),
     })
     tabButton.add(tabText)
+
+    // Close button (×)
+    const closeButton = new TextRenderable(this.renderer, {
+      id: `tab-close-${tabId}`,
+      content: t`${fg('#ff0000')('×')}`,
+      marginLeft: 1,
+      onMouseDown: (event) => {
+        event.stopPropagation() // Prevent triggering switchTab
+        this.closeTab(tabId)
+      },
+    })
+    tabButton.add(closeButton)
 
     this.sidebar.add(tabButton)
     this.tabButtons.set(tabId, tabButton)

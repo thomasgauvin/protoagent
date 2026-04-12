@@ -9,7 +9,7 @@
 
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { requestApproval } from '../utils/approval.js';
+import { requestApproval, isDangerouslySkipPermissions } from '../utils/approval.js';
 import { logger } from '../utils/logger.js';
 import { getWorkingDirectory, validatePath } from '../utils/path-validation.js';
 
@@ -165,7 +165,8 @@ export async function runBash(
   command: string,
   timeoutMs = 30_000,
   sessionId?: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  approvalManager?: any
 ): Promise<string> {
   // Layer 1: hard block
   if (isDangerous(command)) {
@@ -175,14 +176,29 @@ export async function runBash(
   // Layer 2: safe commands skip approval
   if (!(await isSafe(command))) {
     // Layer 3: interactive approval
-    const approved = await requestApproval({
-      id: `bash-${Date.now()}`,
-      type: 'shell_command',
-      description: `Run command: ${command}`,
-      detail: `Working directory: ${getWorkingDirectory()}\nCommand: ${command}`,
-      sessionId,
-      sessionScopeKey: `shell:${command}`,
-    });
+    let approved: boolean;
+    
+    if (approvalManager) {
+      // Use per-tab approval manager if available
+      approved = await approvalManager.requestApproval({
+        id: `bash-${Date.now()}`,
+        type: 'shell_command',
+        description: `Run command: ${command}`,
+        detail: `Working directory: ${getWorkingDirectory()}\nCommand: ${command}`,
+        sessionId,
+        sessionScopeKey: `shell:${command}`,
+      });
+    } else {
+      // Fall back to module-level requestApproval (checks global flag)
+      approved = await requestApproval({
+        id: `bash-${Date.now()}`,
+        type: 'shell_command',
+        description: `Run command: ${command}`,
+        detail: `Working directory: ${getWorkingDirectory()}\nCommand: ${command}`,
+        sessionId,
+        sessionScopeKey: `shell:${command}`,
+      });
+    }
 
     if (!approved) {
       return `Command cancelled by user: ${command}`;

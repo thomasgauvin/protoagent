@@ -673,11 +673,19 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
       if (handled) return
     }
 
-    // Legacy prefix overrides (!! interject, ! queue) still work if typed manually
+    // Check for /q suffix at the end of the message (queue command)
     let effectiveMode = mode
     let content = trimmed
-    if (trimmed.startsWith('!!')) { effectiveMode = 'interject'; content = trimmed.slice(2).trim() }
-    else if (trimmed.startsWith('!')) { effectiveMode = 'queue'; content = trimmed.slice(1).trim() }
+    if (trimmed.endsWith(' /q')) {
+      effectiveMode = 'queue'
+      content = trimmed.slice(0, -3).trim()
+    } else if (trimmed.startsWith('!!')) {
+      effectiveMode = 'interject'
+      content = trimmed.slice(2).trim()
+    } else if (trimmed.startsWith('!')) {
+      effectiveMode = 'queue'
+      content = trimmed.slice(1).trim()
+    }
 
     if (effectiveMode === 'interject') {
       // Push into pendingInterjects — will be spliced in at the next iteration boundary

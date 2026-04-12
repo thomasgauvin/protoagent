@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
 import { findSimilarPaths } from '../utils/path-suggestions.js';
-import { requestApproval } from '../utils/approval.js';
+import { requestApproval, isDangerouslySkipPermissions } from '../utils/approval.js';
 import { checkReadBefore, recordRead } from '../utils/file-time.js';
 
 export const editFileTool = {
@@ -295,6 +295,7 @@ export async function editFile(
   newString: string,
   expectedReplacements = 1,
   sessionId?: string,
+  approvalManager?: any,
 ): Promise<string> {
   if (oldString.length === 0) {
     return 'Error: old_string cannot be empty.';
@@ -422,14 +423,29 @@ export async function editFile(
   const newPreview = newString.length > 200 ? newString.slice(0, 200) + '...' : newString;
   const strategyNote = strategy !== 'exact' ? ` [matched via ${strategy}]` : '';
 
-  const approved = await requestApproval({
-    id: `edit-${Date.now()}`,
-    type: 'file_edit',
-    description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})${strategyNote}`,
-    detail: `Replace:\n${oldPreview}\n\nWith:\n${newPreview}`,
-    sessionId,
-    sessionScopeKey: `file_edit:${validated}`,
-  });
+  let approved: boolean;
+  
+  if (approvalManager) {
+    // Use per-tab approval manager if available
+    approved = await approvalManager.requestApproval({
+      id: `edit-${Date.now()}`,
+      type: 'file_edit',
+      description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})${strategyNote}`,
+      detail: `Replace:\n${oldPreview}\n\nWith:\n${newPreview}`,
+      sessionId,
+      sessionScopeKey: `file_edit:${validated}`,
+    });
+  } else {
+    // Fall back to module-level requestApproval (checks global flag)
+    approved = await requestApproval({
+      id: `edit-${Date.now()}`,
+      type: 'file_edit',
+      description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})${strategyNote}`,
+      detail: `Replace:\n${oldPreview}\n\nWith:\n${newPreview}`,
+      sessionId,
+      sessionScopeKey: `file_edit:${validated}`,
+    });
+  }
 
   if (!approved) {
     return `Operation cancelled: edit to ${filePath} was rejected by user.`;

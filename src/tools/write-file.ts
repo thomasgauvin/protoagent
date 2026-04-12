@@ -5,7 +5,7 @@
 import fs, { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
-import { requestApproval } from '../utils/approval.js';
+import { requestApproval, isDangerouslySkipPermissions } from '../utils/approval.js';
 import { recordRead } from '../utils/file-time.js';
 
 export const writeFileTool = {
@@ -24,7 +24,7 @@ export const writeFileTool = {
   },
 };
 
-export async function writeFile(filePath: string, content: string, sessionId?: string): Promise<string> {
+export async function writeFile(filePath: string, content: string, sessionId?: string, approvalManager?: any): Promise<string> {
   // validatePath handles non-existent files by validating the parent directory
   const validated = await validatePath(filePath);
 
@@ -33,14 +33,29 @@ export async function writeFile(filePath: string, content: string, sessionId?: s
     ? `${content.slice(0, 250)}\n... (${content.length} chars total) ...\n${content.slice(-250)}`
     : content;
 
-  const approved = await requestApproval({
-    id: `write-${Date.now()}`,
-    type: 'file_write',
-    description: `Write file: ${filePath}`,
-    detail: preview,
-    sessionId,
-    sessionScopeKey: `file_write:${validated}`,
-  });
+  let approved: boolean;
+  
+  if (approvalManager) {
+    // Use per-tab approval manager if available
+    approved = await approvalManager.requestApproval({
+      id: `write-${Date.now()}`,
+      type: 'file_write',
+      description: `Write file: ${filePath}`,
+      detail: preview,
+      sessionId,
+      sessionScopeKey: `file_write:${validated}`,
+    });
+  } else {
+    // Fall back to module-level requestApproval (checks global flag)
+    approved = await requestApproval({
+      id: `write-${Date.now()}`,
+      type: 'file_write',
+      description: `Write file: ${filePath}`,
+      detail: preview,
+      sessionId,
+      sessionScopeKey: `file_write:${validated}`,
+    });
+  }
 
   if (!approved) {
     return `Operation cancelled: write to ${filePath} was rejected by user.`;

@@ -69,6 +69,7 @@ export interface AgenticLoopOptions {
   requestDefaults?: Record<string, unknown>;
   /** Called after each iteration to get any pending interject messages to splice in before the next LLM call. */
   getInterjects?: () => Message[];
+  approvalManager?: any; // ApprovalManager for per-tab approval handling
 }
 
 function emitAbortAndFinish(onEvent: AgentEventHandler): void {
@@ -108,6 +109,7 @@ export async function runAgenticLoop(
   const sessionId = options.sessionId;
   const requestDefaults = options.requestDefaults || {};
   const getInterjects = options.getInterjects;
+  const approvalManager = options.approvalManager;
 
   // The same AbortSignal is passed into every OpenAI SDK call and every
   // sleep across all loop iterations and sub-agent calls.
@@ -253,6 +255,7 @@ export async function runAgenticLoop(
         const toolContext: ToolExecutionContext = {
           sessionId,
           abortSignal,
+          approvalManager,
           requestDefaults,
           client,
           model,

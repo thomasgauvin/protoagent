@@ -19,8 +19,7 @@ import {
   type CliRenderer,
   BoxRenderable,
   TextRenderable,
-  InputRenderable,
-  InputRenderableEvents,
+  TextareaRenderable,
   type MouseEvent,
   t,
   fg,
@@ -39,7 +38,7 @@ const ASCII_LOGO = [
 export class WelcomeScreen {
   public readonly root: BoxRenderable
   private labelText: TextRenderable
-  public readonly input: InputRenderable
+  public readonly input: TextareaRenderable
   private onSubmitCb: (value: string) => void
 
   constructor(renderer: CliRenderer, onSubmit: (value: string) => void) {
@@ -83,6 +82,7 @@ export class WelcomeScreen {
       borderColor: GREEN,
       borderStyle: 'single',
       width: 72,
+      maxHeight: 8,
       flexShrink: 0,
     })
     inner.add(inputBox)
@@ -93,7 +93,7 @@ export class WelcomeScreen {
     })
     inputBox.add(prefix)
 
-    this.input = new InputRenderable(renderer, {
+    this.input = new TextareaRenderable(renderer, {
       id: 'welcome-input',
       placeholder: 'What can I help you build?',
       placeholderColor: DIM,
@@ -103,12 +103,13 @@ export class WelcomeScreen {
     })
     inputBox.add(this.input)
 
-    this.input.on(InputRenderableEvents.ENTER, (value: string) => {
+    this.input.onSubmit = () => {
+      const value = this.input.editBuffer.getText()
       const trimmed = value.trim()
       if (!trimmed) return
-      this.input.value = ''
+      this.input.clear()
       this.onSubmitCb(trimmed)
-    })
+    }
 
     // Click anywhere on the welcome screen to focus the input
     this.root.onMouseDown = (event: MouseEvent) => {
