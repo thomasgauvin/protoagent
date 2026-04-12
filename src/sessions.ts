@@ -13,6 +13,7 @@ import os from 'node:os';
 import { chmodSync } from 'node:fs';
 import type OpenAI from 'openai';
 import type { TodoItem } from './tools/todo.js';
+import type { QueuedMessage } from './message-queue.js';
 import { logger } from './utils/logger.js';
 
 const SESSION_DIR_MODE = 0o700;
@@ -51,6 +52,7 @@ export interface Session {
   provider: string;
   todos: TodoItem[];
   completionMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+  queuedMessages: QueuedMessage[];
 }
 
 export interface SessionSummary {
@@ -116,6 +118,7 @@ export function createSession(model: string, provider: string): Session {
     provider,
     todos: [],
     completionMessages: [],
+    queuedMessages: [],
   };
 }
 
@@ -143,6 +146,7 @@ export async function loadSession(id: string): Promise<Session | null> {
       provider: session.provider ?? '',
       todos: Array.isArray(session.todos) ? session.todos : [],
       completionMessages: Array.isArray(session.completionMessages) ? session.completionMessages : [],
+      queuedMessages: Array.isArray(session.queuedMessages) ? session.queuedMessages : [],
     };
   } catch {
     return null;

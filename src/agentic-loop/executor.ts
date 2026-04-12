@@ -3,6 +3,8 @@
  *
  * Handles execution of tool calls including special handling for
  * sub-agents and proper abort signal management between tool calls.
+ * 
+ * Supports parallel execution of independent tools and sub-agents.
  */
 
 import type { AgentEventHandler, ToolCallEvent } from '../agentic-loop.js';
@@ -22,12 +24,90 @@ export interface ToolExecutionContext {
   pricing?: any;  // ModelPricing
 }
 
+interface ToolResult {
+  id: string;
+  name: string;
+  args: string;
+  status: 'done' | 'error';
+  result: string;
+}
+
+/**
+ * Execute a single tool call and return the result.
+ */
+async function executeSingleTool(
+  toolCall: any,
+  messages: any[],
+  onEvent: AgentEventHandler,
+  context: ToolExecutionContext
+): Promise<ToolResult> {
+  const { sessionId, abortSignal, requestDefaults, client, model, pricing } = context;
+  const { id, function: fn } = toolCall;
+  const { name, arguments: argsStr } = fn;
+
+  onEvent({
+    type: 'tool_call',
+    toolCall: { id, name, args: argsStr, status: 'running' } as ToolCallEvent,
+  });
+
+  try {
+    const args = JSON.parse(argsStr);
+    let result: string;
+
+    if (name === 'sub_agent') {
+      const subProgress: SubAgentProgressHandler = (evt) => {
+        onEvent({
+          type: 'sub_agent_iteration',
+          subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration, args: evt.args },
+        });
+      };
+      const subResult = await runSubAgent(
+        client,
+        model,
+        args.task,
+        args.max_iterations,
+        requestDefaults,
+        subProgress,
+        abortSignal,
+        pricing,
+      );
+      result = subResult.response;
+      if (subResult.usage.inputTokens > 0 || subResult.usage.outputTokens > 0) {
+        onEvent({
+          type: 'sub_agent_iteration',
+          subAgentUsage: subResult.usage as any,
+        });
+      }
+    } else {
+      result = await handleToolCall(name, args, { sessionId, abortSignal });
+    }
+
+    logger.info('Tool completed', { tool: name, resultLength: result.length });
+
+    onEvent({
+      type: 'tool_result',
+      toolCall: { id, name, args: argsStr, status: 'done', result } as ToolCallEvent,
+    });
+
+    return { id, name, args: argsStr, status: 'done', result };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    
+    onEvent({
+      type: 'tool_result',
+      toolCall: { id, name, args: argsStr, status: 'error', result: errMsg } as ToolCallEvent,
+    });
+
+    return { id, name, args: argsStr, status: 'error', result: errMsg };
+  }
+}
+
 /**
  * Execute all tool calls from an assistant message.
  *
  * Handles:
+ * - Parallel execution of independent tool calls (including sub-agents)
  * - Abort checking between tool calls
- * - Sub-agent special case with progress reporting
  * - Error handling and result accumulation
  * - Pending tool call tracking for abort scenarios
  *
@@ -39,11 +119,9 @@ export async function executeToolCalls(
   onEvent: AgentEventHandler,
   context: ToolExecutionContext
 ): Promise<{ completed: boolean; shouldAbort: boolean }> {
-  const { sessionId, abortSignal, requestDefaults, client, model, pricing } = context;
+  const { abortSignal } = context;
 
-  // Track which tool_call_ids still need a tool result message.
-  // This set is used to inject stub responses on abort, preventing
-  // orphaned tool_call_ids from permanently bricking the session.
+  // Track pending tool call IDs for abort scenarios
   const pendingToolCallIds = new Set<string>(
     toolCalls.map((tc: any) => tc.id as string)
   );
@@ -58,93 +136,45 @@ export async function executeToolCalls(
     }
   };
 
+  // Check abort before starting
+  if (abortSignal?.aborted) {
+    logger.debug('Agentic loop aborted before tool execution');
+    injectStubsForPendingToolCalls();
+    return { completed: false, shouldAbort: true };
+  }
+
+  // Emit all tool_call events first (so UI shows them all as "running")
   for (const toolCall of toolCalls) {
-    // Check abort between tool calls
-    if (abortSignal?.aborted) {
-      logger.debug('Agentic loop aborted between tool calls');
-      injectStubsForPendingToolCalls();
-      return { completed: false, shouldAbort: true };
-    }
-
-    const { name, arguments: argsStr } = toolCall.function;
-
+    const { id, function: fn } = toolCall;
+    const { name, arguments: argsStr } = fn;
     onEvent({
       type: 'tool_call',
-      toolCall: { id: toolCall.id, name, args: argsStr, status: 'running' } as ToolCallEvent,
+      toolCall: { id, name, args: argsStr, status: 'running' } as ToolCallEvent,
     });
+  }
 
-    try {
-      const args = JSON.parse(argsStr);
-      let result: string;
+  // Execute all tools in parallel
+  const results = await Promise.all(
+    toolCalls.map((toolCall) =>
+      executeSingleTool(toolCall, messages, onEvent, context)
+    )
+  );
 
-      // Handle sub-agent tool specially
-      if (name === 'sub_agent') {
-        const subProgress: SubAgentProgressHandler = (evt) => {
-          onEvent({
-            type: 'sub_agent_iteration',
-            subAgentTool: { tool: evt.tool, status: evt.status, iteration: evt.iteration, args: evt.args },
-          });
-        };
-        const subResult = await runSubAgent(
-          client,
-          model,
-          args.task,
-          args.max_iterations,
-          requestDefaults,
-          subProgress,
-          abortSignal,
-          pricing,
-        );
-        result = subResult.response;
-        // Emit sub-agent usage for the UI to add to total cost
-        if (subResult.usage.inputTokens > 0 || subResult.usage.outputTokens > 0) {
-          onEvent({
-            type: 'sub_agent_iteration',
-            subAgentUsage: subResult.usage as any,
-          });
-        }
-      } else {
-        result = await handleToolCall(name, args, { sessionId, abortSignal });
-      }
+  // Check abort after parallel execution
+  if (abortSignal?.aborted) {
+    logger.debug('Agentic loop aborted during tool execution');
+    injectStubsForPendingToolCalls();
+    return { completed: false, shouldAbort: true };
+  }
 
-      logger.info('Tool completed', {
-        tool: name,
-        resultLength: result.length,
-      });
-
-      messages.push({
-        role: 'tool',
-        tool_call_id: toolCall.id,
-        content: result,
-      } as any);
-      pendingToolCallIds.delete(toolCall.id);
-
-      onEvent({
-        type: 'tool_result',
-        toolCall: { id: toolCall.id, name, args: argsStr, status: 'done', result } as ToolCallEvent,
-      });
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-
-      messages.push({
-        role: 'tool',
-        tool_call_id: toolCall.id,
-        content: `Error: ${errMsg}`,
-      } as any);
-      pendingToolCallIds.delete(toolCall.id);
-
-      // If the tool was aborted, inject stubs for remaining pending calls and stop
-      if (abortSignal?.aborted || (err instanceof Error && (err.name === 'AbortError' || err.message === 'Operation aborted'))) {
-        logger.debug('Agentic loop aborted during tool execution');
-        injectStubsForPendingToolCalls();
-        return { completed: false, shouldAbort: true };
-      }
-
-      onEvent({
-        type: 'tool_result',
-        toolCall: { id: toolCall.id, name, args: argsStr, status: 'error', result: errMsg } as ToolCallEvent,
-      });
-    }
+  // Add all results to messages in order
+  for (const result of results) {
+    messages.push({
+      role: 'tool',
+      tool_call_id: result.id,
+      content: result.status === 'error' ? `Error: ${result.result}` : result.result,
+    } as any);
+    pendingToolCallIds.delete(result.id);
   }
 
   return { completed: true, shouldAbort: false };

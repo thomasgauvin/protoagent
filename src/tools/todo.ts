@@ -113,3 +113,46 @@ export function setTodosForSession(sessionId: string, todos: TodoItem[]): void {
 export function clearTodos(sessionId?: string): void {
   todosBySession.delete(getSessionKey(sessionId));
 }
+
+/**
+ * Add a new todo to the session
+ */
+export function addTodo(content: string, priority: TodoItem['priority'] = 'medium', sessionId?: string): TodoItem {
+  const key = getSessionKey(sessionId);
+  const todos = getTodosForSession(sessionId);
+  const newTodo: TodoItem = {
+    id: `todo_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    content,
+    status: 'pending',
+    priority,
+  };
+  todos.push(newTodo);
+  todosBySession.set(key, todos);
+  return newTodo;
+}
+
+/**
+ * Delete a todo by ID
+ */
+export function deleteTodo(id: string, sessionId?: string): boolean {
+  const key = getSessionKey(sessionId);
+  const todos = getTodosForSession(sessionId);
+  const index = todos.findIndex((t) => t.id === id);
+  if (index === -1) return false;
+  todos.splice(index, 1);
+  todosBySession.set(key, todos);
+  return true;
+}
+
+/**
+ * Update a todo by ID
+ */
+export function updateTodo(id: string, updates: Partial<Omit<TodoItem, 'id'>>, sessionId?: string): TodoItem | null {
+  const key = getSessionKey(sessionId);
+  const todos = getTodosForSession(sessionId);
+  const index = todos.findIndex((t) => t.id === id);
+  if (index === -1) return null;
+  todos[index] = { ...todos[index], ...updates };
+  todosBySession.set(key, todos);
+  return todos[index];
+}

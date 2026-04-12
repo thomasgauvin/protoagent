@@ -1,30 +1,26 @@
 {
   "name": "protoagent",
-  "version": "0.2.0",
+  "version": "0.1.21",
   "type": "module",
-  "private": true,
-  "workspaces": [
-    "packages/*"
+  "files": [
+    "dist",
+    "README.md"
   ],
+  "bin": {
+    "protoagent": "./dist/cli.js"
+  },
   "scripts": {
-    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:tui\" --kill-others",
-    "dev:legacy": "tsx src/cli.tsx",
-    "dev:server": "cd packages/protoagent-core && npm run dev",
-    "dev:tui": "sleep 3 && cd packages/protoagent-tui && npm run build && (command -v bun >/dev/null 2>&1 && bun run dist/cli.js || echo 'ERROR: TUI requires Bun. Install: https://bun.sh')",  
-    "test": "node --test --import tsx tests/**/*.test.{ts,tsx}",
-    "build": "npm run build:core && npm run build:tui",
-    "build:core": "cd packages/protoagent-core && npm run build",
-    "build:tui": "cd packages/protoagent-tui && npm run build",
-    "build:watch": "tsc --watch",
-    "prepack": "npm run build",
+    "clean": "bun -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "dev": "bun src/cli.ts",
+    "test": "bun test",
+    "build": "bun build src/cli.ts --outdir dist --target bun --format esm && chmod +x dist/cli.js",
+    "build:watch": "bun build src/cli.ts --outdir dist --target bun --format esm --watch",
+    "prepack": "bun run build",
     "docs:dev": "concurrently \"npm run docs:dev:worker\" \"npm run docs:dev:docs\" --kill-others",
     "docs:dev:worker": "cd docs/worker && npm exec wrangler -- dev --port 8787 --ip 0.0.0.0",
     "docs:dev:docs": "vitepress dev docs --port 5173 --host",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs",
-    "server": "cd packages/protoagent-core && npm run start",
-    "tui": "cd packages/protoagent-tui && npm run start"
+    "docs:preview": "vitepress preview docs"
   },
   "author": "Thomas Gauvin",
   "license": "MIT",
@@ -43,45 +39,31 @@
     "anthropic",
     "gemini",
     "terminal",
-    "typescript",
-    "opentui"
+    "typescript"
   ],
   "engines": {
-    "node": ">=20"
+    "bun": ">=1.0"
   },
   "dependencies": {
-    "@inkjs/ui": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@opentui/core": "/Users/thomasgauvin/work-in-progress/2026/opentui/packages/core",
     "commander": "^14.0.1",
     "diff": "^8.0.4",
     "he": "^1.2.0",
     "html-to-text": "^9.0.5",
-    "ink": "^6.8.0",
     "jsonc-parser": "^3.3.1",
     "leven": "^4.1.0",
     "openai": "^5.23.1",
-    "react": "^19.1.1",
-    "strip-ansi": "^7.2.0",
     "turndown": "^7.2.2",
     "yaml": "^2.8.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@eslint/js": "^9.36.0",
-    "@tailwindcss/postcss": "^4.1.18",
     "@types/diff": "^7.0.2",
     "@types/he": "^1.2.3",
     "@types/html-to-text": "^9.0.4",
     "@types/node": "^24.5.2",
-    "@types/react": "^19.1.15",
     "@types/turndown": "^5.0.6",
-    "concurrently": "^9.1.2",
-    "eslint": "^9.36.0",
-    "ink-testing-library": "^4.0.0",
-    "tailwindcss": "^4.0.0",
-    "tsx": "^4.20.6",
-    "typescript": "^5.9.2",
-    "typescript-eslint": "^8.44.1",
-    "vitepress": "^1.6.4"
+    "typescript": "^5.9.2"
   }
 }

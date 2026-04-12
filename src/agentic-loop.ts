@@ -67,6 +67,8 @@ export interface AgenticLoopOptions {
   abortSignal?: AbortSignal;
   sessionId?: string;
   requestDefaults?: Record<string, unknown>;
+  /** Called after each iteration to get any pending interject messages to splice in before the next LLM call. */
+  getInterjects?: () => Message[];
 }
 
 function emitAbortAndFinish(onEvent: AgentEventHandler): void {
@@ -105,6 +107,7 @@ export async function runAgenticLoop(
   const abortSignal = options.abortSignal;
   const sessionId = options.sessionId;
   const requestDefaults = options.requestDefaults || {};
+  const getInterjects = options.getInterjects;
 
   // The same AbortSignal is passed into every OpenAI SDK call and every
   // sleep across all loop iterations and sub-agent calls.
@@ -271,6 +274,14 @@ export async function runAgenticLoop(
         // Signal UI that this iteration's tool calls are all done,
         // so it can flush completed messages to static output.
         onEvent({ type: 'iteration_done' });
+
+        // Splice in any pending interject messages before the next LLM call.
+        if (getInterjects) {
+          const interjects = getInterjects();
+          if (interjects.length > 0) {
+            updatedMessages.push(...interjects);
+          }
+        }
 
         // Continue loop — let the LLM process tool results
         continue;

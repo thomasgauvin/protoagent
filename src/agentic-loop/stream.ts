@@ -99,15 +99,20 @@ export async function processStream(
   }
 
   // Calculate usage metrics
+  // Use actual API-reported tokens when available for accurate per-turn metrics
   const inputTokens = actualUsage?.prompt_tokens ?? estimateConversationTokens(messages);
   const outputTokens = actualUsage?.completion_tokens ?? estimateTokens(assistantMessage.content || '');
   const cachedTokens = (actualUsage as any)?.prompt_tokens_details?.cached_tokens;
   const cost = pricing
     ? createUsageInfo(inputTokens, outputTokens, pricing, cachedTokens).estimatedCost
     : 0;
-  const contextPercent = pricing
-    ? getContextInfo(messages, pricing).utilizationPercentage
-    : 0;
+  // Context percent shows how full the context window is with THIS request only
+  // (not cumulative across the whole session). Use the actual prompt tokens sent.
+  const contextPercent = pricing && actualUsage?.prompt_tokens
+    ? (actualUsage.prompt_tokens / pricing.contextWindow) * 100
+    : pricing
+      ? getContextInfo(messages, pricing).utilizationPercentage
+      : 0;
 
   // Log API response with usage info at INFO level
   logger.info('Received API response', {

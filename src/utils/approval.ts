@@ -1,6 +1,12 @@
 /**
  * Approval system for destructive operations.
  *
+ * This module now delegates to src/utils/approval-manager.ts for per-tab state.
+ * New code should import ApprovalManager from approval-manager.ts and instantiate
+ * it with an approval handler for each tab.
+ *
+ * The --dangerously-skip-permissions flag is still global (shared across all tabs).
+ *
  * Two categories of approval:
  *  1. File operations (write_file, edit_file)
  *  2. Shell commands (non-whitelisted)
@@ -14,23 +20,17 @@
  * for the UI to resolve it (instead of blocking on stdin with inquirer).
  */
 
-export type ApprovalRequest = {
-  id: string;
-  type: 'file_write' | 'file_edit' | 'shell_command';
-  description: string;
-  detail?: string;
-  sessionId?: string;
-  sessionScopeKey?: string;
-};
+import { ApprovalManager, type ApprovalRequest, type ApprovalResponse } from './approval-manager.js';
 
-export type ApprovalResponse = 'approve_once' | 'approve_session' | 'reject';
-
-// Global state
+// Global state (shared across all tabs)
 let dangerouslySkipPermissions = false;
-const sessionApprovals = new Set<string>(); // stores approval keys scoped by session
 
-// Callback that the Ink UI provides to handle interactive approval
-let approvalHandler: ((req: ApprovalRequest) => Promise<ApprovalResponse>) | null = null;
+/**
+ * For backwards compatibility: maintain module-level exports that delegate to
+ * a default shared ApprovalManager instance. This allows existing code to work
+ * without changes, but gradually migrated code will pass ApprovalManager instances around.
+ */
+const defaultApprovalManager = new ApprovalManager();
 
 export function setDangerouslySkipPermissions(value: boolean): void {
   dangerouslySkipPermissions = value;
@@ -41,21 +41,15 @@ export function isDangerouslySkipPermissions(): boolean {
 }
 
 export function setApprovalHandler(handler: (req: ApprovalRequest) => Promise<ApprovalResponse>): void {
-  approvalHandler = handler;
+  defaultApprovalManager.setApprovalHandler(handler);
 }
 
 export function clearApprovalHandler(): void {
-  approvalHandler = null;
+  defaultApprovalManager.clearApprovalHandler();
 }
 
 export function clearSessionApprovals(): void {
-  sessionApprovals.clear();
-}
-
-function getApprovalScopeKey(req: ApprovalRequest): string {
-  const sessionId = req.sessionId ?? '__global__';
-  const scope = req.sessionScopeKey ?? req.type;
-  return `${sessionId}:${scope}`;
+  defaultApprovalManager.clearSessionApprovals();
 }
 
 /**
@@ -64,30 +58,15 @@ function getApprovalScopeKey(req: ApprovalRequest): string {
  * Check order:
  *  1. --dangerously-skip-permissions → auto-approve
  *  2. Session approval for this type → auto-approve
- *  3. Interactive prompt via the UI handler
+ *  3. Interactive prompt via the handler
  *  4. No handler registered → reject (fail closed)
  */
 export async function requestApproval(req: ApprovalRequest): Promise<boolean> {
   if (dangerouslySkipPermissions) return true;
-
-  const sessionKey = getApprovalScopeKey(req);
-  if (sessionApprovals.has(sessionKey)) return true;
-
-  if (!approvalHandler) {
-    return false;
-  }
-
-  const response = await approvalHandler(req);
-
-  switch (response) {
-    case 'approve_once':
-      return true;
-    case 'approve_session':
-      sessionApprovals.add(sessionKey);
-      return true;
-    case 'reject':
-      return false;
-    default:
-      return false;
-  }
+  return defaultApprovalManager.requestApproval(req);
 }
+
+/**
+ * Export ApprovalManager class and types for new code that needs per-tab instances
+ */
+export { ApprovalManager, type ApprovalRequest, type ApprovalResponse } from './approval-manager.js';
