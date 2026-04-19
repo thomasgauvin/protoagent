@@ -240,6 +240,7 @@ async function fetchWithRedirectLimit(
  * @param url - HTTP(S) URL to fetch
  * @param format - Output format: 'text', 'markdown', or 'html'
  * @param timeout - Optional timeout in seconds (default 30, max 120)
+ * @param abortSignal - Optional AbortSignal for cancellation
  * @returns Object with output, title, and metadata
  * @throws Error on validation, network, or processing failures
  */
@@ -247,11 +248,17 @@ export async function webfetch(
   url: string,
   format: "text" | "markdown" | "html",
   timeout?: number,
+  abortSignal?: AbortSignal,
 ): Promise<{
   output: string;
   title: string;
   metadata: Record<string, unknown>;
 }> {
+  // Check abort before starting
+  if (abortSignal?.aborted) {
+    throw new Error("Fetch aborted by user (before execution)");
+  }
+
   // Validate URL
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
     throw new Error("Invalid URL format. Must start with http:// or https://");
@@ -274,9 +281,16 @@ export async function webfetch(
     throw new Error("Timeout must be between 1 and 120 seconds");
   }
 
-  // Setup timeout for entire operation
+  // Setup abort controller that respects both timeout and external abortSignal
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+
+  // Link external abortSignal to our controller
+  let abortListener: (() => void) | undefined;
+  if (abortSignal) {
+    abortListener = () => controller.abort();
+    abortSignal.addEventListener('abort', abortListener, { once: true });
+  }
 
   try {
     const startTime = Date.now();
@@ -367,8 +381,17 @@ export async function webfetch(
 
     return { output, title, metadata };
   } catch (error) {
-    // Handle AbortError (timeout or cancellation)
+    // Clean up abort listener
+    if (abortListener && abortSignal) {
+      abortSignal.removeEventListener('abort', abortListener);
+    }
+
+    // Handle AbortError (timeout or user cancellation)
     if (error instanceof Error && error.name === "AbortError") {
+      // Distinguish between user abort and timeout
+      if (abortSignal?.aborted) {
+        throw new Error("Fetch aborted by user");
+      }
       throw new Error(`Fetch timeout after ${timeoutSeconds} seconds`);
     }
 
@@ -381,5 +404,9 @@ export async function webfetch(
     throw new Error(`Failed to fetch ${url}: ${String(error)}`);
   } finally {
     clearTimeout(timeoutId);
+    // Ensure abort listener is always cleaned up
+    if (abortListener && abortSignal) {
+      abortSignal.removeEventListener('abort', abortListener);
+    }
   }
 }

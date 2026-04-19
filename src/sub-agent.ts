@@ -10,7 +10,7 @@
 
 import type OpenAI from 'openai';
 import crypto from 'node:crypto';
-import { handleToolCall, getAllTools } from './tools/index.js';
+import { handleToolCall, getAllTools, type ToolRegistry } from './tools/index.js';
 import { generateSystemPrompt } from './system-prompt.js';
 import { logger } from './utils/logger.js';
 import { clearTodos } from './tools/todo.js';
@@ -64,11 +64,12 @@ export async function runSubAgent(
   onProgress?: SubAgentProgressHandler,
   abortSignal?: AbortSignal,
   pricing?: ModelPricing,
+  toolRegistry?: ToolRegistry,  // Per-tab tool registry for accessing MCP tools
 ): Promise<SubAgentResult> {
   const op = logger.startOperation('sub-agent');
   const subAgentSessionId = `sub-agent-${crypto.randomUUID()}`;
 
-  const systemPrompt = await generateSystemPrompt();
+  const systemPrompt = await generateSystemPrompt(toolRegistry);
   const subSystemPrompt = `${systemPrompt}
 
 ## Sub-Agent Mode
@@ -102,7 +103,7 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
           ...requestDefaults,
           model,
           messages,
-          tools: getAllTools(),
+          tools: toolRegistry ? toolRegistry.getAllTools() : getAllTools(),
           tool_choice: 'auto',
           stream: true,
           stream_options: { include_usage: true },
@@ -119,6 +120,11 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
         let actualUsage: OpenAI.CompletionUsage | undefined;
 
         for await (const chunk of stream) {
+          // Check abort between chunks
+          if (abortSignal?.aborted) {
+            throw new Error('Operation aborted');
+          }
+
           const delta = chunk.choices[0]?.delta;
 
           if (chunk.usage) {
@@ -220,7 +226,13 @@ Do NOT ask the user questions — work autonomously with the tools available.`;
           onProgress?.({ tool: name, status: 'running', iteration: i, args });
 
           try {
-            const result = await handleToolCall(name, args, { sessionId: subAgentSessionId, abortSignal });
+            // Use per-tab toolRegistry if provided, otherwise fall back to global handler
+            let result: string;
+            if (toolRegistry) {
+              result = await toolRegistry.handleToolCall(name, args, { sessionId: subAgentSessionId, abortSignal });
+            } else {
+              result = await handleToolCall(name, args, { sessionId: subAgentSessionId, abortSignal });
+            }
             messages.push({
               role: 'tool',
               tool_call_id: toolCall.id,

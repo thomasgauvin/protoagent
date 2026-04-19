@@ -19,7 +19,7 @@
 
 import type OpenAI from 'openai';
 import { setMaxListeners } from 'node:events';
-import { getAllTools } from './tools/index.js';
+import { getAllTools, type ToolRegistry } from './tools/index.js';
 import { generateSystemPrompt } from './system-prompt.js';
 import { subAgentTool, type SubAgentUsage } from './sub-agent.js';
 import {
@@ -45,7 +45,7 @@ export interface ToolCallEvent {
 }
 
 export interface AgentEvent {
-  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done' | 'sub_agent_iteration';
+  type: 'text_delta' | 'tool_call' | 'tool_result' | 'usage' | 'error' | 'done' | 'iteration_done' | 'sub_agent_iteration' | 'interject' | 'thinking_delta';
   content?: string;
   toolCall?: ToolCallEvent;
   /** Emitted while a sub-agent is executing — carries the child tool name and iteration status.
@@ -57,6 +57,10 @@ export interface AgentEvent {
   subAgentUsage?: SubAgentUsage;
   error?: string;
   transient?: boolean;
+  /** Emitted when an interject message is added to the conversation. */
+  interject?: { content: string };
+  /** Emitted when a thinking/reasoning token is received from the model. */
+  thinking?: { content: string };
 }
 
 export type AgentEventHandler = (event: AgentEvent) => void;
@@ -70,15 +74,21 @@ export interface AgenticLoopOptions {
   /** Called after each iteration to get any pending interject messages to splice in before the next LLM call. */
   getInterjects?: () => Message[];
   approvalManager?: any; // ApprovalManager for per-tab approval handling
+  toolRegistry?: ToolRegistry; // Per-tab tool registry (contains MCP tools)
+  /** Additional system prompt text to inject for this loop execution (used by workflows) */
+  systemPromptAddition?: string;
 }
 
 function emitAbortAndFinish(onEvent: AgentEventHandler): void {
   onEvent({ type: 'done' });
 }
 
-function getValidToolNames(): Set<string> {
+function getValidToolNames(toolRegistry?: ToolRegistry): Set<string> {
+  const tools = toolRegistry
+    ? [...toolRegistry.getAllTools(), subAgentTool]
+    : [...getAllTools(), subAgentTool];
   return new Set(
-    [...getAllTools(), subAgentTool]
+    tools
       .map((tool: any) => tool.function?.name)
       .filter((name: string | undefined): name is string => Boolean(name))
   );
@@ -110,6 +120,7 @@ export async function runAgenticLoop(
   const requestDefaults = options.requestDefaults || {};
   const getInterjects = options.getInterjects;
   const approvalManager = options.approvalManager;
+  const systemPromptAddition = options.systemPromptAddition;
 
   // The same AbortSignal is passed into every OpenAI SDK call and every
   // sleep across all loop iterations and sub-agent calls.
@@ -128,10 +139,15 @@ export async function runAgenticLoop(
   const updatedMessages: Message[] = [...messages];
 
   // Refresh system prompt to pick up any new skills or project changes
-  const newSystemPrompt = await generateSystemPrompt();
+  // Use per-tab toolRegistry if provided to include MCP tools in system prompt
+  const newSystemPrompt = await generateSystemPrompt(options.toolRegistry);
+  // Append any workflow-specific system prompt additions
+  const fullSystemPrompt = systemPromptAddition
+    ? `${newSystemPrompt}\n\n---\n${systemPromptAddition}`
+    : newSystemPrompt;
   const systemMsgIndex = updatedMessages.findIndex((m) => m.role === 'system');
   if (systemMsgIndex !== -1) {
-    updatedMessages[systemMsgIndex] = { role: 'system', content: newSystemPrompt } as Message;
+    updatedMessages[systemMsgIndex] = { role: 'system', content: fullSystemPrompt } as Message;
   }
 
   let iterationCount = 0;
@@ -143,7 +159,7 @@ export async function runAgenticLoop(
     retriggerCount: 0,
   };
   const MAX_RETRIGGERS = 3;
-  const validToolNames = getValidToolNames();
+  const validToolNames = getValidToolNames(options.toolRegistry);
 
   while (iterationCount < maxIterations) {
     // Check if abort was requested
@@ -154,6 +170,24 @@ export async function runAgenticLoop(
     }
 
     iterationCount++;
+
+    // Splice in any pending interject messages at the start of each iteration.
+    // This ensures interjects are processed immediately, even if the previous
+    // iteration was a text response rather than tool calls.
+    if (getInterjects) {
+      const interjects = getInterjects();
+      if (interjects.length > 0) {
+        updatedMessages.push(...interjects);
+        // Emit events so UI can show interjects as user messages
+        for (const interject of interjects) {
+          if (interject.role === 'user' && typeof interject.content === 'string') {
+            onEvent({ type: 'interject', interject: { content: interject.content } });
+          }
+        }
+        // Continue to next iteration so the LLM processes the interjects
+        continue;
+      }
+    }
 
     // Check for compaction when we have pricing info (includes context window).
     // Compaction preserves: (1) the system prompt at index 0, (2) any skill_content
@@ -182,7 +216,10 @@ export async function runAgenticLoop(
 
     try {
       // Build tools list: core tools + sub-agent tool + dynamic (MCP) tools
-      const allTools = [...getAllTools(), subAgentTool];
+      // Use per-tab toolRegistry if provided, otherwise fall back to global registry
+      const allTools = options.toolRegistry
+        ? [...options.toolRegistry.getAllTools(), subAgentTool]
+        : [...getAllTools(), subAgentTool];
 
       logger.info('Making API request', {
         model,
@@ -209,7 +246,7 @@ export async function runAgenticLoop(
       });
 
       // Process the streaming response
-      const streamResult = await processStream(stream, updatedMessages, model, pricing, onEvent);
+      const streamResult = await processStream(stream, updatedMessages, model, pricing, onEvent, abortSignal);
       assistantMessage = streamResult.assistantMessage;
 
       // Handle tool calls
@@ -260,6 +297,7 @@ export async function runAgenticLoop(
           client,
           model,
           pricing,
+          toolRegistry: options.toolRegistry,  // Pass per-tab tool registry
         };
 
         const executionResult = await executeToolCalls(
@@ -283,6 +321,12 @@ export async function runAgenticLoop(
           const interjects = getInterjects();
           if (interjects.length > 0) {
             updatedMessages.push(...interjects);
+            // Emit events so UI can show interjects as user messages
+            for (const interject of interjects) {
+              if (interject.role === 'user' && typeof interject.content === 'string') {
+                onEvent({ type: 'interject', interject: { content: interject.content } });
+              }
+            }
           }
         }
 

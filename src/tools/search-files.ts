@@ -79,8 +79,14 @@ export async function searchFiles(
   searchTerm: string,
   directoryPath = '.',
   caseSensitive = true,
-  fileExtensions?: string[]
+  fileExtensions?: string[],
+  abortSignal?: AbortSignal,
 ): Promise<string> {
+  // Check abort before starting
+  if (abortSignal?.aborted) {
+    return 'Error: Operation aborted by user.';
+  }
+
   const validated = await validatePath(directoryPath);
 
   // Security: Validate pattern to prevent ReDoS (Catastrophic Backtracking)
@@ -91,9 +97,9 @@ export async function searchFiles(
   }
 
   if (hasRipgrep) {
-    return searchWithRipgrep(searchTerm, validated, directoryPath, caseSensitive, fileExtensions);
+    return searchWithRipgrep(searchTerm, validated, directoryPath, caseSensitive, fileExtensions, abortSignal);
   }
-  return searchWithJs(searchTerm, validated, directoryPath, caseSensitive, fileExtensions);
+  return searchWithJs(searchTerm, validated, directoryPath, caseSensitive, fileExtensions, abortSignal);
 }
 
 // ─── Ripgrep implementation ───
@@ -104,6 +110,7 @@ async function searchWithRipgrep(
   directoryPath: string,
   caseSensitive: boolean,
   fileExtensions?: string[],
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const args: string[] = [
     '--line-number',
@@ -127,11 +134,18 @@ async function searchWithRipgrep(
 
   args.push('--regexp', searchTerm, validated);
 
+  // Check abort before executing ripgrep
+  if (abortSignal?.aborted) {
+    return 'Error: Operation aborted by user.';
+  }
+
   try {
     const output = execFileSync('rg', args, {
       encoding: 'utf8',
       maxBuffer: 10 * 1024 * 1024,
       timeout: 30_000,
+      // Note: execFileSync doesn't support AbortSignal directly
+      // but the timeout handles most cases
     });
 
     const lines = output.trim().split('\n').filter(Boolean);
@@ -184,7 +198,7 @@ async function searchWithRipgrep(
       return `Error: ripgrep error: ${msg}`;
     }
     // Fall back to JS search on any other error
-    return searchWithJs(searchTerm, validated, directoryPath, caseSensitive, fileExtensions);
+    return searchWithJs(searchTerm, validated, directoryPath, caseSensitive, fileExtensions, abortSignal);
   }
 }
 
@@ -196,6 +210,7 @@ async function searchWithJs(
   directoryPath: string,
   caseSensitive: boolean,
   fileExtensions?: string[],
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const flags = caseSensitive ? 'g' : 'gi';
   let regex: RegExp;
@@ -210,6 +225,11 @@ async function searchWithJs(
   const visitedInodes = new Set<string>();
 
   async function search(dir: string): Promise<void> {
+    // Check abort periodically during directory traversal
+    if (abortSignal?.aborted) {
+      return;
+    }
+
     if (results.length >= MAX_RESULTS) return;
 
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -253,10 +273,19 @@ async function searchWithJs(
       }
 
       try {
+        // Check abort before reading each file
+        if (abortSignal?.aborted) {
+          return;
+        }
+
         const content = await fs.readFile(fullPath, 'utf8');
         const stats = await stat(fullPath);
         const lines = content.split('\n');
         for (let i = 0; i < lines.length && results.length < MAX_RESULTS; i++) {
+          // Check abort periodically during line processing
+          if (i % 100 === 0 && abortSignal?.aborted) {
+            return;
+          }
           if (regex.test(lines[i])) {
             const relativePath = path.relative(validated, fullPath);
             let lineContent = lines[i].trim();

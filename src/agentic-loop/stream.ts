@@ -18,6 +18,8 @@ export interface StreamResult {
     role: 'assistant';
     content: string;
     tool_calls: any[];
+    /** Optional thinking/reasoning content from the model (for reasoning models). */
+    reasoning_content?: string;
   };
   hasToolCalls: boolean;
   usage: {
@@ -39,19 +41,26 @@ export async function processStream(
   messages: any[],
   model: string,
   pricing: ModelPricing | undefined,
-  onEvent: AgentEventHandler
+  onEvent: AgentEventHandler,
+  abortSignal?: AbortSignal
 ): Promise<StreamResult> {
   const assistantMessage = {
     role: 'assistant' as const,
     content: '',
     tool_calls: [] as any[],
+    reasoning_content: '',
   };
 
   let streamedContent = '';
   let hasToolCalls = false;
   let actualUsage: OpenAI.CompletionUsage | undefined;
+  let hasEmittedThinkingStart = false;
 
   for await (const chunk of stream) {
+    // Check abort between chunks to allow interruption during long streams
+    if (abortSignal?.aborted) {
+      throw new Error('Operation aborted');
+    }
     const delta = chunk.choices[0]?.delta;
 
     if (chunk.usage) {
@@ -65,6 +74,17 @@ export async function processStream(
       if (!hasToolCalls) {
         onEvent({ type: 'text_delta', content: delta.content });
       }
+    }
+
+    // Handle thinking/reasoning content (from reasoning models like Claude 3.7 Sonnet with thinking enabled)
+    // The API may return thinking content in delta.reasoning_content or delta.thinking fields
+    const thinkingContent = (delta as any)?.reasoning_content ?? (delta as any)?.thinking;
+    if (thinkingContent) {
+      if (!hasEmittedThinkingStart) {
+        hasEmittedThinkingStart = true;
+      }
+      assistantMessage.reasoning_content = (assistantMessage.reasoning_content || '') + thinkingContent;
+      onEvent({ type: 'thinking_delta', thinking: { content: thinkingContent } });
     }
 
     // Accumulate tool calls across stream chunks

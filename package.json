@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@opentui/core": "/Users/thomasgauvin/work-in-progress/2026/opentui/packages/core",
+    "@opentui/core": "^0.1.97",
     "commander": "^14.0.1",
     "diff": "^8.0.4",
     "he": "^1.2.0",
@@ -64,6 +64,7 @@
     "@types/html-to-text": "^9.0.4",
     "@types/node": "^24.5.2",
     "@types/turndown": "^5.0.6",
+    "concurrently": "^9.1.2",
     "typescript": "^5.9.2"
   }
 }

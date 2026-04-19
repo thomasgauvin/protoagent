@@ -12,7 +12,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getAllTools } from './tools/index.js';
+import { getAllTools, type ToolRegistry } from './tools/index.js';
 import { buildSkillsCatalogSection, initializeSkillsSupport } from './skills.js';
 import { getActiveRuntimeConfigPath } from './runtime-config.js';
 
@@ -85,8 +85,9 @@ async function buildDirectoryTree(dirPath = '.', depth = 0, maxDepth = 3): Promi
 }
 
 /** Auto-generate tool descriptions from their JSON schemas. */
-function generateToolDescriptions(): string {
-  return getAllTools()
+function generateToolDescriptions(toolRegistry?: ToolRegistry): string {
+  const tools = toolRegistry ? toolRegistry.getAllTools() : getAllTools();
+  return tools
     .map((tool, i) => {
       const fn = tool.function;
       const params = fn.parameters as { required?: string[]; properties?: Record<string, any> };
@@ -95,18 +96,19 @@ function generateToolDescriptions(): string {
       const paramList = props
         .map((p) => `${p}${required.includes(p) ? ' (required)' : ' (optional)'}`)
         .join(', ');
-      return `${i + 1}. ${fn.name} — ${fn.description}\n   Parameters: ${paramList || 'none'}`;
+      const desc = typeof fn.description === 'string' ? fn.description : JSON.stringify(fn.description);
+      return `${i + 1}. ${fn.name} — ${desc}\n   Parameters: ${paramList || 'none'}`;
     })
     .join('\n\n');
 }
 
 /** Generate the complete system prompt. */
-export async function generateSystemPrompt(): Promise<string> {
+export async function generateSystemPrompt(toolRegistry?: ToolRegistry): Promise<string> {
   const cwd = process.cwd();
   const projectName = path.basename(cwd);
   const tree = await buildDirectoryTree();
   const skills = await initializeSkillsSupport();
-  const toolDescriptions = generateToolDescriptions();
+  const toolDescriptions = generateToolDescriptions(toolRegistry);
   const skillsSection = buildSkillsCatalogSection(skills);
   const configPath = getActiveRuntimeConfigPath();
   const agentsMd = await loadAgentsMd();

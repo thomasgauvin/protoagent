@@ -20,6 +20,7 @@ import { searchFiles } from './search-files.js';
 import { runBash } from './bash.js';
 import { readTodos, writeTodos } from './todo.js';
 import { webfetch } from './webfetch.js';
+import { readImageForTool } from './read-image.js';
 
 export interface ToolCallContext {
   sessionId?: string;
@@ -123,12 +124,15 @@ export const BUILTIN_TOOLS = [
     type: 'function' as const,
     function: {
       name: 'bash',
-      description: 'Execute a bash command.',
+      description:
+        'Execute a shell command. Safe commands (ls, grep, git status, etc.) run automatically. ' +
+        'Other commands require user approval. Some dangerous commands are blocked entirely. ' +
+        'Default timeout is 60s. Pass timeout_ms for commands that may take longer (e.g. npm install, builds, tests).',
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'The command to execute.' },
-          timeout_ms: { type: 'number', description: 'Timeout in milliseconds.' },
+          command: { type: 'string', description: 'The shell command to execute.' },
+          timeout_ms: { type: 'number', description: 'Timeout in milliseconds. Defaults to 60000 (60s).' },
         },
         required: ['command'],
       },
@@ -173,6 +177,21 @@ export const BUILTIN_TOOLS = [
           timeout: { type: 'number', description: 'Timeout in seconds.' },
         },
         required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'read_image',
+      description: 'Read an image file and return it as base64-encoded data for use with vision models. Supports PNG, JPEG, WEBP, and GIF formats.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: 'Path to the image file (relative to working directory).' },
+          detail: { type: 'string', enum: ['low', 'high', 'auto'], description: 'Detail level for the image. "low" is faster and cheaper, "high" provides more detail, "auto" lets the model decide. Defaults to "auto".' },
+        },
+        required: ['file_path'],
       },
     },
   },
@@ -258,6 +277,8 @@ export class ToolRegistry {
           const result = await webfetch(args.url, args.format, args.timeout);
           return JSON.stringify(result);
         }
+        case 'read_image':
+          return await readImageForTool(args.file_path, args.detail || 'auto');
         default: {
           // Check dynamic handlers (MCP tools, sub-agent tools)
           const handler = this.dynamicHandlers.get(toolName);

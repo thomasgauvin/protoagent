@@ -17,11 +17,17 @@ import { ToolRegistry } from '../tools/registry.js'
 import { McpManager } from '../mcp/manager.js'
 import { ApprovalManager } from '../utils/approval-manager.js'
 import { createApp, type AppOptions } from './App.js'
+import { clearMessageQueue } from '../message-queue.js'
+import { clearTodos } from '../tools/todo.js'
+import { logger } from '../utils/logger.js'
 
 export interface TabAppConfig {
   renderer: CliRenderer
   options: AppOptions
   container?: BoxRenderable
+  initialMessage?: string
+  title?: string
+  onQuitAll?: () => Promise<void>
 }
 
 /**
@@ -42,13 +48,24 @@ export class TabApp {
   private approvalManager: ApprovalManager
   private isActive: boolean = false
   private rootBox?: BoxRenderable
-  private title: string = 'New Chat'
+  private title: string = 'New Agent'
   private messageCount: number = 0
+  private abortController: AbortController | null = null
+  private isClosed: boolean = false
+  private cleanupCallbacks: Array<() => void> = []
 
-  constructor({ renderer, options, container }: TabAppConfig) {
+  private initialMessage?: string
+
+  constructor({ renderer, options, container, initialMessage, title }: TabAppConfig) {
     this.renderer = renderer
     this.options = options
     this.container = container
+    this.initialMessage = initialMessage
+
+    // Set initial title if provided (e.g., from saved session)
+    if (title) {
+      this.title = title
+    }
 
     // Create per-tab managers for isolation
     this.toolRegistry = new ToolRegistry()
@@ -84,11 +101,44 @@ export class TabApp {
     return this.messageCount % 100 === 0 && this.messageCount > 0
   }
 
+  private onScrollToBottomCb?: () => void
+  private onFocusInputCb?: () => void
+  private onDeactivateCb?: () => void
+  private ensureMainViewCb?: () => void
+
   /**
    * Set whether this tab is active (for input handling)
    */
   setActive(active: boolean): void {
+    const wasActive = this.isActive
     this.isActive = active
+    if (!active && wasActive) {
+      this.onDeactivateCb?.()
+    }
+  }
+
+  /**
+   * Scroll the message history to the bottom.
+   * Called immediately when switching to this tab to prevent visible scroll jump.
+   */
+  scrollToBottom(): void {
+    this.onScrollToBottomCb?.()
+  }
+
+  /**
+   * Focus the input bar.
+   * Called after a small delay to ensure the render has completed.
+   */
+  focusInput(): void {
+    this.onFocusInputCb?.()
+  }
+
+  /**
+   * Ensure the main conversation view is shown (not the welcome screen).
+   * Called when switching to a tab that was restored from a saved session.
+   */
+  ensureMainView(): void {
+    this.ensureMainViewCb?.()
   }
 
   /**
@@ -99,25 +149,161 @@ export class TabApp {
   }
 
   /**
+   * Check if this tab has been closed
+   */
+  getIsClosed(): boolean {
+    return this.isClosed
+  }
+
+  /**
+   * Register the abort controller from the agentic loop.
+   * Called by App.ts to allow cancellation when tab closes.
+   */
+  registerAbortController(abortController: AbortController): void {
+    this.abortController = abortController
+  }
+
+  /**
+   * Abort any running agentic loop without full cleanup.
+   * Used during graceful shutdown (/quit) to stop work while preserving tab state.
+   */
+  abort(): void {
+    if (this.abortController) {
+      logger.debug(`Aborting running agentic loop for tab`)
+      this.abortController.abort()
+      this.abortController = null
+    }
+  }
+
+  /**
+   * Register a cleanup callback to be called when the tab closes.
+   * Used by App.ts to register UI cleanup functions.
+   */
+  registerCleanupCallback(callback: () => void): void {
+    this.cleanupCallbacks.push(callback)
+  }
+
+  /**
    * Initialize the tab by running the app
    */
   async initialize(): Promise<void> {
+    const externalOnTitleUpdate = this.options.onTitleUpdate
+    const externalOnLoadingChange = this.options.onLoadingChange
+    const externalOnApprovalChange = this.options.onApprovalChange
+    const externalOnFork = this.options.onFork
+    const externalOnNewTab = this.options.onNewTab
+    const externalOnSaveAndExit = this.options.onSaveAndExit
+    const externalOnPinTab = this.options.onPinTab
+    const externalOnMcpReady = this.options.onMcpReady
     await createApp(this.renderer, {
       ...this.options,
       toolRegistry: this.toolRegistry,
       mcpManager: this.mcpManager,
       approvalManager: this.approvalManager,
       container: this.container,
+      initialMessage: this.initialMessage,
       isActiveTab: () => this.isActive,
-      onTitleUpdate: (title: string) => this.setTitle(title),
+      onTitleUpdate: (title: string) => {
+        this.setTitle(title)
+        if (externalOnTitleUpdate) externalOnTitleUpdate(title)
+      },
+      onLoadingChange: (loading: boolean) => {
+        if (externalOnLoadingChange) externalOnLoadingChange(loading)
+      },
+      onApprovalChange: (pending: boolean) => {
+        if (externalOnApprovalChange) externalOnApprovalChange(pending)
+      },
+      onMcpReady: () => {
+        if (externalOnMcpReady) externalOnMcpReady()
+      },
+      onFork: externalOnFork,
+      onNewTab: externalOnNewTab,
+      onSaveAndExit: externalOnSaveAndExit,
+      onPinTab: externalOnPinTab,
+      registerScrollToBottom: (scrollToBottom: () => void) => {
+        this.onScrollToBottomCb = scrollToBottom
+      },
+      registerFocusInput: (focusInput: () => void) => {
+        this.onFocusInputCb = focusInput
+      },
+      registerAbortController: (abortController: AbortController) => {
+        this.registerAbortController(abortController)
+      },
+      registerCleanupCallback: (callback: () => void) => {
+        this.registerCleanupCallback(callback)
+      },
+      registerEnsureMainView: (ensureMainView: () => void) => {
+        this.ensureMainViewCb = ensureMainView
+      },
     })
   }
 
   /**
-   * Close the tab and cleanup resources
+   * Close the tab and cleanup all resources.
+   * This method ensures all processes, memory, and resources are freed.
    */
   async close(): Promise<void> {
+    if (this.isClosed) {
+      logger.debug(`Tab already closed, skipping cleanup`)
+      return
+    }
+
+    this.isClosed = true
+    logger.debug(`Closing tab and cleaning up resources`)
+
+    // 1. Abort any running agentic loop (stops LLM requests and sub-agents)
+    if (this.abortController) {
+      logger.debug(`Aborting running agentic loop`)
+      this.abortController.abort()
+      this.abortController = null
+    }
+
+    // 2. Clear session-scoped message queue to free memory
+    const sessionId = this.options.sessionId
+    if (sessionId) {
+      logger.debug(`Clearing message queue for session ${sessionId}`)
+      clearMessageQueue(sessionId)
+    }
+
+    // 3. Clear session-scoped todos to free memory
+    if (sessionId) {
+      logger.debug(`Clearing todos for session ${sessionId}`)
+      clearTodos(sessionId)
+    }
+
+    // 4. Close MCP connections (kills spawned processes)
+    logger.debug(`Closing MCP connections`)
     await this.mcpManager.close()
+
+    // 5. Clear the tool registry (removes tool handlers)
+    logger.debug(`Clearing tool registry`)
+    this.toolRegistry.clearDynamicTools()
+
+    // 6. Run registered cleanup callbacks (UI cleanup)
+    logger.debug(`Running ${this.cleanupCallbacks.length} cleanup callbacks`)
+    for (const callback of this.cleanupCallbacks) {
+      try {
+        callback()
+      } catch (err: any) {
+        logger.warn(`Cleanup callback failed: ${err.message}`)
+      }
+    }
+    this.cleanupCallbacks = []
+
+    // 7. Remove container from parent if it exists (frees UI memory)
+    if (this.container) {
+      logger.debug(`Removing container from parent`)
+      // Container is removed from parent by TabManager, but we clear references here
+      this.container = undefined
+    }
+
+    // 8. Clear references to help GC
+    this.onScrollToBottomCb = undefined
+    this.onFocusInputCb = undefined
+    this.initialMessage = undefined
+    this.options = {} as AppOptions  // Clear options reference
+
+    logger.debug(`Tab cleanup complete`)
   }
 
   /**
@@ -125,6 +311,13 @@ export class TabApp {
    */
   getToolRegistry(): ToolRegistry {
     return this.toolRegistry
+  }
+
+  /**
+   * Get the session ID for this tab
+   */
+  getSessionId(): string | undefined {
+    return this.options.sessionId
   }
 
   /**

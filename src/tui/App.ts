@@ -4,23 +4,45 @@
  * Creates and wires up:
  *  - Header / status bar
  *  - MessageHistory (left, scrollable)
- *  - TodoSidebar (right)
+ *  - Workflow views (Queue, Cron) - full screen, cycled via Tab
  *  - InputBar (bottom)
  *  - Approval prompt (overlay text when a tool needs approval)
  *
  * Layout:
- * ┌──────────────────────────────────────────────┐  header
- * │  Chat History         │  TODOs               │  } flex grow
- * ├───────────────────────┴──────────────────────┤
- * │ ⠙ Thinking…                                  │  status row
- * │ in:123 out:456  $0.0012                      │  usage row
- * │ ┌────────────────────────────────────────┐   │  input bar
- * │ │ > [type here]                          │   │
- * │ └────────────────────────────────────────┘   │
- * └──────────────────────────────────────────────┘
+ * Tab cycles through three views:
+ * ┌────────────────────────────────────────┐  BOT VIEW (chat)
+ * │  Chat History                          │
+ * ├────────────────────────────────────────┤
+ * │ ⠙ Thinking…                            │  status row
+ * │ ┌──────────────────────────────────┐   │  input bar
+ * │ │ > [type here]                    │   │
+ * │ └──────────────────────────────────┘   │
+ * └────────────────────────────────────────┘
+ *
+ * ┌────────────────────────────────────────┐  QUEUE VIEW
+ * │  Queue Workflow                        │
+ * │  ┌─┐ ┌─┐ ┌─┐                          │
+ * │  │A│→│B│→│C│                          │
+ * │  └─┘ └─┘ └─┘                          │
+ * │                                        │
+ * │  Queued Messages:                      │
+ * │  → Task 1                              │
+ * │  → Task 2                              │
+ * └────────────────────────────────────────┘
+ *
+ * ┌────────────────────────────────────────┐  CRON VIEW
+ * │  Cron Workflow                         │
+ * │  ┌──────┐                              │
+ * │  │ ⏰   │                              │
+ * │  └──┬───┘                              │
+ * │     ↓                                  │
+ * │  Next run: 30s                         │
+ * │  Prompt: "Check status"                │
+ * └────────────────────────────────────────┘
  */
 
 import { type CliRenderer, BoxRenderable, TextRenderable, t, fg, bold, StyledText, CliRenderEvents } from '@opentui/core'
+import { parseInputWithImages } from '../utils/image-utils.js'
 import { OpenAI } from 'openai'
 import { spawnSync } from 'node:child_process'
 import { readConfig, resolveApiKey, type Config } from '../config-core.js'
@@ -32,7 +54,8 @@ import {
   type Message,
   type AgentEvent,
 } from '../agentic-loop.js'
-import { setDangerouslySkipPermissions, setApprovalHandler } from '../tools/index.js'
+import { setApprovalHandler } from '../tools/index.js'
+import { setDangerouslySkipPermissions } from '../utils/approval-state.js'
 import type { ApprovalRequest, ApprovalResponse } from '../utils/approval.js'
 import { setLogLevel, LogLevel, initLogFile, logger } from '../utils/logger.js'
 import {
@@ -41,16 +64,16 @@ import {
   saveSession,
   loadSession,
   generateTitle,
+  generateTitleWithLLM,
+  listSessions,
+  countSessions,
+  searchSessions,
   type Session,
 } from '../sessions.js'
 import {
   clearTodos,
   getTodosForSession,
   setTodosForSession,
-  addTodo,
-  deleteTodo,
-  updateTodo,
-  type TodoItem,
 } from '../tools/todo.js'
 import { initializeMcp, closeMcp, reconnectAllMcp, getMcpConnectionStatus } from '../mcp.js'
 import { generateSystemPrompt } from '../system-prompt.js'
@@ -72,19 +95,35 @@ import { McpManager } from '../mcp/manager.js'
 import { ApprovalManager } from '../utils/approval-manager.js'
 
 import { MessageHistory } from './MessageHistory.js'
-import { TodoSidebar } from './TodoSidebar.js'
 import { InputBar, type SubmitMode } from './InputBar.js'
-import { StatusBar } from './StatusBar.js'
+import { StatusBar, type McpServerStatus } from './StatusBar.js'
 import { WelcomeScreen } from './WelcomeScreen.js'
+import {
+  WorkflowManager,
+  LoopWorkflow,
+  CronWorkflow,
+  type WorkflowType,
+  type WorkflowState,
+  getNextWorkflowType,
+  WORKFLOW_METADATA,
+  formatDuration,
+  getCompactDiagram,
+} from '../workflow/index.js'
 
 // ─── Slash commands ───
 const SLASH_COMMANDS = [
   { name: '/help', description: 'Show all available commands' },
+  { name: '/new', description: 'Create a new tab' },
+  { name: '/session', description: 'List, search, and open previous sessions' },
   { name: '/pop', description: 'Pop next queued message' },
   { name: '/clear', description: 'Clear the queue' },
   { name: '/q', description: 'Queue a message to run after current task' },
   { name: '/rename', description: 'Rename the current tab' },
+  { name: '/fork', description: 'Fork this chat into a new tab with the same history' },
   { name: '/reconnect', description: 'Reconnect all MCP servers' },
+  { name: '/workflow', description: 'Switch workflow type (queue|cron)' },
+  { name: '/pin', description: 'Pin the current tab to keep it at the top' },
+  { name: '/unpin', description: 'Unpin the current tab' },
   { name: '/quit', description: 'Exit ProtoAgent' },
   { name: '/exit', description: 'Alias for /quit' },
 ]
@@ -93,13 +132,31 @@ const HELP_TEXT = [
   'Commands:',
   ...SLASH_COMMANDS.map((cmd) => `  ${cmd.name} — ${cmd.description}`),
   '',
-  'Message prefixes:',
-  '  !message   Queue (process after current)',
-  '  !!message  Interject (add to next LLM iteration)',
+  'Session management:',
+  '  /session                    List saved sessions (first 10)',
+  '  /session list --page <n>    List page n of sessions',
+  '  /session open <id>          Open a session in a new tab',
+  '  /session search <query>     Search sessions by title or message content',
+  '',
+  'Tab management:',
+  '  /pin                        Pin the current tab to keep it at the top',
+  '  /unpin                      Unpin the current tab',
+  '',
+  'Message suffix:',
+  '  message /q    Queue this message (runs after current completes)',
+  '  message /new  Send this message in a new agent (new tab)',
   '',
   'Keyboard shortcuts:',
-  '  Esc        Abort running agent task',
-  '  Ctrl+C     Exit',
+  '  Enter           Send message',
+  '  Tab             Cycle views: Bot → Queue → Cron → Bot',
+  '  Esc             Abort running agent task / Stop workflow',
+  '  Ctrl+C          Save tabs and exit',
+  '  Ctrl+L          Toggle light/dark theme',
+  '',
+  'Approval prompt shortcuts:',
+  '  y               Approve once',
+  '  s               Approve for entire session',
+  '  n               Reject',
 ].join('\n')
 
 export interface AppOptions {
@@ -112,10 +169,38 @@ export interface AppOptions {
   approvalManager?: ApprovalManager
   // Optional container for multi-tab mode (if omitted, uses renderer.root)
   container?: BoxRenderable
+  // Optional initial message to send when the tab starts (for /new suffix)
+  initialMessage?: string
   // Optional callback to check if this tab is active (for multi-tab input handling)
   isActiveTab?: () => boolean
   // Optional callback to update tab title
   onTitleUpdate?: (title: string) => void
+  // Optional callback fired when loading state changes (for tab spinner in sidebar)
+  onLoadingChange?: (loading: boolean) => void
+  // Optional callback fired when approval state changes (for tab indicator)
+  onApprovalChange?: (approvalPending: boolean) => void
+  // Optional callback to update session info in sidebar
+  onSessionInfo?: (provider: string, model: string, sessionId: string) => void
+  // Optional callback to fork current session into a new tab
+  onFork?: (sessionId: string, title?: string) => Promise<void>
+  // Optional callback to create a new empty tab (optionally with initial message)
+  onNewTab?: (initialMessage?: string) => Promise<void>
+  // Optional callback to save all tabs and exit (for /quit command)
+  onSaveAndExit?: () => Promise<void>
+  // Registration hook: called with a fn that scrolls to bottom; TabApp stores it and calls when tab becomes visible
+  registerScrollToBottom?: (fn: () => void) => void
+  // Registration hook: called with a fn that focuses input; TabApp stores it and calls when tab becomes active
+  registerFocusInput?: (fn: () => void) => void
+  // Registration hook: called with the abort controller when agentic loop starts; allows TabApp to cancel on tab close
+  registerAbortController?: (abortController: AbortController) => void
+  // Registration hook: called with cleanup callback for UI resources; called when tab closes
+  registerCleanupCallback?: (callback: () => void) => void
+  // Optional callback for pinning/unpinning the current tab
+  onPinTab?: (pin: boolean) => void
+  // Optional callback fired when MCP servers are initialized/updated
+  onMcpReady?: () => void
+  // Registration hook: called with a fn that ensures main view is shown; TabApp stores it and calls when tab becomes visible (for restored tabs)
+  registerEnsureMainView?: (fn: () => void) => void
 }
 
 // ─── Build OpenAI client ───
@@ -152,12 +237,11 @@ function buildClient(config: Config): OpenAI {
   return new OpenAI(clientOptions)
 }
 
-const GREEN = '#09A469'
-const DIM = '#666666'
-const RED = '#f7768e'
-const YELLOW = '#e0af68'
+import { COLORS, DARK_COLORS, LIGHT_COLORS, getThemeMode } from './theme.js'
 
 export async function createApp(renderer: CliRenderer, options: AppOptions): Promise<void> {
+  logger.debug(`createApp started, sessionId=${options.sessionId || 'none'}`)
+  
   // ─── Per-tab managers (inject or use defaults) ───
   // These allow each tab to have isolated tool registries, MCP connections, and approval handling
   const toolRegistry = options.toolRegistry ?? new ToolRegistry()
@@ -176,6 +260,7 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   let isLoading = false
   let isStreaming = false
   let streamingText = ''
+  let streamingThinking = ''
   let activeTool: string | null = null
   let totalCost = 0
   let lastUsage: AgentEvent['usage'] | null = null
@@ -190,9 +275,18 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   let assistantWithToolsMsg: any = null
   // Track if streaming text has been flushed into messages (to prevent double-adding on done event)
   let streamingTextFlushed = false
+  // Track if we should trim leading whitespace from the next text chunk
+  // (first chunk after user message, tool call, or new response start)
+  let shouldTrimNextChunk = false
+  // Save input buffer content when approval hijacks the input
+  let savedInputBuffer = ''
+  // Workflow management
+  let workflowManager: WorkflowManager | null = null
 
   // ─── Root layout ───
-  renderer.setBackgroundColor('#000000')
+  // Use theme-aware background color
+  const bgColor = getThemeMode() === 'dark' ? DARK_COLORS.bg : LIGHT_COLORS.bg
+  renderer.setBackgroundColor(bgColor)
 
   const rootBox = new BoxRenderable(renderer, {
     id: 'root',
@@ -200,7 +294,7 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     flexGrow: 1,
     maxHeight: '100%',
     maxWidth: '100%',
-    backgroundColor: '#000000',
+    backgroundColor: bgColor,
   })
   rootContainer.add(rootBox)
 
@@ -209,7 +303,7 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     // First message — transition to main view then submit
     transitionToMainView()
     handleSubmit(value, 'send')
-  })
+  }, { commands: SLASH_COMMANDS })
   rootBox.add(welcomeScreen.root)
 
   // ─── Main view (hidden until first message) ───
@@ -224,99 +318,353 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   // ─── Status bar ───
   const statusBar = new StatusBar(renderer)
 
-  // ─── Main content area (left panel + sidebar side by side, full height) ───
-  const contentRow = new BoxRenderable(renderer, {
-    id: 'content-row',
-    flexDirection: 'row',
-    flexGrow: 1,
-    overflow: 'hidden',
-  })
-  mainView.add(contentRow)
+  // Helper: set loading on statusBar AND notify the tab sidebar spinner
+  function setLoading(loading: boolean, activeTool: string | null = null): void {
+    statusBar.setLoading(loading, activeTool)
+    options.onLoadingChange?.(loading)
+  }
 
-  // ─── Left panel: chat + status + input (column, fills remaining width) ───
-  const leftPanel = new BoxRenderable(renderer, {
-    id: 'left-panel',
+  // ─── View state management ───
+  type ViewType = 'bot' | 'queue' | 'cron'
+  let currentView: ViewType = 'bot'
+  const viewContainers: Map<ViewType, BoxRenderable> = new Map()
+
+  // ─── BOT VIEW: Chat interface ───
+  const botView = new BoxRenderable(renderer, {
+    id: 'bot-view',
     flexDirection: 'column',
     flexGrow: 1,
     overflow: 'hidden',
   })
-  contentRow.add(leftPanel)
+  viewContainers.set('bot', botView)
 
-  // ─── MessageHistory (fills left panel vertically) ───
-  const msgHistory = new MessageHistory({ renderer })
-  leftPanel.add(msgHistory.root)
+  // ─── QUEUE VIEW: Workflow visualization ───
+  const queueView = new BoxRenderable(renderer, {
+    id: 'queue-view',
+    flexDirection: 'column',
+    flexGrow: 1,
+    overflow: 'hidden',
+    display: 'none', // Hidden by default
+  })
+  viewContainers.set('queue', queueView)
 
-  // Clicking anywhere in the left panel refocuses the input
-  leftPanel.onMouseDown = () => {
-    inputBar.focus()
-  }
+  // ─── CRON VIEW: Cron workflow visualization ───
+  const cronView = new BoxRenderable(renderer, {
+    id: 'cron-view',
+    flexDirection: 'column',
+    flexGrow: 1,
+    overflow: 'hidden',
+    display: 'none', // Hidden by default
+  })
+  viewContainers.set('cron', cronView)
 
-  // ─── Bottom status + input bar (inside leftPanel, so sidebar spans full height) ───
-  leftPanel.add(statusBar.statusRoot)
+  // Add all views to mainView (only one visible at a time)
+  mainView.add(botView)
+  mainView.add(queueView)
+  mainView.add(cronView)
+
+  // ─── MessageHistory (fills bot view vertically) ───
+  const msgHistory = new MessageHistory({
+    renderer,
+    onMouseDown: () => inputBar.focus(),
+  })
+  botView.add(msgHistory.root)
+
+  // Register scroll-to-bottom and input focus for tab activation (called by TabApp when switching back to this tab)
+  // scrollToBottom is called immediately to prevent visible scroll jump
+  options.registerScrollToBottom?.(() => msgHistory.scrollToBottom())
+  // focusInput is deferred to ensure render has completed before focusing
+  options.registerFocusInput?.(() => inputBar.focus())
+  // Register ensureMainView callback so TabApp can ensure the main view is shown when tab becomes visible
+  // Only transition if there are actual messages to show (not for brand new tabs)
+  options.registerEnsureMainView?.(() => {
+    // Only transition to main view if we're in welcome view AND there are messages to display
+    // completionMessages always has at least the system prompt, so check for > 1
+    if (inWelcomeView && completionMessages.length > 1) {
+      transitionToMainView()
+    }
+  })
+
+  // ─── Status row (spinner/activity) ───
+  botView.add(statusBar.statusRoot)
 
   // Clicking the status rows also refocuses input
   statusBar.statusRoot.onMouseDown = () => { inputBar.focus() }
 
-  // ─── Approval prompt overlay text ───
+  // ─── View switching function ───
+  function switchView(view: ViewType): void {
+    if (view === currentView) return
+
+    // Hide all views
+    for (const [type, container] of viewContainers) {
+      container.style = { ...container.style, display: type === view ? 'flex' : 'none' }
+    }
+
+    currentView = view
+
+    // Update status bar with current view
+    statusBar.setViewIndicator(view)
+
+    // Refresh view content
+    if (view === 'queue') {
+      updateQueueView()
+    } else if (view === 'cron') {
+      updateCronView()
+    }
+
+    renderer.requestRender()
+    logger.debug(`Switched to view: ${view}`)
+  }
+
+  // ─── Build Queue View Content ───
+  const queueViewHeader = new TextRenderable(renderer, {
+    id: 'queue-view-header',
+    content: t`${bold('Queue Workflow')}`,
+  })
+  const queueHeaderBox = new BoxRenderable(renderer, {
+    id: 'queue-header-box',
+    paddingTop: 1,
+    paddingLeft: 2,
+    paddingBottom: 1,
+    flexShrink: 0,
+  })
+  queueHeaderBox.add(queueViewHeader)
+  queueView.add(queueHeaderBox)
+
+  const queueDiagramText = new TextRenderable(renderer, {
+    id: 'queue-diagram-text',
+    content: t``, // Will be set by updateQueueView
+  })
+  const queueDiagramBox = new BoxRenderable(renderer, {
+    id: 'queue-diagram-box',
+    paddingLeft: 2,
+    paddingBottom: 2,
+    flexShrink: 0,
+  })
+  queueDiagramBox.add(queueDiagramText)
+  queueView.add(queueDiagramBox)
+
+  const queueListHeader = new TextRenderable(renderer, {
+    id: 'queue-list-header',
+    content: t`${bold('Queued Messages:')}`,
+  })
+  const queueListHeaderBox = new BoxRenderable(renderer, {
+    id: 'queue-list-header-box',
+    paddingLeft: 2,
+    paddingBottom: 1,
+    flexShrink: 0,
+  })
+  queueListHeaderBox.add(queueListHeader)
+  queueView.add(queueListHeaderBox)
+
+  const queueListContent = new TextRenderable(renderer, {
+    id: 'queue-list-content',
+    content: t``, // Will be set by updateQueueView
+  })
+  const queueListBox = new BoxRenderable(renderer, {
+    id: 'queue-list-box',
+    paddingLeft: 2,
+    flexGrow: 1,
+  })
+  queueListBox.add(queueListContent)
+  queueView.add(queueListBox)
+
+  // ─── Build Cron View Content ───
+  const cronViewHeader = new TextRenderable(renderer, {
+    id: 'cron-view-header',
+    content: t`${bold('Cron Workflow')}`,
+  })
+  const cronHeaderBox = new BoxRenderable(renderer, {
+    id: 'cron-header-box',
+    paddingTop: 1,
+    paddingLeft: 2,
+    paddingBottom: 1,
+    flexShrink: 0,
+  })
+  cronHeaderBox.add(cronViewHeader)
+  cronView.add(cronHeaderBox)
+
+  const cronDiagramText = new TextRenderable(renderer, {
+    id: 'cron-diagram-text',
+    content: t``, // Will be set by updateCronView
+  })
+  const cronDiagramBox = new BoxRenderable(renderer, {
+    id: 'cron-diagram-box',
+    paddingLeft: 2,
+    paddingBottom: 2,
+    flexShrink: 0,
+  })
+  cronDiagramBox.add(cronDiagramText)
+  cronView.add(cronDiagramBox)
+
+  const cronInfoText = new TextRenderable(renderer, {
+    id: 'cron-info-text',
+    content: t``, // Will be set by updateCronView
+  })
+  const cronInfoBox = new BoxRenderable(renderer, {
+    id: 'cron-info-box',
+    paddingLeft: 2,
+    flexGrow: 1,
+  })
+  cronInfoBox.add(cronInfoText)
+  cronView.add(cronInfoBox)
+
+  // ─── Update Queue View ───
+  function updateQueueView(): void {
+    const diagram = getCompactDiagram('queue')
+    queueDiagramText.content = t`${diagram.lines.join('\n')}`
+
+    const allQueued = session?.id ? getQueueForSession(session.id) : []
+    const queued = allQueued.filter(m => m.type === 'queued')
+
+    if (queued.length === 0 && pendingInterjects.length === 0) {
+      queueListContent.content = t`${fg(COLORS.dim)('No queued messages')}`
+    } else {
+      const lines: string[] = []
+
+      // Show interjects first
+      for (const msg of pendingInterjects) {
+        const contentText = typeof msg.content === 'string' ? msg.content : '[complex content]'
+        const label = contentText.length > 50 ? contentText.slice(0, 47) + '...' : contentText
+        lines.push(`${fg(COLORS.red)('!!')} ${fg(COLORS.yellow)(label)}`)
+      }
+
+      // Then queued messages
+      for (const msg of queued) {
+        const contentText = typeof msg.content === 'string' ? msg.content : '[complex content]'
+        const label = contentText.length > 50 ? contentText.slice(0, 47) + '...' : contentText
+        lines.push(`${fg(COLORS.blue)('→')} ${label}`)
+      }
+
+      queueListContent.content = t`${lines.join('\n')}`
+    }
+  }
+
+  // ─── Update Cron View ───
+  function updateCronView(): void {
+    const diagram = getCompactDiagram('cron')
+    cronDiagramText.content = t`${diagram.lines.join('\n')}`
+
+    if (!workflowManager) {
+      cronInfoText.content = t`${fg(COLORS.dim)('Cron workflow not initialized')}`
+      return
+    }
+
+    const cronState = workflowManager.getCronState()
+    if (!cronState || !cronState.isConfigured) {
+      cronInfoText.content = t`${fg(COLORS.dim)('No cron schedule configured')}\n\nUse the set_cron_schedule tool to configure.'`
+      return
+    }
+
+    const lines: string[] = []
+    lines.push(`${fg(COLORS.primary)('Schedule:')} ${cronState.schedule}`)
+
+    const promptStr = cronState.prompt || 'Not set'
+    const truncatedPrompt = promptStr.length > 60 ? promptStr.slice(0, 57) + '...' : promptStr
+    lines.push(`${fg(COLORS.primary)('Prompt:')} ${truncatedPrompt}`)
+
+    if (cronState.timeUntilNextMs !== undefined && cronState.timeUntilNextMs > 0) {
+      lines.push(`\n${fg(COLORS.yellow)('Next run:')} ${formatDuration(cronState.timeUntilNextMs)}`)
+    } else if (cronState.timeUntilNextMs !== undefined && cronState.timeUntilNextMs <= 0) {
+      lines.push(`\n${fg(COLORS.green)('Next run: Ready!')}`)
+    }
+
+    if (cronState.lastRunAt) {
+      const lastRun = new Date(cronState.lastRunAt)
+      lines.push(`${fg(COLORS.dim)(`Last run: ${lastRun.toLocaleTimeString()}`)}`)
+    }
+
+    cronInfoText.content = t`${lines.join('\n')}`
+  }
+
+  // Clicking anywhere in the bot view refocuses the input
+  botView.onMouseDown = () => {
+    inputBar.focus()
+  }
+
+  // ─── Input bar ───
+  const inputBar = new InputBar(renderer, handleSubmit, SLASH_COMMANDS)
+  botView.add(inputBar.root)
+
+  // ─── Approval prompt (replaces input bar when active) ───
   const approvalRoot = new BoxRenderable(renderer, {
     id: 'approval-root',
     flexDirection: 'column',
     flexShrink: 0,
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 1,
+    paddingBottom: 1,
     marginLeft: 2,
     marginRight: 2,
+    marginBottom: 1,
     border: true,
-    borderColor: GREEN,
+    borderColor: COLORS.primary,
     borderStyle: 'single',
   })
   const approvalText = new TextRenderable(renderer, {
     id: 'approval-text',
     content: t``,
+    marginBottom: 1,
   })
   approvalRoot.add(approvalText)
 
-  // ─── Input bar ───
-  const inputBar = new InputBar(renderer, handleSubmit)
-  leftPanel.add(inputBar.root)
-
-  // ─── Model info row (below input bar) ───
-  const modelInfoRow = new BoxRenderable(renderer, {
-    id: 'model-info-row',
+  // Three approval buttons in a row
+  const approvalButtonRow = new BoxRenderable(renderer, {
+    id: 'approval-button-row',
     flexDirection: 'row',
-    flexShrink: 0,
-    paddingLeft: 2,
-    paddingRight: 2,
+    gap: 2,
   })
-  const modelInfoText = new TextRenderable(renderer, {
-    id: 'model-info-text',
-    content: t`${fg(DIM)('…')}`,
-  })
-  modelInfoRow.add(modelInfoText)
-  leftPanel.add(modelInfoRow)
 
-  // ─── TodoSidebar (right, full terminal height) ───
-  const todoSidebar = new TodoSidebar(renderer, {
-    onAdd: (content) => {
-      addTodo(content, 'medium', session?.id)
-      todoSidebar.setTodos(getTodosForSession(session?.id))
-      if (session) session.todos = getTodosForSession(session.id)
-    },
-    onDelete: (id) => {
-      deleteTodo(id, session?.id)
-      todoSidebar.setTodos(getTodosForSession(session?.id))
-      if (session) session.todos = getTodosForSession(session.id)
-    },
-    onUpdate: (id, updates) => {
-      updateTodo(id, updates, session?.id)
-      todoSidebar.setTodos(getTodosForSession(session?.id))
-      if (session) session.todos = getTodosForSession(session.id)
-    },
-  })
-  contentRow.add(todoSidebar.root)
+  type ApprovalChoice = 'approve_once' | 'approve_session' | 'reject'
+  let approvalSelectedIndex = 0
+  const approvalChoices: { label: string; value: ApprovalChoice; color: string }[] = [
+    { label: 'Approve once', value: 'approve_once', color: COLORS.primary },
+    { label: 'Approve for session', value: 'approve_session', color: COLORS.yellow },
+    { label: 'Reject', value: 'reject', color: COLORS.red },
+  ]
+  const approvalButtons: TextRenderable[] = []
 
-  // ─── Transition: welcome → main ───
+  function renderApprovalButtons(): void {
+    approvalChoices.forEach((choice, i) => {
+      const isSelected = i === approvalSelectedIndex
+      const btn = approvalButtons[i]
+      if (!btn) return
+      btn.content = isSelected
+        ? t`${bold(fg(choice.color)(`[ ${choice.label} ]`))}`
+        : t`${fg(COLORS.dim)(`  ${choice.label}  `)}`
+    })
+    renderer.requestRender()
+  }
+
+  approvalChoices.forEach((choice, i) => {
+    const btn = new TextRenderable(renderer, {
+      id: `approval-btn-${i}`,
+      content: t``,
+      onMouseDown: () => {
+        if (pendingApproval) {
+          pendingApproval.resolve(choice.value)
+          hideApprovalPrompt()
+        }
+      },
+      onMouseMove: () => {
+        if (approvalSelectedIndex !== i) {
+          approvalSelectedIndex = i
+          renderApprovalButtons()
+        }
+      },
+    })
+    approvalButtons.push(btn)
+    approvalButtonRow.add(btn)
+  })
+  approvalRoot.add(approvalButtonRow)
+
+    // ─── Transition: welcome → main ───
   function transitionToMainView(): void {
+    logger.debug(`transitionToMainView called, inWelcomeView=${inWelcomeView}`)
     if (!inWelcomeView) return
     inWelcomeView = false
+    logger.debug(`Removing welcome screen, adding main view`)
     rootBox.remove(welcomeScreen.root.id)
     rootBox.add(mainView)
     inputBar.focus()
@@ -326,64 +674,243 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     // Update interject panel with full text
     const interjectMsgs = pendingInterjects.map(m => ({ id: m.id, content: m.content }))
     msgHistory.setInterjects(interjectMsgs)
+    // Update queue view if it's currently visible
+    if (currentView === 'queue') {
+      updateQueueView()
+    }
+  }
+
+  /**
+   * Persist session state to disk incrementally during a turn.
+   * Called after significant state changes (user messages, tool results, etc.)
+   * so that quitting mid-turn doesn't lose conversation progress.
+   */
+  async function persistSession(): Promise<void> {
+    if (session && client && config) {
+      session.completionMessages = completionMessages
+      session.todos = getTodosForSession(session.id)
+      session.queuedMessages = getQueueForSession(session.id)
+      session.interjectMessages = [...pendingInterjects]
+      session.workflowState = workflowManager?.getState()
+      session.totalCost = totalCost
+      try {
+        await saveSession(session)
+      } catch (err: any) {
+        logger.debug(`Failed to persist session: ${err.message}`)
+      }
+    }
+  }
+
+  /**
+   * Update the workflow display based on current view
+   */
+  function updateWorkflowDisplay(): void {
+    if (!workflowManager) return
+    const state = workflowManager.getState()
+
+    // Update the appropriate view
+    if (state.type === 'cron') {
+      updateCronView()
+    } else if (state.type === 'queue' || state.type === 'loop') {
+      updateQueueView()
+    }
+
+    // Update status bar indicator
+    statusBar.setWorkflowType(state.type, state.isActive)
+  }
+
+  // Cron timer check interval
+  let cronCheckInterval: NodeJS.Timeout | null = null
+
+  /**
+   * Check if cron should trigger and run if ready
+   * Only runs when tab is active (checked via options.isActiveTab)
+   */
+  function checkCronTrigger(): void {
+    if (!workflowManager || !client || !config) return
+    if (!options.isActiveTab || !options.isActiveTab()) return
+    if (isLoading) return // Don't trigger if already processing
+
+    const cronWorkflow = workflowManager.getCurrentWorkflow() as CronWorkflow
+    if (cronWorkflow.type !== 'cron') return
+
+    const shouldTrigger = cronWorkflow.shouldTrigger()
+    if (shouldTrigger) {
+      const prompt = cronWorkflow.trigger()
+      if (prompt) {
+        // Fire-and-forget: run the cron prompt
+        runAgenticTurn(prompt).catch((err) => {
+          logger.error(`Cron execution failed: ${err}`)
+        })
+      }
+    }
+
+    // Update the cron display with current countdown if cron view is active
+    if (currentView === 'cron') {
+      updateCronView()
+    }
+  }
+
+  /**
+   * Start the cron timer check
+   */
+  function startCronTimer(): void {
+    if (cronCheckInterval) return
+    // Check every second for cron triggers
+    cronCheckInterval = setInterval(checkCronTrigger, 1000)
+  }
+
+  /**
+   * Stop the cron timer check
+   */
+  function stopCronTimer(): void {
+    if (cronCheckInterval) {
+      clearInterval(cronCheckInterval)
+      cronCheckInterval = null
+    }
+  }
+
+  /**
+   * Cycle through views: Bot → Queue → Cron → Bot
+   */
+  function cycleViews(): void {
+    const views: ViewType[] = ['bot', 'queue', 'cron']
+    const currentIndex = views.indexOf(currentView)
+    const nextIndex = (currentIndex + 1) % views.length
+    const nextView = views[nextIndex]
+
+    // Also cycle the workflow type to match the view
+    if (workflowManager) {
+      const oldType = workflowManager.getCurrentType()
+      const newType = workflowManager.cycleWorkflow()
+
+      // Start/stop cron timer based on workflow type
+      if (newType === 'cron') {
+        startCronTimer()
+      } else if (oldType === 'cron') {
+        stopCronTimer()
+      }
+
+      // Update session
+      if (session) {
+        session.workflowState = workflowManager.getState()
+      }
+
+      logger.debug(`Switched workflow from ${oldType} to ${newType}, view to ${nextView}`)
+    }
+
+    // Switch to the next view
+    switchView(nextView)
+  }
+
+  /**
+   * Stop the current workflow (called on Escape key)
+   */
+  function stopWorkflow(): void {
+    if (!workflowManager) return
+
+    const wasActive = workflowManager.isActive()
+    workflowManager.stop()
+
+    if (wasActive) {
+      statusBar.setError(`Workflow stopped`)
+      updateWorkflowDisplay()
+
+      // Update session
+      if (session) {
+        session.workflowState = workflowManager.getState()
+      }
+    }
   }
 
   function showApprovalPrompt(req: ApprovalRequest): void {
-    const maxWidth = renderer.width - 36 - 10 // sidebar width + margins
     const truncate = (s: string, max: number) => s.length > max ? s.slice(0, max - 3) + '...' : s
-    
-    const sessionLabel = req.sessionScopeKey
-      ? 'Approve this operation for session'
-      : `Approve all "${req.type}" for session`
-    
-    const desc = truncate(req.description, maxWidth - 20)
-    const detail = req.detail ? truncate(req.detail, maxWidth - 20) : ''
-    
-    approvalText.content = t`${bold(fg(GREEN)('Approval Required'))}
-${desc}${detail ? `\n${detail}` : ''}
 
-${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel, 30)}   ${fg(RED)('[n]')} Reject`
-    
-    // Add approval to tree
-    leftPanel.add(approvalRoot)
-    
-    // Update status bar to show approval waiting
+    const desc = truncate(req.description, 80)
+    const detail = req.detail ? truncate(req.detail, 120) : ''
+
+    approvalText.content = t`${bold(fg(COLORS.primary)('Approval Required'))}
+${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
+
+    // Reset selection to first option
+    approvalSelectedIndex = 0
+    renderApprovalButtons()
+
+    // Save the current input buffer content before hiding the input bar
+    savedInputBuffer = inputBar.input.editBuffer.getText()
+
+    // Swap: hide input bar, show approval
+    botView.remove(inputBar.root.id)
+    inputBar.input.blur()
+    botView.add(approvalRoot)
+    renderer.requestRender()
+
     statusBar.setAwaitingApproval(true)
-     
-     // Approval prompts are displayed via the main renderer.keyInput handler
-   }
+    options.onApprovalChange?.(true)
+  }
 
   function hideApprovalPrompt(): void {
-    // Remove approval from tree
-    try { leftPanel.remove(approvalRoot.id) } catch {}
+    // Swap: hide approval, restore input bar
+    try { botView.remove(approvalRoot.id) } catch {}
+    botView.add(inputBar.root)
+    inputBar.focus()
+    // Restore the saved input buffer content
+    if (savedInputBuffer) {
+      inputBar.input.clear()
+      inputBar.input.insertText(savedInputBuffer)
+      savedInputBuffer = ''
+    }
     pendingApproval = null
-    
-    // Update status bar to clear approval waiting
     statusBar.setAwaitingApproval(false)
+    options.onApprovalChange?.(false)
+    renderer.requestRender()
   }
 
   // ─── Agent event handler ───
   function handleAgentEvent(event: AgentEvent): void {
+    // NOTE: We process events for ALL tabs, not just the active one.
+    // This ensures background tabs continue to show updates (messages, tool calls, etc.)
+    // when the user switches to another tab. The renderables are still valid even
+    // when not visible, so it's safe to update them.
+
     switch (event.type) {
       case 'text_delta': {
-        const delta = event.content || ''
+        let delta = event.content || ''
+        // Trim leading whitespace from the first chunk after user message/tool call
+        if (shouldTrimNextChunk) {
+          delta = delta.trimStart()
+          shouldTrimNextChunk = false
+        }
         streamingText += delta
         isStreaming = true
         streamingTextFlushed = false
-        msgHistory.setMessages(completionMessages, streamingText, isStreaming)
+        msgHistory.setMessages(completionMessages, streamingText, isStreaming, streamingThinking)
+        break
+      }
+      case 'thinking_delta': {
+        streamingThinking += event.thinking?.content || ''
+        isStreaming = true
+        streamingTextFlushed = false
+        msgHistory.setMessages(completionMessages, streamingText, isStreaming, streamingThinking)
         break
       }
       case 'tool_call': {
         if (event.toolCall) {
           activeTool = event.toolCall.name
-          statusBar.setLoading(true, activeTool)
+          setLoading(true, activeTool)
           if (isStreaming) {
-            // Flush streaming text into messages
+            // Flush streaming text and thinking content into messages
             const trimmed = streamingText.trim()
-            if (trimmed) {
-              completionMessages = [...completionMessages, { role: 'assistant', content: trimmed }]
+            const thinkingTrimmed = streamingThinking.trim()
+            if (trimmed || thinkingTrimmed) {
+              const assistantMsg: any = { role: 'assistant', content: trimmed }
+              if (thinkingTrimmed) {
+                assistantMsg.reasoning_content = thinkingTrimmed
+              }
+              completionMessages = [...completionMessages, assistantMsg]
             }
             streamingText = ''
+            streamingThinking = ''
             isStreaming = false
             streamingTextFlushed = true
           }
@@ -426,26 +953,43 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
           } as any
           completionMessages = [...completionMessages, toolResultMsg]
           msgHistory.setMessages(completionMessages, '', false)
-          
-          // Update sidebar when agent uses todo tools
+          // Next assistant response chunk should have leading whitespace trimmed
+          shouldTrimNextChunk = true
+
+          // Show full todo list in chat history when agent updates todos
           if (event.toolCall.name === 'todo_write' && session) {
-            todoSidebar.setTodos(getTodosForSession(session.id))
+            const todos = getTodosForSession(session.id)
+            msgHistory.showTodoList(todos)
           }
+
         }
         activeTool = null
-        statusBar.setLoading(true, null)
+        setLoading(true, null)
+        // Persist session after each tool result (incremental save)
+        persistSession()
+        break
+      }
+      case 'interject': {
+        if (event.interject) {
+          // Add interject as a user message to the chat history
+          completionMessages = [...completionMessages, { role: 'user', content: event.interject.content }]
+          msgHistory.setMessages(completionMessages, '', false)
+          // Update pending interjects UI
+          updateQueuedMessages()
+          // Persist session after interject (incremental save)
+          persistSession()
+        }
         break
       }
       case 'sub_agent_iteration': {
         if (event.subAgentTool) {
           const { tool, status } = event.subAgentTool
           activeTool = status === 'running' ? formatSubAgentActivity(tool, event.subAgentTool.args) : null
-          statusBar.setLoading(true, activeTool)
+          setLoading(true, activeTool)
         }
         if (event.subAgentUsage) {
           totalCost += event.subAgentUsage.estimatedCost
           statusBar.setUsage(lastUsage, totalCost)
-          todoSidebar.setUsage(lastUsage ?? null, totalCost)
         }
         break
       }
@@ -454,7 +998,6 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
           lastUsage = event.usage
           totalCost += event.usage.cost
           statusBar.setUsage(lastUsage, totalCost)
-          todoSidebar.setUsage(lastUsage, totalCost)
         }
         break
       }
@@ -464,18 +1007,35 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
       }
       case 'iteration_done': {
         assistantWithToolsMsg = null
+        // Trim leading whitespace from first chunk after all tool results are sent
+        shouldTrimNextChunk = true
         break
       }
       case 'done': {
-        if (isStreaming && streamingText.trim() && !streamingTextFlushed) {
-          completionMessages = [...completionMessages, { role: 'assistant', content: streamingText.trim() }]
-          msgHistory.setMessages(completionMessages, '', false)
+        if (isStreaming && !streamingTextFlushed) {
+          const trimmed = streamingText.trim()
+          const thinkingTrimmed = streamingThinking.trim()
+          if (trimmed || thinkingTrimmed) {
+            const assistantMsg: any = { role: 'assistant', content: trimmed }
+            if (thinkingTrimmed) {
+              assistantMsg.reasoning_content = thinkingTrimmed
+            }
+            completionMessages = [...completionMessages, assistantMsg]
+            msgHistory.setMessages(completionMessages, '', false)
+          }
         }
         streamingText = ''
+        streamingThinking = ''
         isStreaming = false
         streamingTextFlushed = false
         activeTool = null
-        assistantWithToolsMsg = null
+        // Note: assistantWithToolsMsg is reset on 'iteration_done', not here.
+        // This prevents issues when multiple agentic runs occur in sequence.
+        // Clear loading indicator immediately — don't wait for session save in finally
+        setLoading(false)
+        inputBar.setLoading(false)
+        // Persist session after assistant response is complete (incremental save)
+        persistSession()
         break
       }
     }
@@ -502,61 +1062,126 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
 
   // ─── Run agentic turn ───
   async function runAgenticTurn(userContent: string): Promise<void> {
-    if (!client || !config) return
+    if (!client || !config || !workflowManager) return
     isLoading = true
     isStreaming = false
     streamingText = ''
     streamingTextFlushed = false
-    statusBar.setLoading(true, null)
+    // Reset abortController so we don't check an old aborted signal from a previous turn
+    abortController = null
+    setLoading(true, null)
     statusBar.setError(null)
     inputBar.setLoading(true)
 
-    // Add user message. Splice any already-pending interjects too.
-    const userMsg: Message = { role: 'user', content: userContent }
+    // Parse user input for image references
+    // This converts image file paths to base64 data URLs
+    const parsedContent = await parseInputWithImages(userContent)
+
+    // Start the workflow if it's not already active (e.g., fresh session or restored inactive session)
+    if (!workflowManager.isActive()) {
+      workflowManager.start()
+    }
+
+    // Process message through workflow manager
+    // This allows the workflow to modify messages and control flow
+    const workflowResult = workflowManager.processMessage(parsedContent, completionMessages)
+    completionMessages = workflowResult.messages
+
+    // Add any pending interjects at the start
     const startingInterjects = pendingInterjects.splice(0)
     const extra: Message[] = startingInterjects.map((q) => ({ role: 'user', content: `[interject] ${q.content}` }))
-    completionMessages = [...completionMessages, userMsg, ...extra]
+    completionMessages = [...completionMessages, ...extra]
+
     msgHistory.setMessages(completionMessages)
-    // Update interject panel to show remaining pending interjects
     updateQueuedMessages()
+    shouldTrimNextChunk = true
+
+    // Persist session after user message is added (incremental save)
+    await persistSession()
+
+    // Generate title at the start of the first turn (when title is still default)
+    if (session && client && config && session.title === 'New session') {
+      const title = generateTitle(completionMessages)
+      session.title = title
+      if (options.onTitleUpdate) {
+        options.onTitleUpdate(title)
+      }
+    }
 
     try {
       const pricing = getModelPricing(config.provider, config.model)
       const requestDefaults = getRequestDefaultParams(config.provider, config.model)
-      abortController = new AbortController()
-      const updated = await runAgenticLoop(
-        client,
-        config.model,
-        [...completionMessages],
-        userContent,
-        handleAgentEvent,
-        {
-          pricing: pricing || undefined,
-          abortSignal: abortController.signal,
-          sessionId: session?.id,
-          requestDefaults,
-          // Between iterations, splice in any interjects the user sent mid-turn
-          getInterjects: () => {
-            const msgs = pendingInterjects.splice(0).map(
-              (q): Message => ({ role: 'user', content: `[interject] ${q.content}` })
-            )
-            if (msgs.length > 0) {
-              statusBar.setQueueState(queuedCount, pendingInterjects.length)
-            }
-            return msgs
+
+      // Workflow loop - continue while workflow says we should
+      let shouldContinueWorkflow = true
+
+      while (shouldContinueWorkflow && workflowManager.isActive()) {
+        // Check abort signal
+        if (abortController?.signal.aborted) {
+          break
+        }
+
+        abortController = new AbortController()
+        options.registerAbortController?.(abortController)
+
+        const updated = await runAgenticLoop(
+          client,
+          config.model,
+          [...completionMessages],
+          userContent,
+          handleAgentEvent,
+          {
+            pricing: pricing || undefined,
+            abortSignal: abortController.signal,
+            sessionId: session?.id,
+            requestDefaults,
+            approvalManager,
+            toolRegistry,
+            systemPromptAddition: workflowResult.systemPromptAddition,
+            getInterjects: () => {
+              const msgs = pendingInterjects.splice(0).map(
+                (q): Message => ({ role: 'user', content: `[interject] ${q.content}` })
+              )
+              if (msgs.length > 0) {
+                statusBar.setQueueState(queuedCount, pendingInterjects.length)
+              }
+              return msgs
+            },
           },
-        },
-      )
-      completionMessages = updated
-      msgHistory.setMessages(completionMessages, '', false)
-      if (session) {
-        session.completionMessages = updated
+        )
+        completionMessages = updated
+        msgHistory.setMessages(completionMessages, '', false)
+
+        // Get the last assistant message for workflow response handling
+        const lastMsg = completionMessages[completionMessages.length - 1]
+        if (lastMsg && lastMsg.role === 'assistant') {
+          shouldContinueWorkflow = workflowManager.onResponse(lastMsg)
+        } else {
+          shouldContinueWorkflow = false
+        }
+
+        // Check for workflow-specific next iteration message (for loop workflow)
+        if (shouldContinueWorkflow && workflowManager.getCurrentType() === 'loop') {
+          const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
+          const nextIterationMsg = loopWorkflow.getNextIterationMessage()
+          completionMessages = [...completionMessages, { role: 'user', content: nextIterationMsg }]
+        }
+
+        // Update workflow display
+        updateWorkflowDisplay()
+      }
+
+      // Workflow complete - save session
+      if (session && client && config) {
+        session.completionMessages = completionMessages
         session.todos = getTodosForSession(session.id)
         session.queuedMessages = getQueueForSession(session.id)
-        session.title = generateTitle(updated)
+        session.interjectMessages = [...pendingInterjects]
+        session.workflowState = workflowManager.getState()
+        session.totalCost = totalCost
+        // Note: Title is generated once at the start of the session, not here
         await saveSession(session)
-        
-        // Update tab title if this is a multi-tab app
+
         if (options.onTitleUpdate) {
           options.onTitleUpdate(session.title)
         }
@@ -566,8 +1191,9 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     } finally {
       isLoading = false
       isStreaming = false
-      statusBar.setLoading(false)
+      setLoading(false)
       inputBar.setLoading(false)
+      updateWorkflowDisplay()
       processQueueAfterCompletion()
     }
   }
@@ -578,26 +1204,32 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     switch (command) {
       case '/quit':
       case '/exit': {
-        let resumeCmd = ''
-        if (session) {
-          try {
-            const next: Session = {
-              ...session,
-              completionMessages,
-              todos: getTodosForSession(session.id),
-              queuedMessages: getQueueForSession(session.id),
-              title: generateTitle(completionMessages),
-            }
-            await saveSession(next)
-            resumeCmd = `protoagent --session ${session.id}`
-          } catch {}
-        } else {
-          resumeCmd = 'protoagent'
+        // Abort any running agentic loop first to ensure clean shutdown
+        if (abortController) {
+          abortController.abort()
+          abortController = null
         }
-        // Show resume command before exiting
-        console.log(`\nSession saved. Resume with: ${resumeCmd}`)
-        renderer.destroy()
-        process.exit(0)
+        // Give the loop a moment to process the abort
+        await new Promise(resolve => setTimeout(resolve, 100))
+        // Save current session state without regenerating title (already done during session)
+        if (session && client && config) {
+          try {
+            session.completionMessages = completionMessages
+            session.todos = getTodosForSession(session.id)
+            session.queuedMessages = getQueueForSession(session.id)
+            session.interjectMessages = [...pendingInterjects]
+            session.totalCost = totalCost
+            await saveSession(session)
+          } catch {}
+        }
+        // Use the multi-tab save and exit if available
+        if (options.onSaveAndExit) {
+          await options.onSaveAndExit()
+        } else {
+          // Single tab mode: just destroy and exit
+          renderer.destroy()
+          process.exit(0)
+        }
         return true
       }
       case '/help':
@@ -607,6 +1239,134 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
         completionMessages = [...completionMessages, { role: 'assistant', content: HELP_TEXT } as any]
         msgHistory.setMessages(completionMessages)
         return true
+      case '/new':
+        if (!options.onNewTab) {
+          statusBar.setError('/new requires multi-tab mode')
+          return true
+        }
+        try {
+          // Extract any text following /new as the initial message
+          const initialMsg = cmd.trim().slice(4).trim() || undefined
+          await options.onNewTab(initialMsg)
+        } catch (err) {
+          statusBar.setError(`Failed to create new tab: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        return true
+      case '/session': {
+        const parts = cmd.trim().split(/\s+/)
+        const subCommand = parts[1]?.toLowerCase()
+        const sessionArg = parts[2]
+
+        // /session open <id> - open a session in a new tab
+        if (subCommand === 'open' && sessionArg) {
+          if (!options.onFork) {
+            statusBar.setError('/session open requires multi-tab mode')
+            return true
+          }
+          try {
+            // Allow opening deleted sessions - they will be restored
+            const loadedSession = await loadSession(sessionArg, { includeDeleted: true })
+            if (!loadedSession) {
+              statusBar.setError(`Session "${sessionArg}" not found`)
+              return true
+            }
+            // Restore the session by clearing the deleted flag
+            if (loadedSession.deleted) {
+              loadedSession.deleted = false
+              await saveSession(loadedSession)
+            }
+            await options.onFork(loadedSession.id, loadedSession.title)
+          } catch (err) {
+            statusBar.setError(`Failed to open session: ${err instanceof Error ? err.message : String(err)}`)
+          }
+          return true
+        }
+
+        // /session search <query> - search sessions by title or message content
+        if (subCommand === 'search') {
+          const query = parts.slice(2).join(' ').trim()
+          if (!query) {
+            statusBar.setError('Usage: /session search <query>')
+            return true
+          }
+          const results = await searchSessions(query)
+
+          if (results.length === 0) {
+            completionMessages = [...completionMessages, { role: 'user', content: `[session search: ${query}]` } as any]
+            completionMessages = [...completionMessages, { role: 'assistant', content: `No sessions found matching "${query}".` } as any]
+            msgHistory.setMessages(completionMessages)
+            return true
+          }
+
+          const maxTitleLen = Math.max(...results.map(s => s.title.length), 5)
+          const lines = [
+            `Sessions matching "${query}" (most recent first):`,
+            '',
+            `  ${'ID'.padEnd(8)}  ${'Title'.padEnd(maxTitleLen)}  Messages  Match      Last updated`,
+            `  ${'-'.repeat(8)}  ${'-'.repeat(maxTitleLen)}  --------  ---------  -------------`,
+            ...results.map(s => {
+              const dateStr = new Date(s.updatedAt).toLocaleDateString()
+              const timeStr = new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              const matchType = s.matchType === 'title' ? 'title' : 'message'
+              return `  ${s.id.slice(0, 8)}  ${s.title.padEnd(maxTitleLen)}  ${String(s.messageCount).padStart(8)}  ${matchType.padEnd(9)}  ${dateStr} ${timeStr}`
+            }),
+            '',
+            `Found ${results.length} session(s). Use "/session open <id>" to open a session in a new tab.`,
+          ]
+
+          completionMessages = [...completionMessages, { role: 'user', content: `[session search: ${query}]` } as any]
+          completionMessages = [...completionMessages, { role: 'assistant', content: lines.join('\n') } as any]
+          msgHistory.setMessages(completionMessages)
+          return true
+        }
+
+        // /session or /session list - list sessions (paginated, default first 10)
+        // Also supports: /session list --page <n>
+        const PAGE_SIZE = 10
+        let page = 1
+        if (subCommand === 'list' && parts.includes('--page')) {
+          const pageIdx = parts.indexOf('--page')
+          if (pageIdx !== -1 && parts[pageIdx + 1]) {
+            const parsed = parseInt(parts[pageIdx + 1], 10)
+            if (!isNaN(parsed) && parsed > 0) {
+              page = parsed
+            }
+          }
+        }
+        const offset = (page - 1) * PAGE_SIZE
+        const sessions = await listSessions({ limit: PAGE_SIZE, offset })
+        const totalSessions = await countSessions()
+
+        if (sessions.length === 0) {
+          completionMessages = [...completionMessages, { role: 'user', content: '[session list]' } as any]
+          completionMessages = [...completionMessages, { role: 'assistant', content: 'No saved sessions found.' } as any]
+          msgHistory.setMessages(completionMessages)
+          return true
+        }
+
+        const maxTitleLen = Math.max(...sessions.map(s => s.title.length), 5)
+        const lines = [
+          'Saved sessions (most recent first):',
+          '',
+          `  ${'ID'.padEnd(8)}  ${'Title'.padEnd(maxTitleLen)}  Messages  Last updated`,
+          `  ${'-'.repeat(8)}  ${'-'.repeat(maxTitleLen)}  --------  -------------`,
+          ...sessions.map(s => {
+            const dateStr = new Date(s.updatedAt).toLocaleDateString()
+            const timeStr = new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            return `  ${s.id.slice(0, 8)}  ${s.title.padEnd(maxTitleLen)}  ${String(s.messageCount).padStart(8)}  ${dateStr} ${timeStr}`
+          }),
+          '',
+          `Showing ${Math.min(sessions.length, totalSessions - offset)} of ${totalSessions} sessions (page ${page} of ${Math.ceil(totalSessions / PAGE_SIZE)}).`,
+          totalSessions > PAGE_SIZE
+            ? `Use "/session list --page <n>" to see more sessions. Use "/session open <id>" to open a session in a new tab.`
+            : `Use "/session open <id>" to open a session in a new tab.`,
+        ]
+
+        completionMessages = [...completionMessages, { role: 'user', content: '[session list]' } as any]
+        completionMessages = [...completionMessages, { role: 'assistant', content: lines.join('\n') } as any]
+        msgHistory.setMessages(completionMessages)
+        return true
+      }
       case '/pop': {
         const queued = getNextQueued(session?.id)
         if (queued) {
@@ -620,15 +1380,27 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
         return true
       }
       case '/q': {
-        // Queue the rest of the message after /q
-        const parts = cmd.trim().split(/\s+/)
-        const content = parts.slice(1).join(' ').trim()
-        if (content && client && config) {
-          enqueueMessage(content, session?.id)
-          queuedCount++
+        // Queue all messages separated by /q
+        // Split by /q to allow multiple queued messages in one command
+        // e.g., "/q first message /q second /q third" enqueues all three
+        const messages = cmd.trim().split('/q').map(m => m.trim()).filter(m => m.length > 0)
+        if (messages.length > 0 && client && config) {
+          for (const message of messages) {
+            enqueueMessage(message, session?.id)
+            queuedCount++
+          }
           statusBar.setQueueState(queuedCount, pendingInterjects.length)
           updateQueuedMessages()
-          if (!isLoading) await runAgenticTurn(content)
+          // Start processing the first queued message if not already loading
+          if (!isLoading) {
+            const firstQueued = getNextQueued(session?.id)
+            if (firstQueued) {
+              queuedCount = Math.max(0, queuedCount - 1)
+              statusBar.setQueueState(queuedCount, pendingInterjects.length)
+              updateQueuedMessages()
+              await runAgenticTurn(firstQueued.content)
+            }
+          }
         }
         return true
       }
@@ -636,15 +1408,37 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
         clearMessageQueue(session?.id)
         queuedCount = 0
         statusBar.setQueueState(0, pendingInterjects.length)
-        todoSidebar.clearQueuedMessages()
+        // Update queue view if it's currently visible
+        if (currentView === 'queue') {
+          updateQueueView()
+        }
         return true
       case '/rename': {
         // Extract new title from command: /rename new title
         const parts = cmd.trim().split(/\s+/)
-        const newTitle = parts.slice(1).join(' ').trim()
+        let newTitle = parts.slice(1).join(' ').trim()
+        
+        // If no title provided, generate one using LLM based on recent messages
         if (!newTitle) {
-          statusBar.setError('Usage: /rename <new title>')
-          return true
+          if (!client || !config) {
+            statusBar.setError('No active session to generate title')
+            return true
+          }
+          setLoading(true, 'Generating title...')
+          try {
+            newTitle = await generateTitleWithLLM(completionMessages, client, config.model)
+          } catch (err) {
+            statusBar.setError(`Failed to generate title: ${err instanceof Error ? err.message : String(err)}`)
+            setLoading(false)
+            return true
+          } finally {
+            setLoading(false)
+          }
+        }
+        
+        // Update the session title
+        if (session) {
+          session.title = newTitle
         }
         if (options.onTitleUpdate) {
           options.onTitleUpdate(newTitle)
@@ -654,11 +1448,41 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
         msgHistory.setMessages(completionMessages)
         return true
       }
+      case '/fork': {
+        if (!session || !client || !config) {
+          statusBar.setError('No active session to fork')
+          return true
+        }
+        if (!options.onFork) {
+          statusBar.setError('/fork requires multi-tab mode')
+          return true
+        }
+        try {
+          // Save a new session with a copy of the current messages
+          const forkedSession = createSession(config.model, config.provider)
+          forkedSession.completionMessages = [...completionMessages]
+          forkedSession.todos = getTodosForSession(session.id).map(t => ({ ...t }))
+          forkedSession.queuedMessages = getQueueForSession(session.id)
+          forkedSession.interjectMessages = [...pendingInterjects]
+          forkedSession.totalCost = totalCost
+          forkedSession.title = `Fork of ${session.title || 'session'}`
+          await saveSession(forkedSession)
+          await options.onFork(forkedSession.id, forkedSession.title)
+        } catch (err) {
+          statusBar.setError(`Fork failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        return true
+      }
       case '/reconnect': {
         statusBar.setError(null)
-        statusBar.setLoading(true, 'Reconnecting MCPs...')
+        setLoading(true, 'Reconnecting MCPs...')
         try {
           await reconnectAllMcp()
+          // Update MCP status in status bar after reconnection
+          const mcpStatus = mcpManager.getConnectionStatusArray()
+          statusBar.setMcpStatus(mcpStatus)
+          // Notify sidebar that MCP status has changed
+          options.onMcpReady?.()
           const status = getMcpConnectionStatus()
           const connected = Object.values(status).filter(s => s.connected).length
           const total = Object.keys(status).length
@@ -668,7 +1492,39 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
         } catch (err) {
           statusBar.setError(`Reconnection failed: ${err instanceof Error ? err.message : String(err)}`)
         } finally {
-          statusBar.setLoading(false)
+          setLoading(false)
+        }
+        return true
+      }
+      case '/pin': {
+        if (!options.onPinTab) {
+          statusBar.setError('/pin requires multi-tab mode')
+          return true
+        }
+        try {
+          options.onPinTab(true)
+          const tabTitle = options.onTitleUpdate ? 'Current tab' : 'Tab'
+          completionMessages = [...completionMessages, { role: 'user', content: '[pin]' } as any]
+          completionMessages = [...completionMessages, { role: 'assistant', content: `${tabTitle} pinned to top` } as any]
+          msgHistory.setMessages(completionMessages)
+        } catch (err) {
+          statusBar.setError(`Pin failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        return true
+      }
+      case '/unpin': {
+        if (!options.onPinTab) {
+          statusBar.setError('/unpin requires multi-tab mode')
+          return true
+        }
+        try {
+          options.onPinTab(false)
+          const tabTitle = options.onTitleUpdate ? 'Current tab' : 'Tab'
+          completionMessages = [...completionMessages, { role: 'user', content: '[unpin]' } as any]
+          completionMessages = [...completionMessages, { role: 'assistant', content: `${tabTitle} unpinned` } as any]
+          msgHistory.setMessages(completionMessages)
+        } catch (err) {
+          statusBar.setError(`Unpin failed: ${err instanceof Error ? err.message : String(err)}`)
         }
         return true
       }
@@ -679,50 +1535,65 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
 
   // ─── Handle submit ───
   async function handleSubmit(value: string, mode: SubmitMode = 'send'): Promise<void> {
-    // Approval mode
-    if (pendingApproval) {
-      const v = value.toLowerCase().trim()
-      if (v === 'y') { pendingApproval.resolve('approve_once'); hideApprovalPrompt(); return }
-      if (v === 's') { pendingApproval.resolve('approve_session'); hideApprovalPrompt(); return }
-      if (v === 'n') { pendingApproval.resolve('reject'); hideApprovalPrompt(); return }
-      return
-    }
+    // Input bar is hidden during approval — nothing to do here
+    if (pendingApproval) return
+
+    // Ensure we're in the main view regardless of submission source
+    transitionToMainView()
 
     const trimmed = value.trim()
     if (!trimmed || !client || !config) return
 
-    if (trimmed.startsWith('/')) {
-      const handled = await handleSlashCommand(trimmed)
-      if (handled) return
-    }
-
     // Check for /q suffix at the end of the message (queue command)
-    let effectiveMode = mode
+    // Check for /new suffix at the end of the message (create new agent/tab command)
+    // These must be checked BEFORE slash commands to handle "message /new" properly
+    let effectiveMode: SubmitMode | 'new-agent' = mode
     let content = trimmed
     if (trimmed.endsWith(' /q')) {
       effectiveMode = 'queue'
       content = trimmed.slice(0, -3).trim()
-    } else if (trimmed.startsWith('!!')) {
-      effectiveMode = 'interject'
-      content = trimmed.slice(2).trim()
-    } else if (trimmed.startsWith('!')) {
-      effectiveMode = 'queue'
-      content = trimmed.slice(1).trim()
+    } else if (trimmed.endsWith(' /new')) {
+      effectiveMode = 'new-agent'
+      content = trimmed.slice(0, -5).trim()
     }
 
-    if (effectiveMode === 'interject') {
-      // Push into pendingInterjects — will be spliced in at the next iteration boundary
-      pendingInterjects.push(interjectMessage(content, session?.id))
-      statusBar.setQueueState(queuedCount, pendingInterjects.length)
-      updateQueuedMessages()
-      if (!isLoading) await runAgenticTurn(content)
-    } else if (effectiveMode === 'queue') {
+    // Handle slash commands (but only if not already handled by suffix logic above)
+    // The "is new-agent" check handles the case where content is empty after stripping /new
+    if (effectiveMode !== 'new-agent' && trimmed.startsWith('/')) {
+      const handled = await handleSlashCommand(trimmed)
+      if (handled) return
+    }
+
+    if (effectiveMode === 'new-agent') {
+      // Create a new tab and send the message there
+      if (!options.onNewTab) {
+        statusBar.setError('/new requires multi-tab mode')
+        return
+      }
+      // Create new tab - if there's content, pass it to be sent in the new tab
+      try {
+        await options.onNewTab(content || undefined)
+      } catch (err) {
+        statusBar.setError(`Failed to create new agent: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return
+    }
+
+    if (effectiveMode === 'queue') {
       // Enqueue — runs after the current turn completes
-      enqueueMessage(content, session?.id)
-      queuedCount++
+      // Split by /q to allow multiple queued messages in one command
+      const messages = content.split('/q').map(m => m.trim()).filter(m => m.length > 0)
+      let firstMessage: string | null = null
+      for (const message of messages) {
+        enqueueMessage(message, session?.id)
+        queuedCount++
+        if (firstMessage === null) {
+          firstMessage = message
+        }
+      }
       statusBar.setQueueState(queuedCount, pendingInterjects.length)
       updateQueuedMessages()
-      if (!isLoading) await runAgenticTurn(content)
+      if (!isLoading && firstMessage) await runAgenticTurn(firstMessage)
     } else {
       // 'send': if agent is running, treat as interject (Enter = urgent); otherwise run immediately
       if (isLoading) {
@@ -736,33 +1607,76 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
   }
 
   // ─── Keyboard handling ───
-  renderer.keyInput.on('keypress', async (key) => {
+  const keypressHandler = async (key: any) => {
     // In multi-tab mode, ignore input if this tab is not active
     if (options.isActiveTab && !options.isActiveTab()) {
       return
     }
 
-    // Escape → abort agent
-    if (key.name === 'escape' && isLoading && abortController) {
-      abortController.abort()
+    // Tab → cycle views: Bot → Queue → Cron → Bot (only when not loading and not in approval)
+    // This works globally including when input is focused
+    if (key.name === 'tab' && !isLoading && !pendingApproval) {
+      key.preventDefault?.()
+      cycleViews()
       return
     }
 
-    // Approval key handling when approval prompt is visible
+    // Escape → abort agent OR stop workflow
+    if (key.name === 'escape') {
+      // First try to abort running agent
+      if (isLoading && abortController) {
+        abortController.abort()
+        // Also stop the workflow to keep state consistent (allows restart)
+        if (workflowManager?.isActive()) {
+          workflowManager.stop()
+          updateWorkflowDisplay()
+          if (session) {
+            session.workflowState = workflowManager.getState()
+          }
+        }
+        return
+      }
+      // Otherwise try to stop active workflow
+      if (workflowManager?.isActive()) {
+        stopWorkflow()
+        return
+      }
+    }
+
+    // Approval navigation when approval prompt is visible
     if (pendingApproval) {
-      const seq = key.sequence?.toLowerCase()
-      if (seq === 'y') { pendingApproval.resolve('approve_once'); hideApprovalPrompt(); return }
-      if (seq === 's') { pendingApproval.resolve('approve_session'); hideApprovalPrompt(); return }
-      if (seq === 'n') { pendingApproval.resolve('reject'); hideApprovalPrompt(); return }
+      if (key.name === 'left' || key.name === 'right') {
+        const dir = key.name === 'left' ? -1 : 1
+        approvalSelectedIndex = (approvalSelectedIndex + dir + approvalChoices.length) % approvalChoices.length
+        renderApprovalButtons()
+        return
+      }
+      if (key.name === 'return' || key.name === 'enter') {
+        const choice = approvalChoices[approvalSelectedIndex]
+        pendingApproval.resolve(choice.value)
+        hideApprovalPrompt()
+        return
+      }
+      if (key.name === 'escape') {
+        pendingApproval.resolve('reject')
+        hideApprovalPrompt()
+        return
+      }
       return
     }
 
+  }
+  renderer.keyInput.on('keypress', keypressHandler)
+
+  // Register cleanup for keyboard handler
+  options.registerCleanupCallback?.(() => {
+    renderer.keyInput.off('keypress', keypressHandler)
   })
 
   // ─── Copy on select (X11-style) ───
   // When the user finishes a mouse drag selection, auto-copy to clipboard.
   // OSC 52 has size limits (~700KB typical), so use system clipboard for large text.
-  renderer.on(CliRenderEvents.SELECTION, (selection) => {
+  const selectionHandler = (selection: any) => {
     if (!selection) return
     const text = selection.getSelectedText()
     if (!text) return
@@ -770,6 +1684,10 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     // Use system clipboard for large text (> 100KB) or if OSC 52 fails
     const useSystemCopy = text.length > 100000 || !renderer.isOsc52Supported()
     let copied = false
+
+    const showCopiedNotification = () => {
+      if (copied) statusBar.showCopied(text.length)
+    }
 
     if (useSystemCopy) {
       const cmd = process.platform === 'darwin' ? 'pbcopy' : 'xclip'
@@ -779,7 +1697,12 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
         const child = spawn(cmd, args)
         child.stdin.write(text)
         child.stdin.end()
-        child.on('close', (code: number) => { if (code === 0) copied = true })
+        child.on('close', (code: number) => {
+          if (code === 0) {
+            copied = true
+            showCopiedNotification()
+          }
+        })
       } catch {}
     } else {
       copied = renderer.copyToClipboardOSC52(text)
@@ -792,20 +1715,45 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
           const child = spawn(cmd, args)
           child.stdin.write(text)
           child.stdin.end()
-          child.on('close', (code: number) => { if (code === 0) copied = true })
+          child.on('close', (code: number) => {
+            if (code === 0) {
+              copied = true
+              showCopiedNotification()
+            }
+          })
         } catch {}
+      } else {
+        showCopiedNotification()
       }
     }
 
-    // Show copied notification
-    if (copied) statusBar.showCopied(text.length)
-
     // Clear the selection after copying
     renderer.clearSelection()
+  }
+  renderer.on(CliRenderEvents.SELECTION, selectionHandler)
+
+  // Register cleanup for selection handler
+  options.registerCleanupCallback?.(() => {
+    renderer.off(CliRenderEvents.SELECTION, selectionHandler)
+  })
+
+  // Register cleanup for cron timer
+  options.registerCleanupCallback?.(() => {
+    stopCronTimer()
   })
 
   // ─── SIGTERM handler (clean shutdown on kill) ───
   process.on('SIGTERM', async () => {
+    // Save workflow state and cost before exit
+    if (session && workflowManager) {
+      session.workflowState = workflowManager.getState()
+      session.totalCost = totalCost
+      if (client && config) {
+        try {
+          await saveSession(session)
+        } catch {}
+      }
+    }
     // Don't call global clearApprovalHandler() - it affects all tabs in multi-tab mode
     // Each tab's approvalManager will be garbage collected naturally
     await mcpManager.close()
@@ -819,7 +1767,9 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     const level = LogLevel[options.logLevel.toUpperCase() as keyof typeof LogLevel]
     if (level !== undefined) { setLogLevel(level); initLogFile(); logger.info(`ProtoAgent started with log level: ${options.logLevel}`) }
   }
-   if (options.dangerouslySkipPermissions) setDangerouslySkipPermissions(true)
+  if (options.dangerouslySkipPermissions) {
+    setDangerouslySkipPermissions(true)
+  }
 
   // Set up approval handler on the injected approvalManager
   approvalManager.setApprovalHandler(async (req: ApprovalRequest): Promise<ApprovalResponse> => {
@@ -843,31 +1793,109 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
     config = loadedConfig
     client = buildClient(config)
 
+    // Initialize workflow manager
+    workflowManager = new WorkflowManager(
+      {
+        initialWorkflow: 'queue',
+        onWorkflowChange: (type) => {
+          logger.debug(`Workflow changed to: ${type}`)
+          updateWorkflowDisplay()
+        },
+        onWorkflowComplete: (type, summary) => {
+          logger.debug(`Workflow completed: ${type}`)
+          if (summary) {
+            // Add completion summary to messages
+            completionMessages = [
+              ...completionMessages,
+              { role: 'assistant', content: summary },
+            ]
+            msgHistory.setMessages(completionMessages)
+          }
+          updateWorkflowDisplay()
+        },
+      },
+      true // use compact diagrams for sidebar
+    )
+
+    // Register tool registry and cron schedule handler
+    workflowManager.registerToolRegistry(toolRegistry)
+    workflowManager.setCronScheduleHandler(async (args: { schedule: string; prompt: string }) => {
+      if (!workflowManager) return 'Error: Workflow manager not initialized'
+
+      const cronWorkflow = workflowManager.getCurrentWorkflow() as CronWorkflow
+      cronWorkflow.setSchedule(args.schedule, args.prompt)
+
+      // Update session with new cron state
+      if (session) {
+        session.workflowState = workflowManager.getState()
+      }
+
+      updateWorkflowDisplay()
+
+      return `Cron schedule set: ${args.schedule}. Prompt: "${args.prompt}"`
+    })
+
      const provider = getProvider(config.provider)
      welcomeScreen.setInfo(provider?.name || config.provider, config.model)
-     modelInfoText.content = t`${fg(DIM)(`… · ${provider?.name || config.provider} · ${config.model}`)}`
 
      // Initialize MCP servers in the background without blocking UI
-     mcpManager.initialize().catch((err) => {
-       logger.error(`MCP initialization failed: ${err.message}`)
-     })
+     mcpManager.initialize()
+       .then(() => {
+         // Update MCP status in status bar after initialization
+         const mcpStatus = mcpManager.getConnectionStatusArray()
+         statusBar.setMcpStatus(mcpStatus)
+         // Notify TabManager that MCP is ready so sidebar can update
+         options.onMcpReady?.()
+       })
+       .catch((err) => {
+         logger.error(`MCP initialization failed: ${err.message}`)
+       })
 
     let loadedSession: Session | null = null
     if (options.sessionId) {
+      logger.debug(`Loading session ${options.sessionId}`)
       loadedSession = await loadSession(options.sessionId)
+      logger.debug(`Session load result: ${loadedSession ? 'found' : 'not found'}, messages: ${loadedSession?.completionMessages?.length || 0}`)
       if (loadedSession) {
-        const sp = await generateSystemPrompt()
+        // Use per-tab toolRegistry when generating system prompt for loaded session
+        // to ensure MCP tools are included in the tool descriptions
+        const sp = await generateSystemPrompt(toolRegistry)
         loadedSession.completionMessages = ensureSystemPromptAtTop(loadedSession.completionMessages, sp)
         setTodosForSession(loadedSession.id, loadedSession.todos)
         loadQueueFromSession(loadedSession.queuedMessages, loadedSession.id)
+        // Restore pending interjects from session
+        if (loadedSession.interjectMessages?.length > 0) {
+          pendingInterjects.push(...loadedSession.interjectMessages)
+        }
+        // Restore total cost from session
+        if (typeof loadedSession.totalCost === 'number') {
+          totalCost = loadedSession.totalCost
+          statusBar.setUsage(lastUsage, totalCost)
+        }
         session = loadedSession
         completionMessages = loadedSession.completionMessages
-         msgHistory.setMessages(completionMessages)
-         todoSidebar.setTodos(getTodosForSession(session.id))
-         welcomeScreen.setInfo(provider?.name || config.provider, config.model, session.id.slice(0, 8))
-         modelInfoText.content = t`${fg(DIM)(`${session.id.slice(0, 8)} · ${provider?.name || config.provider} · ${config.model}`)}`
-         updateQueuedMessages()
+        // Reset message history to ensure proper rendering/spacing for forked sessions
+        msgHistory.resetMessages()
+        msgHistory.setMessages(completionMessages)
+        welcomeScreen.setInfo(provider?.name || config.provider, config.model, session.id.slice(0, 8))
+        options.onSessionInfo?.(provider?.name || config.provider, config.model, session.id)
+        updateQueuedMessages()
+        // Restore workflow state if present
+        if (loadedSession.workflowState && workflowManager) {
+          workflowManager.deserialize(loadedSession.workflowState)
+          updateWorkflowDisplay()
+
+          // Start cron timer if restoring a cron workflow
+          if (loadedSession.workflowState.type === 'cron' && loadedSession.workflowState.isActive) {
+            startCronTimer()
+          }
+        }
+        // Transition to main view since we have an existing session with messages
+        logger.debug(`Calling transitionToMainView for restored session`)
+        transitionToMainView()
+        logger.debug(`After transitionToMainView, inWelcomeView=${inWelcomeView}`)
       } else {
+        logger.debug(`Session ${options.sessionId} not found, will create new session`)
         statusBar.setError(`Session "${options.sessionId}" not found. Starting new session.`)
       }
     }
@@ -878,11 +1906,13 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
       const newSession = createSession(config.model, config.provider)
       clearTodos(newSession.id)
       clearMessageQueue(newSession.id)
-       newSession.completionMessages = initialMsgs
-       session = newSession
-       welcomeScreen.setInfo(provider?.name || config.provider, config.model, session.id.slice(0, 8))
-       modelInfoText.content = t`${fg(DIM)(`${session.id.slice(0, 8)} · ${provider?.name || config.provider} · ${config.model}`)}`
-       updateQueuedMessages()
+      newSession.completionMessages = initialMsgs
+      session = newSession
+      welcomeScreen.setInfo(provider?.name || config.provider, config.model, session.id.slice(0, 8))
+      options.onSessionInfo?.(provider?.name || config.provider, config.model, session.id)
+      updateQueuedMessages()
+      // Initialize workflow display
+      updateWorkflowDisplay()
     }
   } catch (err: any) {
     statusBar.setError(`Initialization failed: ${err.message}`)
@@ -890,4 +1920,12 @@ ${fg(YELLOW)('[y]')} Approve once   ${fg(YELLOW)('[s]')} ${truncate(sessionLabel
 
   // Focus the input
   inputBar.focus()
+
+  // ─── Handle initial message (for /new suffix) ───
+  if (options.initialMessage) {
+    transitionToMainView()
+    // Fire-and-forget: don't await so tab switch completes immediately
+    // The agentic loop will run in the background on the new tab
+    handleSubmit(options.initialMessage, 'send')
+  }
 }

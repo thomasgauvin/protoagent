@@ -83,3 +83,23 @@ export async function findSimilarPaths(requestedPath: string): Promise<string[]>
     .slice(0, MAX_SUGGESTIONS)
     .map(s => s.path);
 }
+
+/**
+ * Handle file not found error with path suggestions.
+ * Builds an error message including similar path suggestions if available.
+ *
+ * @param filePath - The requested file path that doesn't exist
+ * @param prefix - Optional prefix for the message (e.g., '.')
+ * @returns Error message with suggestions if available
+ */
+export async function handleFileNotFoundWithSuggestions(
+  filePath: string,
+  prefix = '',
+): Promise<string> {
+  const suggestions = await findSimilarPaths(filePath);
+  let msg = `File not found: '${prefix}${filePath}'`;
+  if (suggestions.length > 0) {
+    msg += ' Did you mean one of these?\n' + suggestions.map(s => `  ${s}`).join('\n');
+  }
+  return msg;
+}

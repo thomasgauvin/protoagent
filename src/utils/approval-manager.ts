@@ -28,6 +28,8 @@ export type ApprovalRequest = {
 
 export type ApprovalResponse = 'approve_once' | 'approve_session' | 'reject';
 
+import { isDangerouslySkipPermissions } from './approval-state.js';
+
 /**
  * ApprovalManager — manages approval state for a single tab/session.
  */
@@ -76,6 +78,9 @@ export class ApprovalManager {
    * Note: --dangerously-skip-permissions is shared globally and checked by the caller.
    */
   async requestApproval(req: ApprovalRequest): Promise<boolean> {
+    // --dangerously-skip-permissions bypasses all approval checks
+    if (isDangerouslySkipPermissions()) return true;
+
     const sessionKey = this.getApprovalScopeKey(req);
     if (this.sessionApprovals.has(sessionKey)) return true;
 

@@ -1,8 +1,8 @@
 /**
- * config-core.ts — non-React config helpers (no ink/React dependency).
+ * config-core.ts — config helpers for the OpenTUI application.
  *
- * Contains the same logic as the first ~318 lines of config.tsx but with
- * no React/Ink imports, so the OpenTUI entry point can import safely.
+ * Contains configuration parsing, persistence, and path resolution.
+ * Safe to import from the CLI entry point.
  */
 import { readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs'
 import path from 'node:path'

@@ -12,6 +12,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readConfig, writeConfig, writeInitConfig } from './config-core.js'
 import { createMultiTabApp } from './tui/createMultiTabApp.js'
+import { startDebugServer } from './tui/debug-server.js'
+import { setupTerminalCleanup } from './tui/terminal-cleanup.js'
+import { spawnWatchdog } from './tui/tty-watchdog.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const packageJson: { version: string } = JSON.parse(
@@ -26,7 +29,16 @@ program
   .option('--dangerously-skip-permissions', 'Auto-approve all file writes and shell commands')
   .option('--log-level <level>', 'Log level: TRACE, DEBUG, INFO, WARN, ERROR', 'DEBUG')
   .option('--session <id>', 'Resume a previous session by ID')
+  .option('--name <name>', 'Agent instance name for isolated session groups', 'default')
   .action(async (options) => {
+    // Setup terminal cleanup to disable mouse tracking on exit/crash
+    // This prevents mouse escape sequences from leaking to other terminals
+    setupTerminalCleanup()
+
+    // Spawn a watchdog subprocess that will reset the terminal if we crash (SIGKILL)
+    // This ensures cleanup even when the main process cannot handle signals
+    spawnWatchdog()
+
     const renderer = await createCliRenderer({
       exitOnCtrlC: false, // we handle Ctrl+C ourselves for clean session save
       enableMouseMovement: true, // needed for drag-to-select
@@ -37,7 +49,12 @@ program
       dangerouslySkipPermissions: options.dangerouslySkipPermissions || false,
       logLevel: options.logLevel,
       sessionId: options.session,
+      agentName: options.name,
     })
+
+    if (process.env.PROTOAGENT_DEBUG === '1') {
+      await startDebugServer(renderer)
+    }
 
     renderer.start()
   })

@@ -5,7 +5,8 @@
  *          - Working (green dots animated)
  *          - Idle (grey dots all filled)
  *          - Approval waiting (yellow dots all filled)
- * Usage:   token cost display
+ * Usage:   token cost display with colored badges
+ * MCP:     connection status indicator
  *
  * The old headerRoot (top header bar) has been removed — the welcome screen
  * and todo sidebar bottom info now carry the session/provider/model info.
@@ -17,22 +18,18 @@ import {
   TextRenderable,
   t,
   fg,
+  bg,
+  bold,
+  StyledText,
 } from '@opentui/core'
 import type { AgentEvent } from '../agentic-loop.js'
+import { COLORS } from './theme.js'
+import { Spinner } from './Spinner.js'
 
-const GREEN = '#09A469'
-const DIM = '#666666'
-const RED = '#f7768e'
-const YELLOW = '#e0af68'
-
-// 6-dot spinner frames for working status
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-// State indicator (6 filled dots in different colors)
-const STATUS_INDICATORS = {
-  working: '● ● ● ● ● ●',    // Animated green
-  idle: '● ● ● ● ● ●',        // All grey
-  approval: '● ● ● ● ● ●',    // All yellow
+export interface McpServerStatus {
+  name: string;
+  connected: boolean;
+  error?: string;
 }
 
 export class StatusBar {
@@ -49,8 +46,7 @@ export class StatusBar {
   // State
   private _loading = false
   private _activeTool: string | null = null
-  private _spinnerFrame = 0
-  private _spinnerTimer: ReturnType<typeof setInterval> | null = null
+  private _spinner: Spinner
   private _lastUsage: AgentEvent['usage'] | null = null
   private _totalCost = 0
   private _queuedCount = 0
@@ -58,6 +54,13 @@ export class StatusBar {
   private _error: string | null = null
   private _destroyed = false
   private _awaitingApproval = false
+  private _mcpStatus: McpServerStatus[] = []
+  private _sessionId: string | null = null
+  private _provider: string | null = null
+  private _model: string | null = null
+  private _currentView: 'bot' | 'queue' | 'cron' = 'bot'
+  private _workflowType: string = 'queue'
+  private _workflowActive = false
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer
@@ -72,8 +75,7 @@ export class StatusBar {
     })
     this.statusText = new TextRenderable(renderer, {
       id: 'status-text',
-      content: t``,
-    })
+      content: t``,})
     this.statusRoot.add(this.statusText)
 
     // Usage row
@@ -88,24 +90,33 @@ export class StatusBar {
       content: t``,
     })
     this.usageRoot.add(this.usageText)
+
+    // Spinner handles its own animation
+    this._spinner = new Spinner({
+      onFrame: () => {
+        if (this._loading) {
+          this._updateStatus()
+          this.renderer.requestRender()
+        }
+      },
+    })
   }
 
-  /** No-op — kept for compatibility if called, but session info is now in TodoSidebar */
-  setSession(_sessionId: string, _provider: string, _model: string): void {}
+  setSession(sessionId: string, provider: string, model: string): void {
+    this._sessionId = sessionId
+    this._provider = provider
+    this._model = model
+    this._updateUsage()
+  }
 
   setLoading(loading: boolean, activeTool: string | null = null): void {
     this._loading = loading
     this._activeTool = activeTool
 
-    if (loading && !this._spinnerTimer) {
-      this._spinnerTimer = setInterval(() => {
-        this._spinnerFrame = (this._spinnerFrame + 1) % SPINNER_FRAMES.length
-        this._updateStatus()
-      }, 100)
-    } else if (!loading && this._spinnerTimer) {
-      clearInterval(this._spinnerTimer)
-      this._spinnerTimer = null
-      this._spinnerFrame = 0
+    if (loading) {
+      this._spinner.start()
+    } else {
+      this._spinner.stop()
     }
     this._updateStatus()
   }
@@ -137,52 +148,70 @@ export class StatusBar {
     this._updateStatus()
   }
 
+  /**
+   * Set MCP server connection status
+   */
+  setMcpStatus(status: McpServerStatus[]): void {
+    this._mcpStatus = status
+    this._updateUsage()
+  }
+
+  /**
+   * Set the current view indicator (bot/queue/cron)
+   */
+  setViewIndicator(view: 'bot' | 'queue' | 'cron'): void {
+    this._currentView = view
+    this._updateUsage()
+  }
+
+  /**
+   * Set the current workflow type indicator
+   */
+  setWorkflowType(type: string, isActive: boolean): void {
+    this._workflowType = type
+    this._workflowActive = isActive
+    this._updateUsage()
+  }
+
   showCopied(charCount: number): void {
-    const msg = `Copied ${charCount} chars to clipboard`
-    this.statusText.content = t`${fg(GREEN)(msg)}`
+    const msg = charCount > 1000 ? `Copied ${(charCount / 1000).toFixed(1)}K chars ✓` : `Copied ${charCount} chars ✓`
+    this.statusText.content = t`${fg(COLORS.green)(msg)}`
     this.renderer.requestRender()
     setTimeout(() => {
       this._updateStatus()
       this.renderer.requestRender()
-    }, 2000)
+    }, 1500)
   }
 
   destroy(): void {
     this._destroyed = true
-    if (this._spinnerTimer) {
-      clearInterval(this._spinnerTimer)
-      this._spinnerTimer = null
-    }
+    this._spinner.destroy()
   }
 
   private _updateStatus(): void {
     if (this._destroyed) return
     if (this._error) {
-      this.statusText.content = t`${fg(RED)(`Error: ${this._error}`)}`
+      this.statusText.content = t`${fg(COLORS.red)(`Error: ${this._error}`)}`
       return
     }
 
     // Build status line with indicator + info
     let statusLine = ''
-    let statusColor = DIM
+    let statusColor: string = COLORS.dim
 
-    if (this._loading) {
-      // Working: animated green dots
-      const spinner = SPINNER_FRAMES[this._spinnerFrame]
-      // Create animated effect by varying dot visibility
-      const workingIndicator = spinner.repeat(6)
-      statusLine = `${workingIndicator}`
-      statusColor = GREEN
+    if (this._awaitingApproval) {
+      // When approval is pending, user is blocked - don't show thinking indicator
+      statusLine = `Awaiting approval…`
+      statusColor = COLORS.yellow
+    } else if (this._loading) {
+      const spinner = this._spinner.getFrame()
+      statusLine = `${spinner}`
+      statusColor = COLORS.green
       const label = this._activeTool ? `Running ${this._activeTool}…` : 'Thinking…'
       statusLine += `  ${label}`
-    } else if (this._awaitingApproval) {
-      // Approval waiting: yellow dots all filled
-      statusLine = `${STATUS_INDICATORS.approval}  Awaiting approval…`
-      statusColor = YELLOW
     } else {
-      // Idle: grey dots all filled
-      statusLine = STATUS_INDICATORS.idle
-      statusColor = DIM
+      statusLine = ''
+      statusColor = COLORS.dim
     }
 
     // Add queue info
@@ -199,16 +228,42 @@ export class StatusBar {
 
   private _updateUsage(): void {
     if (this._destroyed) return
-    if (!this._lastUsage) {
-      this.usageText.content = t``
-      return
-    }
-    const u = this._lastUsage
+
     const parts: string[] = []
-    if (u.inputTokens) parts.push(`in:${u.inputTokens}`)
-    if (u.outputTokens) parts.push(`out:${u.outputTokens}`)
-    if (u.contextPercent) parts.push(`ctx:${u.contextPercent.toFixed(0)}%`)
-    parts.push(`$${this._totalCost.toFixed(4)}`)
-    this.usageText.content = t`${fg(DIM)(parts.join(' · '))}`
+
+    // View indicator (bot/queue/cron)
+    const viewColors: Record<string, string> = {
+      bot: COLORS.white,
+      queue: COLORS.blue,
+      cron: COLORS.yellow,
+    }
+    const viewColor = viewColors[this._currentView] || COLORS.white
+    const workflowIndicator = this._workflowActive ? '●' : '○'
+    parts.push(`${fg(viewColor)(`[${this._currentView}]`)} ${this._workflowType}${workflowIndicator}`)
+
+    // MCP status (if any servers configured)
+    if (this._mcpStatus.length > 0) {
+      const connected = this._mcpStatus.filter(s => s.connected).length
+      const total = this._mcpStatus.length
+      parts.push(`mcp:${connected}/${total}`)
+    }
+
+    // Token usage (always show)
+    const u = this._lastUsage
+    parts.push(`in:${u?.inputTokens ?? 0}`)
+    parts.push(`out:${u?.outputTokens ?? 0}`)
+    parts.push(`ctx:${u?.contextPercent?.toFixed(0) ?? 0}%`)
+
+    // Cost (always show)
+    parts.push(`cost:$${this._totalCost.toFixed(4)}`)
+
+    // Join with double spaces and apply dim color (except view indicator)
+    if (parts.length > 0) {
+      // First part (view indicator) is already colored, rest need dim
+      const coloredParts = parts.slice(1).map(p => fg(COLORS.dim)(p))
+      this.usageText.content = t`${parts[0]}  ${coloredParts.join('  ')}`
+    } else {
+      this.usageText.content = t``
+    }
   }
 }

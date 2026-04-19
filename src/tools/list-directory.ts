@@ -23,7 +23,12 @@ export const listDirectoryTool = {
   },
 };
 
-export async function listDirectory(directoryPath = '.'): Promise<string> {
+export async function listDirectory(directoryPath = '.', abortSignal?: AbortSignal): Promise<string> {
+  // Check abort before starting
+  if (abortSignal?.aborted) {
+    return 'Error: Operation aborted by user.';
+  }
+
   const validated = await validatePath(directoryPath);
   const entries = await fs.readdir(validated, { withFileTypes: true });
 

@@ -1,10 +1,8 @@
 /**
- * InputBar — multiline agent text input at the bottom of the screen.
+ * InputBar — agent text input at the bottom of the screen.
  *
  * Behaviour:
- *  - Enter:                 new line (multiline input)
- *  - Meta+Enter (Cmd/Ctrl): send message
- *  - Meta+Shift+Enter:      queue message
+ *  - Enter: submit message
  *
  * The border label reflects the current mode.
  */
@@ -12,137 +10,175 @@
 import {
   type CliRenderer,
   BoxRenderable,
-  TextRenderable,
-  TextareaRenderable,
-  t,
-  fg,
-  bold,
 } from '@opentui/core'
+import { COLORS } from './theme.js'
+import { ChatInput, type SubmitMode } from './ChatInput.js'
+import { SlashCommandMenu, type SlashCommand } from './SlashCommandMenu.js'
 
-const GREEN  = '#09A469'
-const YELLOW = '#e0af68'
-const DIM    = '#666666'
-const WHITE  = '#cccccc'
-
-export type SubmitMode = 'send' | 'interject' | 'queue'
+export { SubmitMode }
 
 export class InputBar {
   private renderer: CliRenderer
   public readonly root: BoxRenderable
-  private modeLabel: TextRenderable
-  public readonly input: TextareaRenderable
+  public readonly chatInput: ChatInput
+  private readonly slashMenu: SlashCommandMenu
 
-  private onSubmitCb: (value: string, mode: SubmitMode) => void
-  private _isLoading = false
-
-  constructor(renderer: CliRenderer, onSubmit: (value: string, mode: SubmitMode) => void) {
+  constructor(
+    renderer: CliRenderer,
+    onSubmit: (value: string, mode: SubmitMode) => void,
+    commands: SlashCommand[] = [],
+  ) {
     this.renderer = renderer
-    this.onSubmitCb = onSubmit
 
     this.root = new BoxRenderable(renderer, {
       id: 'input-bar-root',
       flexDirection: 'column',
       flexShrink: 0,
       border: true,
-      borderColor: GREEN,
+      borderColor: COLORS.primary,
       borderStyle: 'single',
       marginLeft: 2,
       marginRight: 2,
-      marginBottom: 1,
-      maxHeight: 8, // Limit max height for multiline input
+      maxHeight: 14,
+      paddingLeft: 1,
     })
 
-    // Input row: mode label + textarea input
-    const inputRow = new BoxRenderable(renderer, {
-      id: 'input-bar-row',
-      flexDirection: 'row',
-      flexGrow: 1,
-    })
-    this.root.add(inputRow)
+    // Slash command autocomplete menu (sits above the textarea inside the border)
+    this.slashMenu = new SlashCommandMenu(renderer, commands)
 
-    // Mode label on the left
-    this.modeLabel = new TextRenderable(renderer, {
-      id: 'input-bar-mode',
-      content: t`${bold(fg(GREEN)('> '))}`,
-      marginLeft: 1,
-    })
-    inputRow.add(this.modeLabel)
+    // Shared ChatInput component
+    this.chatInput = new ChatInput(
+      renderer,
+      {
+        id: 'input-bar-input',
+        placeholder: 'Message… (/help · ↑ history · Tab workflow)',
+        placeholderColor: COLORS.dim,
+        textColor: COLORS.white,
+        backgroundColor: 'transparent',
+        flexGrow: 1,
+      },
+      onSubmit
+    )
+    this.root.add(this.chatInput.textarea)
 
-    this.input = new TextareaRenderable(renderer, {
-      id: 'input-bar-input',
-      placeholder: 'Message… (/help for commands)',
-      placeholderColor: DIM,
-      textColor: WHITE,
-      backgroundColor: 'transparent',
-      flexGrow: 1,
-    })
-    inputRow.add(this.input)
+    // Wire menu: update on every keystroke, intercept navigation keys
+    this._wireSlashMenu()
 
     // Click anywhere on the input bar to focus it
     this.root.onMouseDown = () => {
-      this.input.focus()
+      this.chatInput.focus()
     }
 
-    // Handle submit from textarea (Meta+Enter)
-    this.input.onSubmit = () => {
-      const value = this.input.editBuffer.getText()
-      const trimmed = value.trim()
-      if (!trimmed) return
-      this.input.clear()
-      const mode: SubmitMode = this._isLoading ? 'interject' : 'send'
-      this.onSubmitCb(trimmed, mode)
-    }
+    this.chatInput.focus()
+  }
 
-    // Intercept keys for queue shortcuts, and Enter to submit
-    this.input.onKeyDown = (key) => {
-      // Enter to submit (or interject if loading) - only if no modifier (allows text wrapping)
-      if (!key.meta && !key.ctrl && (key.name === 'return' || key.name === 'linefeed' || key.name === 'enter')) {
-        key.preventDefault()
-        const value = this.input.editBuffer.getText()
-        const trimmed = value.trim()
-        if (!trimmed) return
-        // Clear the textarea using the clear method
-        this.input.clear()
-        const mode: SubmitMode = this._isLoading ? 'interject' : 'send'
-        this.onSubmitCb(trimmed, mode)
-        return
-      }
+  private _wireSlashMenu(): void {
+    const menu = this.slashMenu
+    const textarea = this.chatInput.textarea
+    let menuAdded = false
 
-      // Ctrl+Enter or Meta+Enter to insert newline (queue message)
-      if ((key.ctrl || key.meta) && (key.name === 'return' || key.name === 'linefeed' || key.name === 'enter')) {
-        // Let the default behavior insert newline
-        return
+    // Helper to add/remove menu from layout based on visibility
+    const updateMenuInLayout = () => {
+      if (menu.visible && !menuAdded) {
+        this.root.add(menu.root)
+        menuAdded = true
+      } else if (!menu.visible && menuAdded) {
+        this.root.remove(menu.root.id)
+        menuAdded = false
       }
     }
 
-    this.input.focus()
+    // Called when user selects a command (keyboard or mouse)
+    menu.onSelect = (commandName: string) => {
+      textarea.clear()
+      // insertText is a public method on EditBufferRenderable (base class)
+      textarea.insertText(commandName)
+      menu.hide()
+      updateMenuInLayout()
+    }
+
+    // Wrap the existing onKeyDown set by ChatInput
+    const previousOnKeyDown = textarea.onKeyDown
+
+    textarea.onKeyDown = (key: any) => {
+      // ── Navigation inside the open menu ─────────────────────────────
+      if (menu.visible) {
+        if (key.name === 'up') {
+          key.preventDefault()
+          menu.move(-1)
+          return
+        }
+        if (key.name === 'down') {
+          key.preventDefault()
+          menu.move(1)
+          return
+        }
+        if (key.name === 'tab') {
+          key.preventDefault()
+          const selected = menu.getSelected()
+          if (selected) menu.onSelect?.(selected)
+          return
+        }
+        if (!key.meta && !key.ctrl && (key.name === 'return' || key.name === 'linefeed' || key.name === 'enter')) {
+          const selected = menu.getSelected()
+          if (selected) {
+            key.preventDefault()
+            menu.onSelect?.(selected)
+            return
+          }
+          // No selection — fall through to normal submit
+        }
+        if (key.name === 'escape') {
+          key.preventDefault()
+          menu.hide()
+          updateMenuInLayout()
+          return
+        }
+      }
+
+      // Tab key should propagate to cycle views (don't intercept when menu is closed)
+      if (key.name === 'tab' && !menu.visible) {
+        // Let Tab propagate to global handler for workflow switching
+        return
+      }
+
+      // ── Default key handling ─────────────────────────────────────────
+      previousOnKeyDown?.(key)
+
+      // Update menu after the keystroke has mutated the buffer.
+      // Use a microtask so the buffer has been updated first.
+      Promise.resolve().then(() => {
+        const text = textarea.editBuffer?.getText() ?? ''
+        menu.update(text)
+        updateMenuInLayout()
+      })
+    }
   }
 
   setFocused(focused: boolean): void {
-    this.root.borderColor = focused ? GREEN : '#333333'
-    if (focused) this.input.focus()
-    else this.input.blur()
+    this.root.borderColor = focused ? COLORS.primary : COLORS.border
+    if (focused) this.chatInput.focus()
+    else this.chatInput.blur()
   }
 
   setLoading(loading: boolean): void {
-    this._isLoading = loading
-    this._updateModeLabel()
+    this.chatInput.setLoading(loading)
     if (loading) {
-      this.input.placeholder = 'Enter to interject · Ctrl+Enter for newline · Esc to abort'
+      this.chatInput.setPlaceholder('Enter to interject · Esc to abort')
     } else {
-      this.input.placeholder = 'Message…  (Enter to send, Ctrl+Enter for newline)'
-    }
-  }
-
-  private _updateModeLabel(): void {
-    if (this._isLoading) {
-      this.modeLabel.content = t`${bold(fg(YELLOW)('> '))}`
-    } else {
-      this.modeLabel.content = t`${bold(fg(GREEN)('> '))}`
+      this.chatInput.setPlaceholder('Message…  (Enter to send · Tab cycles views)')
     }
   }
 
   focus(): void {
-    this.input.focus()
+    this.chatInput.focus()
+  }
+
+  blur(): void {
+    this.chatInput.blur()
+  }
+
+  get input(): ChatInput['textarea'] {
+    return this.chatInput.textarea
   }
 }

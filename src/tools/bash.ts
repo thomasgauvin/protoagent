@@ -19,12 +19,13 @@ export const bashTool = {
     name: 'bash',
     description:
       'Execute a shell command. Safe commands (ls, grep, git status, etc.) run automatically. ' +
-      'Other commands require user approval. Some dangerous commands are blocked entirely.',
+      'Other commands require user approval. Some dangerous commands are blocked entirely. ' +
+      'Default timeout is 60s. Pass timeout_ms for commands that may take longer (e.g. npm install, builds, tests).',
     parameters: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The shell command to execute.' },
-        timeout_ms: { type: 'number', description: 'Timeout in milliseconds. Defaults to 30000 (30s).' },
+        timeout_ms: { type: 'number', description: 'Timeout in milliseconds. Defaults to 60000 (60s).' },
       },
       required: ['command'],
     },
@@ -163,7 +164,7 @@ async function isSafe(command: string): Promise<boolean> {
 
 export async function runBash(
   command: string,
-  timeoutMs = 30_000,
+  timeoutMs = 60_000,
   sessionId?: string,
   abortSignal?: AbortSignal,
   approvalManager?: any

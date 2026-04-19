@@ -192,15 +192,20 @@ export class McpManager {
           type: 'function' as const,
           function: {
             name: toolName,
-            description: `[MCP: ${conn.serverName}] ${tool.description || tool.name}`,
+            description: `[MCP: ${conn.serverName}] ${typeof tool.description === 'string' ? tool.description : tool.name}`,
             parameters: tool.inputSchema as any,
           },
         });
 
-        this.toolRegistry.registerDynamicHandler(toolName, async (args: unknown) => {
+        this.toolRegistry.registerDynamicHandler(toolName, async (args: unknown, context?: { sessionId?: string; abortSignal?: AbortSignal; approvalManager?: any }) => {
           // Note: Errors from this handler are caught and formatted by
           // handleToolCall() in tools/registry.ts, which wraps all tool calls
           // in a try/catch and returns `Error executing ${toolName}: ${msg}`
+
+          // Check abort before executing
+          if (context?.abortSignal?.aborted) {
+            return `Error executing ${toolName}: Operation aborted by user.`;
+          }
 
           // Ensure the connection is still active
           const activeConn = await this.ensureConnected(conn.serverName);
@@ -317,6 +322,17 @@ export class McpManager {
       };
     }
     return status;
+  }
+
+  /**
+   * Get connection status as an array for UI consumption.
+   */
+  getConnectionStatusArray(): { name: string; connected: boolean; error?: string }[] {
+    return Array.from(this.connections.entries()).map(([name, conn]) => ({
+      name,
+      connected: conn.isConnected,
+      error: conn.lastError?.message,
+    }));
   }
 
   /**

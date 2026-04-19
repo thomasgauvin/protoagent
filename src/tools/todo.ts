@@ -38,7 +38,10 @@ function formatTodos(todos: TodoItem[], heading: string): string {
     cancelled: '[-]',
   };
 
-  const lines = todos.map((t) => `${statusIcons[t.status]} [${t.priority}] ${t.content} (${t.id})`);
+  const lines = todos.map((t) => {
+    const content = t.content?.trim() || '(no description)';
+    return `${statusIcons[t.status]} [${t.priority}] ${content} (${t.id})`;
+  });
   return `${heading}\n${lines.join('\n')}`;
 }
 
@@ -91,12 +94,26 @@ export const todoWriteTool = {
   },
 };
 
-export function readTodos(sessionId?: string): string {
+export function readTodos(sessionId?: string, abortSignal?: AbortSignal): string {
+  // Check abort before processing
+  if (abortSignal?.aborted) {
+    return 'Error: Operation aborted by user.';
+  }
   const todos = todosBySession.get(getSessionKey(sessionId)) ?? [];
   return formatTodos(todos, `TODO List (${todos.length} items):`);
 }
 
-export function writeTodos(newTodos: TodoItem[], sessionId?: string): string {
+export function writeTodos(newTodos: TodoItem[], sessionId?: string, abortSignal?: AbortSignal): string {
+  // Check abort before processing
+  if (abortSignal?.aborted) {
+    return 'Error: Operation aborted by user.';
+  }
+  // Validate todos - require content for all items
+  const invalidTodos = newTodos.filter((t) => !t.content?.trim());
+  if (invalidTodos.length > 0) {
+    const ids = invalidTodos.map((t) => t.id).join(', ');
+    return `Error: ${invalidTodos.length} todo(s) missing required 'content' field (ids: ${ids}). Each todo must have a non-empty 'content' property describing the task.`;
+  }
   const todos = cloneTodos(newTodos);
   todosBySession.set(getSessionKey(sessionId), todos);
   return formatTodos(todos, `TODO List Updated (${todos.length} items):`);

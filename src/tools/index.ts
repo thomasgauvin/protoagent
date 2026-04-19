@@ -20,8 +20,10 @@ export {
   registerDynamicHandler,
   unregisterDynamicHandler,
   handleToolCall,
-  setDangerouslySkipPermissions,
   setApprovalHandler,
   clearApprovalHandler,
 } from './registry.js';
+
+// Re-export approval state functions for convenience
+export { setDangerouslySkipPermissions } from '../utils/approval-state.js';
 

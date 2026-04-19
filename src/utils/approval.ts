@@ -21,9 +21,15 @@
  */
 
 import { ApprovalManager, type ApprovalRequest, type ApprovalResponse } from './approval-manager.js';
+import {
+  setDangerouslySkipPermissions,
+  isDangerouslySkipPermissions,
+} from './approval-state.js';
 
-// Global state (shared across all tabs)
-let dangerouslySkipPermissions = false;
+export {
+  setDangerouslySkipPermissions,
+  isDangerouslySkipPermissions,
+} from './approval-state.js';
 
 /**
  * For backwards compatibility: maintain module-level exports that delegate to
@@ -31,14 +37,6 @@ let dangerouslySkipPermissions = false;
  * without changes, but gradually migrated code will pass ApprovalManager instances around.
  */
 const defaultApprovalManager = new ApprovalManager();
-
-export function setDangerouslySkipPermissions(value: boolean): void {
-  dangerouslySkipPermissions = value;
-}
-
-export function isDangerouslySkipPermissions(): boolean {
-  return dangerouslySkipPermissions;
-}
 
 export function setApprovalHandler(handler: (req: ApprovalRequest) => Promise<ApprovalResponse>): void {
   defaultApprovalManager.setApprovalHandler(handler);
@@ -62,8 +60,35 @@ export function clearSessionApprovals(): void {
  *  4. No handler registered → reject (fail closed)
  */
 export async function requestApproval(req: ApprovalRequest): Promise<boolean> {
-  if (dangerouslySkipPermissions) return true;
+  if (isDangerouslySkipPermissions()) return true;
   return defaultApprovalManager.requestApproval(req);
+}
+
+/**
+ * Unified helper to request tool approval that works with both per-tab
+ * approval managers and the default global approval manager.
+ *
+ * This eliminates the duplicated conditional logic in tool handlers.
+ *
+ * @param approvalManager - Optional per-tab approval manager
+ * @param req - The approval request
+ * @returns true if approved, false otherwise
+ */
+export async function requestToolApproval(
+  approvalManager: ApprovalManager | undefined,
+  req: ApprovalRequest,
+): Promise<boolean> {
+  // --dangerously-skip-permissions bypasses all approval checks (global flag)
+  console.error(`[DEBUG approval] requestToolApproval called, checking isDangerouslySkipPermissions()`);
+  const skip = isDangerouslySkipPermissions();
+  console.error(`[DEBUG approval] isDangerouslySkipPermissions() = ${skip}`);
+  if (skip) return true;
+  if (approvalManager) {
+    console.error(`[DEBUG approval] Using approvalManager`);
+    return await approvalManager.requestApproval(req);
+  }
+  console.error(`[DEBUG approval] Using default requestApproval`);
+  return await requestApproval(req);
 }
 
 /**

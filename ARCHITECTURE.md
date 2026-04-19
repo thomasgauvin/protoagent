@@ -407,6 +407,43 @@ The output is a rebuilt message list with a synthetic summary system message.
 - inline setup
 - loading and usage display
 - MCP initialization/cleanup
+- **view cycling between Bot, Queue, and Cron views**
+
+### View Architecture
+
+The UI uses a three-view system, cycled via **Tab key**:
+
+**Bot View** — The main chat interface
+- Message history with streaming responses
+- Input bar for typing messages
+- Status bar showing agent activity
+- Tool call displays and approval prompts
+
+**Queue View** — Queue workflow visualization
+- ASCII art diagram of the queue workflow
+- List of queued messages and interjects
+- Shows processing order and pending work
+
+**Cron View** — Cron workflow visualization
+- ASCII art diagram of the cron workflow
+- Schedule configuration display
+- Countdown to next execution
+- Last run timestamp
+
+Only one view is visible at a time. The status bar displays the current view (`[bot]`, `[queue]`, `[cron]`) along with the active workflow type indicator.
+
+### View Switching
+
+The `cycleViews()` function handles Tab key navigation:
+- Cycles: Bot → Queue → Cron → Bot
+- Each view switch updates the `currentView` state
+- View-specific content is updated when the view becomes active
+- The workflow type is also cycled to match: queue → loop → cron
+
+### Rendering helpers
+
+- `FormattedMessage` parses mixed text/table/code output
+- `LeftBar` renders a bold green `│` bar on the left side of callout content (tool calls, approvals, errors, code blocks)
 
 ### Rendering helpers
 

@@ -8,7 +8,7 @@
  */
 
 import type { AgentEventHandler, ToolCallEvent } from '../agentic-loop.js';
-import { handleToolCall } from '../tools/index.js';
+import type { ToolRegistry } from '../tools/index.js';
 import { runSubAgent, type SubAgentProgressHandler, type SubAgentUsage } from '../sub-agent.js';
 import { logger } from '../utils/logger.js';
 
@@ -23,6 +23,7 @@ export interface ToolExecutionContext {
   client: any;  // OpenAI client
   model: string;
   pricing?: any;  // ModelPricing
+  toolRegistry?: ToolRegistry;  // Per-tab tool registry (contains MCP tools)
 }
 
 interface ToolResult {
@@ -42,7 +43,7 @@ async function executeSingleTool(
   onEvent: AgentEventHandler,
   context: ToolExecutionContext
 ): Promise<ToolResult> {
-  const { sessionId, abortSignal, approvalManager, requestDefaults, client, model, pricing } = context;
+  const { sessionId, abortSignal, approvalManager, requestDefaults, client, model, pricing, toolRegistry } = context;
   const { id, function: fn } = toolCall;
   const { name, arguments: argsStr } = fn;
 
@@ -71,6 +72,7 @@ async function executeSingleTool(
         subProgress,
         abortSignal,
         pricing,
+        toolRegistry,  // Pass per-tab tool registry to sub-agent
       );
       result = subResult.response;
       if (subResult.usage.inputTokens > 0 || subResult.usage.outputTokens > 0) {
@@ -80,7 +82,14 @@ async function executeSingleTool(
         });
       }
     } else {
-      result = await handleToolCall(name, args, { sessionId, abortSignal, approvalManager });
+      // Use per-tab toolRegistry if provided, otherwise fall back to global handler
+      if (toolRegistry) {
+        result = await toolRegistry.handleToolCall(name, args, { sessionId, abortSignal, approvalManager });
+      } else {
+        // Fallback to global handler for backwards compatibility
+        const { handleToolCall } = await import('../tools/index.js');
+        result = await handleToolCall(name, args, { sessionId, abortSignal, approvalManager });
+      }
     }
 
     logger.info('Tool completed', { tool: name, resultLength: result.length });

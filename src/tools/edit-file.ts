@@ -9,8 +9,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { validatePath } from '../utils/path-validation.js';
-import { findSimilarPaths } from '../utils/path-suggestions.js';
-import { requestApproval, isDangerouslySkipPermissions } from '../utils/approval.js';
+import { handleFileNotFoundWithSuggestions } from '../utils/path-suggestions.js';
+import { requestToolApproval, isDangerouslySkipPermissions } from '../utils/approval.js';
 import { checkReadBefore, recordRead } from '../utils/file-time.js';
 
 export const editFileTool = {
@@ -296,7 +296,13 @@ export async function editFile(
   expectedReplacements = 1,
   sessionId?: string,
   approvalManager?: any,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
+  // Check abort before starting
+  if (abortSignal?.aborted) {
+    return 'Error: Operation aborted by user.';
+  }
+
   if (oldString.length === 0) {
     return 'Error: old_string cannot be empty.';
   }
@@ -306,12 +312,7 @@ export async function editFile(
     validated = await validatePath(filePath);
   } catch (err: any) {
     if (err.message?.includes('does not exist') || err.code === 'ENOENT') {
-      const suggestions = await findSimilarPaths(filePath);
-      let msg = `File not found: '${filePath}'.`;
-      if (suggestions.length > 0) {
-        msg += ' Did you mean one of these?\n' + suggestions.map(s => `  ${s}`).join('\n');
-      }
-      return msg;
+      return await handleFileNotFoundWithSuggestions(filePath, '.');
     }
     throw err;
   }
@@ -423,28 +424,18 @@ export async function editFile(
   const newPreview = newString.length > 200 ? newString.slice(0, 200) + '...' : newString;
   const strategyNote = strategy !== 'exact' ? ` [matched via ${strategy}]` : '';
 
-  let approved: boolean;
-  
-  if (approvalManager) {
-    // Use per-tab approval manager if available
-    approved = await approvalManager.requestApproval({
-      id: `edit-${Date.now()}`,
-      type: 'file_edit',
-      description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})${strategyNote}`,
-      detail: `Replace:\n${oldPreview}\n\nWith:\n${newPreview}`,
-      sessionId,
-      sessionScopeKey: `file_edit:${validated}`,
-    });
-  } else {
-    // Fall back to module-level requestApproval (checks global flag)
-    approved = await requestApproval({
-      id: `edit-${Date.now()}`,
-      type: 'file_edit',
-      description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})${strategyNote}`,
-      detail: `Replace:\n${oldPreview}\n\nWith:\n${newPreview}`,
-      sessionId,
-      sessionScopeKey: `file_edit:${validated}`,
-    });
+  const approved = await requestToolApproval(approvalManager, {
+    id: `edit-${Date.now()}`,
+    type: 'file_edit',
+    description: `Edit file: ${filePath} (${count} replacement${count > 1 ? 's' : ''})${strategyNote}`,
+    detail: `Replace:\n${oldPreview}\n\nWith:\n${newPreview}`,
+    sessionId,
+    sessionScopeKey: `file_edit:${validated}`,
+  });
+
+  // Check abort after approval (user may have pressed Escape during prompt)
+  if (abortSignal?.aborted) {
+    return 'Error: Operation aborted by user.';
   }
 
   if (!approved) {
