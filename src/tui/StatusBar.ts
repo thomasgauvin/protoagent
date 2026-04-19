@@ -58,7 +58,7 @@ export class StatusBar {
   private _sessionId: string | null = null
   private _provider: string | null = null
   private _model: string | null = null
-  private _currentView: 'bot' | 'queue' | 'cron' = 'bot'
+  private _currentView: 'bot' | 'queue' | 'cron' | 'loop' = 'bot'
   private _workflowType: string = 'queue'
   private _workflowActive = false
 
@@ -157,9 +157,9 @@ export class StatusBar {
   }
 
   /**
-   * Set the current view indicator (bot/queue/cron)
+   * Set the current view indicator (bot/queue/cron/loop)
    */
-  setViewIndicator(view: 'bot' | 'queue' | 'cron'): void {
+  setViewIndicator(view: 'bot' | 'queue' | 'cron' | 'loop'): void {
     this._currentView = view
     this._updateUsage()
   }
@@ -231,15 +231,15 @@ export class StatusBar {
 
     const parts: string[] = []
 
-    // View indicator (bot/queue/cron)
+    // View indicator (bot/queue/cron/loop) - shows current view mode only
     const viewColors: Record<string, string> = {
       bot: COLORS.white,
       queue: COLORS.blue,
       cron: COLORS.yellow,
+      loop: COLORS.green,
     }
     const viewColor = viewColors[this._currentView] || COLORS.white
-    const workflowIndicator = this._workflowActive ? '●' : '○'
-    parts.push(`${fg(viewColor)(`[${this._currentView}]`)} ${this._workflowType}${workflowIndicator}`)
+    parts.push(`${fg(viewColor)(`[${this._currentView}]`)}`)
 
     // MCP status (if any servers configured)
     if (this._mcpStatus.length > 0) {

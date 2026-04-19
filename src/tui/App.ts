@@ -98,6 +98,8 @@ import { MessageHistory } from './MessageHistory.js'
 import { InputBar, type SubmitMode } from './InputBar.js'
 import { StatusBar, type McpServerStatus } from './StatusBar.js'
 import { WelcomeScreen } from './WelcomeScreen.js'
+import { RightSidebar } from './RightSidebar.js'
+import { LoopSetupDialog, type LoopSetupConfig } from './LoopSetupDialog.js'
 import {
   WorkflowManager,
   LoopWorkflow,
@@ -121,7 +123,7 @@ const SLASH_COMMANDS = [
   { name: '/rename', description: 'Rename the current tab' },
   { name: '/fork', description: 'Fork this chat into a new tab with the same history' },
   { name: '/reconnect', description: 'Reconnect all MCP servers' },
-  { name: '/workflow', description: 'Switch workflow type (queue|cron)' },
+  { name: '/loop', description: 'Setup and run a loop workflow' },
   { name: '/pin', description: 'Pin the current tab to keep it at the top' },
   { name: '/unpin', description: 'Unpin the current tab' },
   { name: '/quit', description: 'Exit ProtoAgent' },
@@ -138,6 +140,9 @@ const HELP_TEXT = [
   '  /session open <id>          Open a session in a new tab',
   '  /session search <query>     Search sessions by title or message content',
   '',
+  'Workflow commands:',
+  '  /loop                       Setup and run a loop workflow',
+  '',
   'Tab management:',
   '  /pin                        Pin the current tab to keep it at the top',
   '  /unpin                      Unpin the current tab',
@@ -148,8 +153,8 @@ const HELP_TEXT = [
   '',
   'Keyboard shortcuts:',
   '  Enter           Send message',
-  '  Tab             Cycle views: Bot → Queue → Cron → Bot',
-  '  Esc             Abort running agent task / Stop workflow',
+  '  Tab             Cycle workflow: Bot → Queue → Loop → Cron → Bot',
+  '  Esc             Abort running agent task',
   '  Ctrl+C          Save tabs and exit',
   '  Ctrl+L          Toggle light/dark theme',
   '',
@@ -325,18 +330,53 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   }
 
   // ─── View state management ───
-  type ViewType = 'bot' | 'queue' | 'cron'
+  type ViewType = 'bot' | 'queue' | 'cron' | 'loop'
   let currentView: ViewType = 'bot'
   const viewContainers: Map<ViewType, BoxRenderable> = new Map()
 
-  // ─── BOT VIEW: Chat interface ───
+  // ─── BOT VIEW: Chat interface with right sidebar ───
   const botView = new BoxRenderable(renderer, {
     id: 'bot-view',
-    flexDirection: 'column',
+    flexDirection: 'row', // Horizontal: chat left, sidebar right
     flexGrow: 1,
     overflow: 'hidden',
   })
   viewContainers.set('bot', botView)
+
+  // ─── Chat area (left side of bot view) ───
+  const chatArea = new BoxRenderable(renderer, {
+    id: 'chat-area',
+    flexDirection: 'column',
+    flexGrow: 1,
+    overflow: 'hidden',
+  })
+  botView.add(chatArea)
+
+  // ─── Right sidebar (Workflow + TODOs + Queue) ───
+  const rightSidebar = new RightSidebar(renderer, {
+    onAdd: (content: string) => {
+      if (session) {
+        const { addTodo } = require('../tools/todo.js')
+        addTodo(content, session.id)
+        rightSidebar.setTodos(getTodosForSession(session.id))
+      }
+    },
+    onDelete: (id: string) => {
+      if (session) {
+        const { deleteTodo } = require('../tools/todo.js')
+        deleteTodo(id, session.id)
+        rightSidebar.setTodos(getTodosForSession(session.id))
+      }
+    },
+    onUpdate: (id: string, updates) => {
+      if (session) {
+        const { updateTodo } = require('../tools/todo.js')
+        updateTodo(id, updates, session.id)
+        rightSidebar.setTodos(getTodosForSession(session.id))
+      }
+    },
+  })
+  botView.add(rightSidebar.root)
 
   // ─── QUEUE VIEW: Workflow visualization ───
   const queueView = new BoxRenderable(renderer, {
@@ -344,7 +384,6 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     flexDirection: 'column',
     flexGrow: 1,
     overflow: 'hidden',
-    display: 'none', // Hidden by default
   })
   viewContainers.set('queue', queueView)
 
@@ -354,21 +393,30 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     flexDirection: 'column',
     flexGrow: 1,
     overflow: 'hidden',
-    display: 'none', // Hidden by default
   })
   viewContainers.set('cron', cronView)
+
+  // ─── LOOP VIEW: Loop workflow visualization ───
+  const loopView = new BoxRenderable(renderer, {
+    id: 'loop-view',
+    flexDirection: 'column',
+    flexGrow: 1,
+    overflow: 'hidden',
+  })
+  viewContainers.set('loop', loopView)
 
   // Add all views to mainView (only one visible at a time)
   mainView.add(botView)
   mainView.add(queueView)
   mainView.add(cronView)
+  mainView.add(loopView)
 
-  // ─── MessageHistory (fills bot view vertically) ───
+  // ─── MessageHistory (fills chat area vertically) ───
   const msgHistory = new MessageHistory({
     renderer,
     onMouseDown: () => inputBar.focus(),
   })
-  botView.add(msgHistory.root)
+  chatArea.add(msgHistory.root)
 
   // Register scroll-to-bottom and input focus for tab activation (called by TabApp when switching back to this tab)
   // scrollToBottom is called immediately to prevent visible scroll jump
@@ -386,7 +434,7 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   })
 
   // ─── Status row (spinner/activity) ───
-  botView.add(statusBar.statusRoot)
+  chatArea.add(statusBar.statusRoot)
 
   // Clicking the status rows also refocuses input
   statusBar.statusRoot.onMouseDown = () => { inputBar.focus() }
@@ -397,7 +445,7 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
 
     // Hide all views
     for (const [type, container] of viewContainers) {
-      container.style = { ...container.style, display: type === view ? 'flex' : 'none' }
+      ;(container as any).style = { ...(container as any).style, display: type === view ? 'flex' : 'none' }
     }
 
     currentView = view
@@ -410,6 +458,8 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
       updateQueueView()
     } else if (view === 'cron') {
       updateCronView()
+    } else if (view === 'loop') {
+      updateLoopView()
     }
 
     renderer.requestRender()
@@ -538,6 +588,9 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
 
       queueListContent.content = t`${lines.join('\n')}`
     }
+
+    // Update right sidebar queue
+    rightSidebar.setQueue(queued, pendingInterjects)
   }
 
   // ─── Update Cron View ───
@@ -577,14 +630,110 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     cronInfoText.content = t`${lines.join('\n')}`
   }
 
-  // Clicking anywhere in the bot view refocuses the input
-  botView.onMouseDown = () => {
+  // ─── Build Loop View Content ───
+  const loopViewHeader = new TextRenderable(renderer, {
+    id: 'loop-view-header',
+    content: t`${bold('🔁 Loop Workflow')}`,
+  })
+  const loopHeaderBox = new BoxRenderable(renderer, {
+    id: 'loop-header-box',
+    paddingTop: 1,
+    paddingLeft: 2,
+    paddingBottom: 1,
+    flexShrink: 0,
+  })
+  loopHeaderBox.add(loopViewHeader)
+  loopView.add(loopHeaderBox)
+
+  const loopDiagramText = new TextRenderable(renderer, {
+    id: 'loop-diagram-text',
+    content: t``, // Will be set by updateLoopView
+  })
+  const loopDiagramBox = new BoxRenderable(renderer, {
+    id: 'loop-diagram-box',
+    paddingLeft: 2,
+    paddingBottom: 2,
+    flexShrink: 0,
+  })
+  loopDiagramBox.add(loopDiagramText)
+  loopView.add(loopDiagramBox)
+
+  const loopInfoText = new TextRenderable(renderer, {
+    id: 'loop-info-text',
+    content: t``, // Will be set by updateLoopView
+  })
+  const loopInfoBox = new BoxRenderable(renderer, {
+    id: 'loop-info-box',
+    paddingLeft: 2,
+    flexGrow: 1,
+  })
+  loopInfoBox.add(loopInfoText)
+  loopView.add(loopInfoBox)
+
+  // ─── Update Loop View ───
+  function updateLoopView(): void {
+    const diagram = getCompactDiagram('loop')
+    loopDiagramText.content = t`${diagram.lines.join('\n')}`
+
+    if (!workflowManager) {
+      loopInfoText.content = t`${fg(COLORS.dim)('Loop workflow not initialized')}`
+      return
+    }
+
+    const state = workflowManager.getState()
+    if (state.type !== 'loop') {
+      loopInfoText.content = t`${fg(COLORS.dim)('Switch to loop workflow to see details')}`
+      return
+    }
+
+    const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
+    const config = loopWorkflow.getConfig()
+    const progress = loopWorkflow.getProgress()
+
+    const lines: string[] = []
+
+    // Configuration
+    const workPrompt = config.workPrompt || 'Not configured'
+    const truncatedWorkPrompt = workPrompt.length > 60 ? workPrompt.slice(0, 57) + '...' : workPrompt
+    lines.push(`${fg(COLORS.primary)('Work Prompt:')} ${truncatedWorkPrompt}`)
+
+    const closingCondition = config.closingConditionPrompt || 'Not configured'
+    const truncatedClosing = closingCondition.length > 60 ? closingCondition.slice(0, 57) + '...' : closingCondition
+    lines.push(`${fg(COLORS.primary)('Closing Condition:')} ${truncatedClosing}`)
+
+    lines.push(`${fg(COLORS.primary)('Max Iterations:')} ${config.maxIterations || 10}`)
+
+    // Progress
+    lines.push('')
+    if (state.isActive) {
+      const progressBar = '█'.repeat(Math.floor(progress.percentComplete / 10)) + '░'.repeat(10 - Math.floor(progress.percentComplete / 10))
+      lines.push(`${fg(COLORS.yellow)('Progress:')} [${progressBar}] ${progress.currentIteration}/${progress.maxIterations}`)
+      if (progress.phase === 'evaluating') {
+        lines.push(`${fg(COLORS.green)('Status:')} Evaluating closing condition...`)
+      } else if (progress.phase === 'working') {
+        lines.push(`${fg(COLORS.green)('Status:')} Running iteration ${progress.currentIteration}`)
+      } else {
+        lines.push(`${fg(COLORS.dim)('Status:')} Ready`)
+      }
+    } else {
+      if (config.workPrompt && config.closingConditionPrompt) {
+        lines.push(`${fg(COLORS.dim)('Status:')} Ready to start`)
+      } else {
+        lines.push(`${fg(COLORS.dim)('Status:')} Use /loop to configure`)
+      }
+    }
+
+    loopInfoText.content = t`${lines.join('\n')}`
+  }
+
+  // Clicking anywhere in the chat area refocuses the input
+  chatArea.onMouseDown = () => {
     inputBar.focus()
   }
 
   // ─── Input bar ───
   const inputBar = new InputBar(renderer, handleSubmit, SLASH_COMMANDS)
-  botView.add(inputBar.root)
+  chatArea.add(inputBar.root)
 
   // ─── Approval prompt (replaces input bar when active) ───
   const approvalRoot = new BoxRenderable(renderer, {
@@ -711,12 +860,50 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     // Update the appropriate view
     if (state.type === 'cron') {
       updateCronView()
-    } else if (state.type === 'queue' || state.type === 'loop') {
+    } else if (state.type === 'loop') {
+      updateLoopView()
+    } else if (state.type === 'queue') {
       updateQueueView()
     }
 
-    // Update status bar indicator
-    statusBar.setWorkflowType(state.type, state.isActive)
+    // Update right sidebar workflow type and diagram
+    rightSidebar.setWorkflowType(state.type, state.isActive)
+
+    // Update right sidebar contextual content based on workflow type
+    if (state.type === 'cron') {
+      const cronWorkflow = workflowManager.getCurrentWorkflow() as CronWorkflow
+      const cronState = workflowManager.getCronState()
+      rightSidebar.setCronInfo({
+        schedule: cronState?.schedule,
+        prompt: cronState?.prompt,
+        nextRunAt: cronState?.cronNextRunAt,
+        lastRunAt: cronState?.cronLastRunAt,
+        timeUntilNextMs: cronState?.timeUntilNextMs,
+      })
+    } else if (state.type === 'loop') {
+      const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
+      const config = loopWorkflow.getConfig()
+      const progress = loopWorkflow.getProgress()
+      rightSidebar.setLoopInfo({
+        workPrompt: config.workPrompt,
+        closingCondition: config.closingConditionPrompt,
+        maxIterations: config.maxIterations,
+        currentIteration: progress.currentIteration,
+        isActive: state.isActive,
+        phase: progress.phase,
+      })
+    } else {
+      // Queue workflow - show queue
+      rightSidebar.setQueue(
+        session?.id ? getQueueForSession(session.id).filter(m => m.type === 'queued') : [],
+        pendingInterjects
+      )
+    }
+
+    // Always update todos
+    if (session) {
+      rightSidebar.setTodos(getTodosForSession(session.id))
+    }
   }
 
   // Cron timer check interval
@@ -771,10 +958,10 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   }
 
   /**
-   * Cycle through views: Bot → Queue → Cron → Bot
+   * Cycle through views: Bot → Queue → Loop → Cron → Bot
    */
   function cycleViews(): void {
-    const views: ViewType[] = ['bot', 'queue', 'cron']
+    const views: ViewType[] = ['bot', 'queue', 'loop', 'cron']
     const currentIndex = views.indexOf(currentView)
     const nextIndex = (currentIndex + 1) % views.length
     const nextView = views[nextIndex]
@@ -840,9 +1027,9 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
     savedInputBuffer = inputBar.input.editBuffer.getText()
 
     // Swap: hide input bar, show approval
-    botView.remove(inputBar.root.id)
+    chatArea.remove(inputBar.root.id)
     inputBar.input.blur()
-    botView.add(approvalRoot)
+    chatArea.add(approvalRoot)
     renderer.requestRender()
 
     statusBar.setAwaitingApproval(true)
@@ -851,8 +1038,8 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
 
   function hideApprovalPrompt(): void {
     // Swap: hide approval, restore input bar
-    try { botView.remove(approvalRoot.id) } catch {}
-    botView.add(inputBar.root)
+    try { chatArea.remove(approvalRoot.id) } catch {}
+    chatArea.add(inputBar.root)
     inputBar.focus()
     // Restore the saved input buffer content
     if (savedInputBuffer) {
@@ -863,6 +1050,69 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
     pendingApproval = null
     statusBar.setAwaitingApproval(false)
     options.onApprovalChange?.(false)
+    renderer.requestRender()
+  }
+
+  /**
+   * Show the loop setup dialog
+   */
+  function showLoopSetupDialog(): void {
+    if (!workflowManager || !client || !config) {
+      statusBar.setError('Cannot setup loop: workflow manager not ready')
+      return
+    }
+
+    // Hide main view and show loop setup
+    ;(mainView as any).style = { ...(mainView as any).style, display: 'none' }
+
+    const setupDialog = new LoopSetupDialog(renderer, async (result) => {
+      // Remove setup dialog
+      rootBox.remove(setupDialog.root.id)
+
+      // Restore main view
+      ;(mainView as any).style = { ...(mainView as any).style, display: 'flex' }
+
+      if (result && workflowManager) {
+        // Switch to loop workflow
+        workflowManager.switchWorkflow('loop')
+
+        // Configure the loop workflow
+        const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
+        loopWorkflow.updateConfig({
+          workPrompt: result.workPrompt,
+          closingConditionPrompt: result.closingConditionPrompt,
+          maxIterations: result.maxIterations,
+        })
+
+        // Switch to loop view
+        switchView('loop')
+
+        // Show confirmation message
+        completionMessages = [
+          ...completionMessages,
+          { role: 'user', content: '[loop setup]' },
+          {
+            role: 'assistant',
+            content: `🔁 Loop workflow configured:\n\n**Work Prompt:** ${result.workPrompt}\n\n**Closing Condition:** ${result.closingConditionPrompt}\n\n**Max Iterations:** ${result.maxIterations}\n\nType a message to start the loop.`,
+          },
+        ]
+        msgHistory.setMessages(completionMessages)
+
+        // Update session
+        if (session) {
+          session.workflowState = workflowManager.getState()
+        }
+
+        updateWorkflowDisplay()
+      }
+
+      // Refocus input
+      inputBar.focus()
+      renderer.requestRender()
+    })
+
+    rootBox.add(setupDialog.root)
+    setupDialog.focus()
     renderer.requestRender()
   }
 
@@ -956,10 +1206,11 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
           // Next assistant response chunk should have leading whitespace trimmed
           shouldTrimNextChunk = true
 
-          // Show full todo list in chat history when agent updates todos
+          // Update todo sidebar when agent updates todos
           if (event.toolCall.name === 'todo_write' && session) {
             const todos = getTodosForSession(session.id)
             msgHistory.showTodoList(todos)
+            rightSidebar.setTodos(todos)
           }
 
         }
@@ -998,6 +1249,15 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
           lastUsage = event.usage
           totalCost += event.usage.cost
           statusBar.setUsage(lastUsage, totalCost)
+          // Update todo sidebar usage
+          rightSidebar.setUsage(
+            {
+              inputTokens: event.usage.inputTokens,
+              outputTokens: event.usage.outputTokens,
+              contextPercent: event.usage.contextPercent,
+            },
+            totalCost
+          )
         }
         break
       }
@@ -1163,8 +1423,10 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
         // Check for workflow-specific next iteration message (for loop workflow)
         if (shouldContinueWorkflow && workflowManager.getCurrentType() === 'loop') {
           const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
-          const nextIterationMsg = loopWorkflow.getNextIterationMessage()
-          completionMessages = [...completionMessages, { role: 'user', content: nextIterationMsg }]
+          const nextMsg = loopWorkflow.getNextMessage()
+          if (nextMsg) {
+            completionMessages = [...completionMessages, nextMsg]
+          }
         }
 
         // Update workflow display
@@ -1238,6 +1500,10 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
         completionMessages = [...completionMessages, { role: 'user', content: '[help]' } as any]
         completionMessages = [...completionMessages, { role: 'assistant', content: HELP_TEXT } as any]
         msgHistory.setMessages(completionMessages)
+        return true
+      case '/loop':
+        // Show loop setup dialog
+        showLoopSetupDialog()
         return true
       case '/new':
         if (!options.onNewTab) {

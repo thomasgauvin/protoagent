@@ -5,14 +5,12 @@
  * until a specified end condition is met.
  *
  * The user provides:
- * 1. Instructions for what to do in each iteration
- * 2. An end condition (when to stop looping)
+ * 1. Work prompt - instructions for what to do in each iteration
+ * 2. Closing condition prompt - criteria to evaluate if work is complete
+ * 3. Max iterations - safety limit to prevent infinite loops
  *
- * The agent will:
- * 1. Execute the instructions
- * 2. Check if the end condition is met
- * 3. If not met, continue to the next iteration
- * 4. If met, exit the loop and report results
+ * The workflow automatically detects when an iteration completes (when the agent
+ * finishes its work and all tool calls are done), then evaluates the closing condition.
  */
 
 import type { Message } from '../agentic-loop.js';
@@ -25,40 +23,55 @@ import type {
 import { getWorkflowDiagram, getCompactDiagram } from './diagrams.js';
 
 export interface LoopWorkflowConfig {
-  /** The instructions to execute in each iteration */
-  instructions: string;
-  /** The condition that determines when to stop looping */
-  endCondition: string;
-  /** Maximum number of iterations to prevent infinite loops */
+  /** The work prompt to execute in each iteration */
+  workPrompt: string;
+  /** The closing condition prompt - agent evaluates this to determine if done */
+  closingConditionPrompt: string;
+  /** Maximum number of iterations to prevent infinite loops (default: 10) */
   maxIterations?: number;
   /** Whether to accumulate results from each iteration */
   accumulateResults?: boolean;
 }
 
+/**
+ * Response format expected from the agent when evaluating closing condition
+ */
+interface ClosingConditionResponse {
+  isComplete: boolean;
+  reason: string;
+}
+
 export class LoopWorkflow implements Workflow {
   readonly type = 'loop' as const;
   readonly name = 'Loop';
-  readonly description = 'Repeat instructions until a condition is met';
+  readonly description = 'Repeat work until closing condition is met';
 
   private state: WorkflowState;
   private config: LoopWorkflowConfig;
   private useCompactDiagram: boolean;
+  /** Tracks what phase we're in */
+  private phase: 'idle' | 'working' | 'evaluating' = 'idle';
+  /** Tracks if there are pending tool calls */
+  private pendingToolCalls: boolean = false;
+  /** The last work result from the agent */
+  private lastWorkResult: string = '';
+  /** Accumulated results from all iterations */
+  private iterationResults: string[] = [];
 
   constructor(config?: LoopWorkflowConfig, useCompact = false) {
     this.useCompactDiagram = useCompact;
     this.config = {
-      maxIterations: 50,
+      maxIterations: 10,
       accumulateResults: true,
-      ...config,
-      instructions: config?.instructions || '',
-      endCondition: config?.endCondition || '',
+      workPrompt: config?.workPrompt || '',
+      closingConditionPrompt: config?.closingConditionPrompt || '',
     };
     this.state = {
       type: 'loop',
       isActive: false,
       iterationCount: 0,
-      endCondition: this.config.endCondition,
-      loopInstructions: this.config.instructions,
+      endCondition: this.config.closingConditionPrompt,
+      loopInstructions: this.config.workPrompt,
       loopResults: [],
     };
   }
@@ -73,101 +86,187 @@ export class LoopWorkflow implements Workflow {
       ...initialState,
       type: 'loop',
       isActive: true,
-      iterationCount: 0,
-      loopResults: [],
+      iterationCount: initialState?.iterationCount || 0,
+      loopResults: initialState?.loopResults || [],
     };
 
     // Update config from state if provided
     if (initialState?.endCondition) {
-      this.config.endCondition = initialState.endCondition;
+      this.config.closingConditionPrompt = initialState.endCondition;
     }
     if (initialState?.loopInstructions) {
-      this.config.instructions = initialState.loopInstructions;
+      this.config.workPrompt = initialState.loopInstructions;
     }
+
+    this.phase = 'idle';
+    this.pendingToolCalls = false;
+    this.lastWorkResult = '';
+    this.iterationResults = this.state.loopResults || [];
   }
 
   stop(): void {
     this.state.isActive = false;
+    this.phase = 'idle';
+    this.pendingToolCalls = false;
   }
 
   /**
-   * Process a message to start the loop workflow.
-   * This parses the user's input to extract instructions and end condition.
+   * Process the initial message to start the loop workflow.
+   * This begins the first work iteration.
    */
   processMessage(content: string | any[], messages: Message[]): WorkflowResult {
-    // Parse the message for loop configuration
-    // Format: "instructions /until end condition"
-    // or with explicit markers
     const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
-    const parsed = this.parseLoopInput(contentStr);
 
-    this.config.instructions = parsed.instructions;
-    this.config.endCondition = parsed.endCondition;
+    // Use the content as the work prompt if we don't have one configured
+    if (!this.config.workPrompt) {
+      this.config.workPrompt = contentStr;
+      this.state.loopInstructions = contentStr;
+    }
 
     this.state = {
       ...this.state,
       isActive: true,
       iterationCount: 1,
-      endCondition: parsed.endCondition,
-      loopInstructions: parsed.instructions,
       loopResults: [],
     };
 
+    this.phase = 'working';
+    this.pendingToolCalls = false;
+    this.lastWorkResult = '';
+    this.iterationResults = [];
+
     // Build the system prompt addition for the loop
-    const systemPromptAddition = this.buildLoopSystemPrompt();
+    const systemPromptAddition = this.buildWorkSystemPrompt();
 
     return {
-      messages: [...messages, { role: 'user', content: parsed.instructions }],
-      shouldContinue: true, // Loop starts immediately
+      messages: [...messages, { role: 'user', content: this.config.workPrompt }],
+      shouldContinue: false, // We'll handle continuation via onResponse
       systemPromptAddition,
     };
   }
 
   /**
-   * Called after each LLM response to check if loop should continue
+   * Called after each LLM response to determine if loop should continue.
+   * This tracks tool calls and automatically triggers closing condition evaluation
+   * when a work iteration naturally completes.
    */
   onResponse(response: Message): boolean {
     if (!this.state.isActive) {
       return false;
     }
 
-    // Store the result if accumulating
-    if (this.config.accumulateResults && response.content) {
-      this.state.loopResults = [...(this.state.loopResults || []), String(response.content)];
-    }
-
-    // Check if we've exceeded max iterations
-    const maxIterations = this.config.maxIterations || 50;
-    if (this.state.iterationCount >= maxIterations) {
-      this.state.isActive = false;
-      return false;
-    }
-
-    // The LLM should indicate if the end condition is met
-    // We'll check for explicit markers in the response
     const content = typeof response.content === 'string' ? response.content : '';
 
-    // Check for completion indicators
-    if (this.isEndConditionMet(content)) {
+    // Check if we've exceeded max iterations
+    const maxIterations = this.config.maxIterations || 10;
+    if (this.state.iterationCount >= maxIterations) {
       this.state.isActive = false;
+      this.phase = 'idle';
+      this.pendingToolCalls = false;
       return false;
     }
 
-    // Continue the loop
-    this.state.iterationCount++;
-    return true;
+    // Check for tool calls in the response
+    const hasToolCalls = 'tool_calls' in response && 
+      Array.isArray((response as any).tool_calls) && 
+      (response as any).tool_calls.length > 0;
+
+    if (hasToolCalls) {
+      // Agent is making tool calls - work is in progress
+      this.pendingToolCalls = true;
+      this.phase = 'working';
+      // Store partial result
+      this.lastWorkResult = content;
+      return false; // Wait for tool results
+    }
+
+    // No tool calls in this response
+    if (this.pendingToolCalls) {
+      // This is a tool result message, not the assistant's work
+      // Keep waiting for the assistant to respond after tool results
+      return false;
+    }
+
+    // Check if this is an assistant message after work completion
+    if (response.role === 'assistant') {
+      if (this.phase === 'working') {
+        // Work iteration has completed - store the result
+        this.lastWorkResult = content;
+        if (this.config.accumulateResults && content) {
+          this.iterationResults.push(content);
+          this.state.loopResults = [...this.iterationResults];
+        }
+
+        // Transition to evaluating phase
+        this.phase = 'evaluating';
+        return true; // Trigger closing condition evaluation
+      }
+
+      if (this.phase === 'evaluating') {
+        // This is the closing condition evaluation response
+        const evaluation = this.parseClosingConditionResponse(content);
+
+        if (evaluation.isComplete) {
+          // Work is done - stop the loop
+          this.state.isActive = false;
+          this.phase = 'idle';
+          return false;
+        } else {
+          // Continue to next iteration
+          this.phase = 'working';
+          this.state.iterationCount++;
+          return true; // Trigger next work iteration
+        }
+      }
+    }
+
+    return false;
   }
 
   /**
-   * Get the next iteration's message
-   * This is called when shouldContinue is true
+   * Signal that tool results have been processed.
+   * This is called after all tool results are sent back to the LLM.
+   */
+  onToolResultsComplete(): void {
+    if (!this.state.isActive) return;
+    
+    // Tool calls are now complete, wait for assistant response
+    this.pendingToolCalls = false;
+  }
+
+  /**
+   * Get the next message to send based on workflow state
+   */
+  getNextMessage(): { role: 'user'; content: string } | null {
+    if (!this.state.isActive) {
+      return null;
+    }
+
+    if (this.phase === 'evaluating') {
+      // Send the closing condition prompt for evaluation
+      return {
+        role: 'user',
+        content: this.buildClosingConditionPrompt(),
+      };
+    }
+
+    if (this.phase === 'working' && this.state.iterationCount > 1) {
+      // Continue with another work iteration (not the first one)
+      return {
+        role: 'user',
+        content: `[Iteration ${this.state.iterationCount}] ${this.config.workPrompt}`,
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * @deprecated Use getNextMessage() instead
    */
   getNextIterationMessage(): string {
-    const iterationCount = this.state.iterationCount;
-    const endCondition = this.config.endCondition;
-    const instructions = this.config.instructions;
-
-    return `Iteration ${iterationCount}: Continue with the task. Check if: ${endCondition}. If met, indicate completion clearly. Otherwise, continue with: ${instructions}`;
+    const nextMsg = this.getNextMessage();
+    return nextMsg?.content || '';
   }
 
   getDiagram(): WorkflowDiagram {
@@ -181,112 +280,101 @@ export class LoopWorkflow implements Workflow {
       type: 'loop',
       isActive: false,
       iterationCount: 0,
-      endCondition: this.config.endCondition,
-      loopInstructions: this.config.instructions,
+      endCondition: this.config.closingConditionPrompt,
+      loopInstructions: this.config.workPrompt,
       loopResults: [],
     };
+    this.phase = 'idle';
+    this.pendingToolCalls = false;
+    this.lastWorkResult = '';
+    this.iterationResults = [];
   }
 
   /**
    * Update loop configuration
    */
   updateConfig(config: Partial<LoopWorkflowConfig>): void {
-    this.config = { ...this.config, ...config };
-    if (config.endCondition) {
-      this.state.endCondition = config.endCondition;
+    if (config.workPrompt !== undefined) {
+      this.config.workPrompt = config.workPrompt;
+      this.state.loopInstructions = config.workPrompt;
     }
-    if (config.instructions) {
-      this.state.loopInstructions = config.instructions;
+    if (config.closingConditionPrompt !== undefined) {
+      this.config.closingConditionPrompt = config.closingConditionPrompt;
+      this.state.endCondition = config.closingConditionPrompt;
+    }
+    if (config.maxIterations !== undefined) {
+      this.config.maxIterations = config.maxIterations;
+    }
+    if (config.accumulateResults !== undefined) {
+      this.config.accumulateResults = config.accumulateResults;
     }
   }
 
   /**
-   * Parse user input to extract loop instructions and end condition
-   * Supports formats like:
-   *   "do X /until Y"
-   *   "do X until Y"
-   *   "instructions: X end: Y"
+   * Get the current loop configuration
    */
-  private parseLoopInput(content: string): { instructions: string; endCondition: string } {
-    // Try /until syntax first
-    const untilMatch = content.match(/(.+?)\s*(?:\/until|until:)\s*(.+)/i);
-    if (untilMatch) {
-      return {
-        instructions: untilMatch[1].trim(),
-        endCondition: untilMatch[2].trim(),
-      };
-    }
+  getConfig(): LoopWorkflowConfig {
+    return { ...this.config };
+  }
 
-    // Try explicit markers
-    const instructionsMatch = content.match(/instructions?:\s*(.+?)(?:end(?:\s*condition)?:\s*(.+))?$/i);
-    if (instructionsMatch) {
-      return {
-        instructions: instructionsMatch[1].trim(),
-        endCondition: instructionsMatch[2]?.trim() || 'task is complete',
-      };
-    }
+  /**
+   * Check if loop is configured and ready to run
+   */
+  isConfigured(): boolean {
+    return !!this.config.workPrompt && !!this.config.closingConditionPrompt;
+  }
 
-    // Default: treat the whole thing as instructions with a generic end condition
+  /**
+   * Get current phase
+   */
+  getPhase(): 'idle' | 'working' | 'evaluating' {
+    return this.phase;
+  }
+
+  /**
+   * Get current iteration progress
+   */
+  getProgress(): {
+    currentIteration: number;
+    maxIterations: number;
+    phase: 'idle' | 'working' | 'evaluating';
+    percentComplete: number;
+  } {
+    const maxIterations = this.config.maxIterations || 10;
+    const percentComplete = Math.min(
+      100,
+      (this.state.iterationCount / maxIterations) * 100
+    );
+
     return {
-      instructions: content.trim(),
-      endCondition: 'the task is complete',
+      currentIteration: this.state.iterationCount,
+      maxIterations,
+      phase: this.phase,
+      percentComplete,
     };
-  }
-
-  /**
-   * Build a system prompt addition that guides the LLM through the loop
-   */
-  private buildLoopSystemPrompt(): string {
-    return `
-You are in a LOOP WORKFLOW. You will execute the following instructions repeatedly until the end condition is met.
-
-INSTRUCTIONS: ${this.config.instructions}
-
-END CONDITION: ${this.config.endCondition}
-
-RULES:
-1. Execute the instructions in each iteration
-2. After each iteration, evaluate if the end condition is met
-3. If the end condition IS met, respond with "[LOOP_COMPLETE]" followed by a summary
-4. If the end condition IS NOT met, continue with the next iteration
-5. Keep track of your progress across iterations
-6. You are on iteration ${this.state.iterationCount} of maximum ${this.config.maxIterations}
-
-${this.state.loopResults && this.state.loopResults.length > 0 ? `PREVIOUS RESULTS:\n${this.state.loopResults.join('\n---\n')}` : ''}
-`;
-  }
-
-  /**
-   * Check if the end condition is met based on the LLM response
-   */
-  private isEndConditionMet(content: string): boolean {
-    // Check for explicit completion markers
-    const completionMarkers = [
-      '[LOOP_COMPLETE]',
-      '[COMPLETE]',
-      '[DONE]',
-      '[END]',
-      'loop complete',
-      'task complete',
-      'completed successfully',
-    ];
-
-    const lowerContent = content.toLowerCase();
-    return completionMarkers.some((marker) => lowerContent.includes(marker.toLowerCase()));
   }
 
   /**
    * Get a summary of all iterations for the final response
    */
   getLoopSummary(): string {
-    const results = this.state.loopResults || [];
+    const results = this.iterationResults;
     const iterations = this.state.iterationCount;
+    const maxIterations = this.config.maxIterations || 10;
 
-    if (results.length === 0) {
-      return `Loop completed after ${iterations} iteration(s).`;
+    let summary = `Loop completed after ${iterations} iteration(s)`;
+    if (iterations >= maxIterations) {
+      summary += ` (reached max iterations limit of ${maxIterations})`;
+    }
+    summary += '.';
+
+    if (results.length > 0) {
+      summary += `\n\nResults by iteration:\n${results
+        .map((r, i) => `\n--- Iteration ${i + 1} ---\n${r}`)
+        .join('')}`;
     }
 
-    return `Loop completed after ${iterations} iteration(s).\n\nResults by iteration:\n${results.map((r, i) => `\n--- Iteration ${i + 1} ---\n${r}`).join('')}`;
+    return summary;
   }
 
   /**
@@ -294,6 +382,91 @@ ${this.state.loopResults && this.state.loopResults.length > 0 ? `PREVIOUS RESULT
    */
   setCompactDiagram(useCompact: boolean): void {
     this.useCompactDiagram = useCompact;
+  }
+
+  /**
+   * Build the system prompt for work iterations
+   */
+  private buildWorkSystemPrompt(): string {
+    return `
+You are in a LOOP WORKFLOW. You will execute the following work instructions, making progress in each iteration.
+
+WORK PROMPT: ${this.config.workPrompt}
+
+CLOSING CONDITION: ${this.config.closingConditionPrompt}
+
+CURRENT ITERATION: ${this.state.iterationCount} of ${this.config.maxIterations}
+
+INSTRUCTIONS:
+1. Execute the WORK PROMPT to make concrete progress
+2. Use tools as needed to accomplish the work
+3. Report what you accomplished in this iteration
+4. The system will automatically evaluate if the closing condition is met
+
+${this.iterationResults.length > 0 ? `PREVIOUS RESULTS:\n${this.iterationResults.join('\n---\n')}` : ''}
+`;
+  }
+
+  /**
+   * Build the closing condition evaluation prompt
+   */
+  private buildClosingConditionPrompt(): string {
+    return `
+Based on the work just completed, evaluate the following closing condition:
+
+CLOSING CONDITION: ${this.config.closingConditionPrompt}
+
+YOUR LAST WORK RESULT:
+${this.lastWorkResult || '[No result from previous iteration]'}
+
+ALL PREVIOUS ITERATIONS: ${this.state.iterationCount} completed
+
+Respond in this exact format:
+- If the closing condition IS met (work is complete): respond with "[COMPLETE]" followed by a brief summary
+- If the closing condition IS NOT met (work should continue): respond with "[CONTINUE]" followed by what still needs to be done
+
+Your response should start with either "[COMPLETE]" or "[CONTINUE]".
+`;
+  }
+
+  /**
+   * Parse the agent's response to the closing condition evaluation
+   */
+  private parseClosingConditionResponse(content: string): ClosingConditionResponse {
+    const trimmed = content.trim().toUpperCase();
+
+    // Check for explicit markers
+    if (trimmed.startsWith('[COMPLETE]')) {
+      return {
+        isComplete: true,
+        reason: content.trim(),
+      };
+    }
+
+    if (trimmed.startsWith('[CONTINUE]')) {
+      return {
+        isComplete: false,
+        reason: content.trim(),
+      };
+    }
+
+    // Fallback: try to detect based on content keywords
+    const completeMarkers = ['COMPLETE', 'DONE', 'FINISHED', 'FINISH', 'ALL TASKS DONE'];
+    const continueMarkers = ['CONTINUE', 'MORE WORK', 'NOT DONE', 'STILL NEED'];
+
+    const upperContent = content.toUpperCase();
+    const hasComplete = completeMarkers.some((m) => upperContent.includes(m));
+    const hasContinue = continueMarkers.some((m) => upperContent.includes(m));
+
+    if (hasComplete && !hasContinue) {
+      return { isComplete: true, reason: content };
+    }
+
+    // Default to continuing if unclear (safer to continue than stop prematurely)
+    return {
+      isComplete: false,
+      reason: content,
+    };
   }
 }
 

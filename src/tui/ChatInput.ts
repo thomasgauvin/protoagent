@@ -49,7 +49,7 @@ export class ChatInput {
       flexGrow: options.flexGrow ?? 1,
       // Allow escape key to propagate to global handler for abort functionality
       traits: { capture: ['escape'] },
-    })
+    } as any)
 
     // Handle submit from textarea (Meta+Enter)
     this.textarea.onSubmit = () => {

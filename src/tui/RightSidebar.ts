@@ -1,11 +1,12 @@
 /**
- * RightSidebar — right-hand panel showing workflow diagram, message queue, and usage stats.
+ * RightSidebar — right-hand panel showing workflow diagram, TODOs, and contextual workflow info.
  *
- * - Workflow diagram (visual representation of current workflow type)
- * - Workflow type indicator
- * - Queued messages (run after current task completes)
- * - Interject messages (spliced into next LLM iteration)
- * - Usage stats (in, out, ctx, cost)
+ * - Top section: workflow diagram and type indicator
+ * - Middle section: scrollable todo list (click to cycle status)
+ * - Bottom section: CONTEXTUAL based on workflow type:
+ *   - Queue: queued & interject messages
+ *   - Cron: schedule info and countdown
+ *   - Loop: iteration progress and config
  */
 
 import {
@@ -15,21 +16,70 @@ import {
   t,
   fg,
   bold,
-  dim,
   StyledText,
 } from '@opentui/core'
 import { ScrollBoxRenderable } from '@opentui/core'
+import type { TodoItem } from '../tools/todo.js'
 import type { QueuedMessage } from '../message-queue.js'
 import { COLORS } from './theme.js'
-import type { WorkflowType, WorkflowDiagram } from '../workflow/types.js'
+import type { WorkflowType } from '../workflow/types.js'
 import { getCompactDiagram } from '../workflow/diagrams.js'
-import { formatDuration } from '../workflow/cron-workflow.js'
+
+const STATUS_ICONS: Record<TodoItem['status'], string> = {
+  pending: '[ ]',
+  in_progress: '[~]',
+  completed: '[x]',
+  cancelled: '[-]',
+}
+
+const STATUS_COLORS: Record<TodoItem['status'], string> = {
+  pending: COLORS.white,
+  in_progress: COLORS.yellow,
+  completed: COLORS.primary,
+  cancelled: COLORS.gray,
+}
+
+const PRIORITY_COLORS: Record<TodoItem['priority'], string> = {
+  high: COLORS.red,
+  medium: COLORS.yellow,
+  low: COLORS.gray,
+}
+
+const STATUS_ORDER: TodoItem['status'][] = ['pending', 'in_progress', 'completed', 'cancelled']
+
+export interface RightSidebarCallbacks {
+  onAdd: (content: string) => void
+  onDelete: (id: string) => void
+  onUpdate: (id: string, updates: Partial<Pick<TodoItem, 'status' | 'priority'>>) => void
+}
+
+// Contextual info for cron workflow
+interface CronInfo {
+  schedule?: string
+  prompt?: string
+  nextRunAt?: string
+  lastRunAt?: string
+  timeUntilNextMs?: number
+}
+
+// Contextual info for loop workflow
+interface LoopInfo {
+  workPrompt?: string
+  closingCondition?: string
+  maxIterations?: number
+  currentIteration?: number
+  isActive?: boolean
+  phase?: 'working' | 'evaluating' | 'idle'
+}
 
 export class RightSidebar {
   private renderer: CliRenderer
   public readonly root: BoxRenderable
-  private queueScrollBox: ScrollBoxRenderable
-  private queueHeaderText: TextRenderable
+  private todoScrollBox: ScrollBoxRenderable
+  private todoHeaderText: TextRenderable
+  private contextualScrollBox: ScrollBoxRenderable
+  private contextualHeaderText: TextRenderable
+  private usageText: TextRenderable
 
   // Workflow section
   private workflowBox: BoxRenderable
@@ -37,30 +87,29 @@ export class RightSidebar {
   private workflowDiagramText: TextRenderable
   private workflowTypeText: TextRenderable
 
-  // Cron info section
-  private cronInfoBox: BoxRenderable
-  private cronScheduleText: TextRenderable
-  private cronPromptText: TextRenderable
-  private cronCountdownText: TextRenderable
-
-  // Usage stats
-  private usageText: TextRenderable
-
-  private queueRows: BoxRenderable[] = []
+  private todos: TodoItem[] = []
+  private todoRows: BoxRenderable[] = []
+  private contextualRows: BoxRenderable[] = []
+  private callbacks: RightSidebarCallbacks
   private currentWorkflowType: WorkflowType = 'queue'
 
-  constructor(renderer: CliRenderer) {
-    this.renderer = renderer
+  // Store current contextual data
+  private currentQueue: QueuedMessage[] = []
+  private currentInterjects: QueuedMessage[] = []
+  private currentCronInfo: CronInfo = {}
+  private currentLoopInfo: LoopInfo = {}
 
-    // Calculate responsive sidebar width based on terminal size
-    const termWidth = process.stdout.columns || 120
-    const sidebarWidth = termWidth >= 250 ? 48 : termWidth >= 150 ? 38 : 30
+  constructor(renderer: CliRenderer, callbacks: RightSidebarCallbacks) {
+    this.renderer = renderer
+    this.callbacks = callbacks
 
     this.root = new BoxRenderable(renderer, {
-      id: 'right-sidebar-root',
+      id: 'todo-sidebar-root',
       flexDirection: 'column',
       flexShrink: 0,
-      width: sidebarWidth,
+      flexGrow: 1,
+      backgroundColor: COLORS.darkBg,
+      width: 30,
       border: ['left'],
       borderColor: COLORS.border,
     })
@@ -104,86 +153,80 @@ export class RightSidebar {
     // Workflow diagram (compact)
     this.workflowDiagramText = new TextRenderable(renderer, {
       id: 'workflow-diagram-text',
-      content: t``, // Will be populated by setWorkflowDiagram
+      content: t``, // Will be populated by setWorkflowType
     })
     this.workflowBox.add(this.workflowDiagramText)
 
     this.root.add(this.workflowBox)
 
-    // ── Cron info section (hidden by default) ─────────────
-    this.cronInfoBox = new BoxRenderable(renderer, {
-      id: 'cron-info-box',
-      flexDirection: 'column',
-      paddingLeft: 1,
-      paddingRight: 1,
-      paddingTop: 1,
-      paddingBottom: 1,
-      flexShrink: 0,
-      border: ['bottom'],
-      borderColor: COLORS.border,
-    })
-    // Initially hide the cron info box by setting flexShrink to 0 and not adding it
-    // We'll add/remove it dynamically
+    // Initialize with default workflow diagram
+    this._updateWorkflowDiagram('queue')
 
-    const cronHeaderText = new TextRenderable(renderer, {
-      id: 'cron-header-text',
-      content: t`${bold('Cron Job')}`,
-      marginBottom: 1,
-    })
-    this.cronInfoBox.add(cronHeaderText)
+    // ── TODO section ──────────────────────────────────────
 
-    this.cronScheduleText = new TextRenderable(renderer, {
-      id: 'cron-schedule-text',
-      content: t``, // Will be populated by setCronInfo
-    })
-    this.cronInfoBox.add(this.cronScheduleText)
-
-    this.cronPromptText = new TextRenderable(renderer, {
-      id: 'cron-prompt-text',
-      content: t``, // Will be populated by setCronInfo
-    })
-    this.cronInfoBox.add(this.cronPromptText)
-
-    this.cronCountdownText = new TextRenderable(renderer, {
-      id: 'cron-countdown-text',
-      content: t``, // Will be populated by setCronInfo
-      marginTop: 1,
-    })
-    this.cronInfoBox.add(this.cronCountdownText)
-
-    // Add cron info box after workflow box (initially hidden via empty content)
-    this.root.add(this.cronInfoBox)
-
-    // ── Queue header ──────────────────────────────────────
-    const queueHeaderBox = new BoxRenderable(renderer, {
-      id: 'queue-header-box',
+    // Todo header
+    const todoHeaderBox = new BoxRenderable(renderer, {
+      id: 'todo-header-box',
       paddingLeft: 2,
       paddingRight: 1,
       paddingTop: 1,
       paddingBottom: 1,
       flexShrink: 0,
     })
-    this.queueHeaderText = new TextRenderable(renderer, {
-      id: 'queue-header-text',
-      content: t`${bold('Queue')} ${fg(COLORS.dim)('(0)')}`,
+    this.todoHeaderText = new TextRenderable(renderer, {
+      id: 'todo-header-text',
+      content: t`${bold('TODOs')} ${fg(COLORS.dim)('(0)')}`,
     })
-    queueHeaderBox.add(this.queueHeaderText)
-    this.root.add(queueHeaderBox)
+    todoHeaderBox.add(this.todoHeaderText)
+    this.root.add(todoHeaderBox)
 
-    // ── Queue scroll list ─────────────────────────────────
-    this.queueScrollBox = new ScrollBoxRenderable(renderer, {
-      id: 'queue-scroll',
+    // Todo scroll list - takes remaining space
+    this.todoScrollBox = new ScrollBoxRenderable(renderer, {
+      id: 'todo-scroll',
       flexGrow: 1,
       flexShrink: 1,
     })
-    this.queueScrollBox.onMouseDown = () => {
-      this.queueScrollBox.focus()
+    // Enable mouse wheel scrolling on the scroll box
+    this.todoScrollBox.onMouseDown = () => {
+      this.todoScrollBox.focus()
     }
-    this.root.add(this.queueScrollBox)
+    this.root.add(this.todoScrollBox)
 
-    // ── Usage stats (bottom) ──────────────────────────────
+    // ── Contextual section (bottom - changes based on workflow type) ─────────────────────────
+
+    // Divider + Contextual header
+    const contextualHeaderBox = new BoxRenderable(renderer, {
+      id: 'contextual-header-box',
+      paddingLeft: 2,
+      paddingRight: 1,
+      paddingTop: 1,
+      paddingBottom: 1,
+      flexShrink: 0,
+      border: ['top'],
+      borderColor: COLORS.border,
+    })
+    this.contextualHeaderText = new TextRenderable(renderer, {
+      id: 'contextual-header-text',
+      content: t`${bold('Queue')} ${fg(COLORS.dim)('(0)')}`,
+    })
+    contextualHeaderBox.add(this.contextualHeaderText)
+    this.root.add(contextualHeaderBox)
+
+    // Contextual scroll list - fixed max height but scrollable
+    this.contextualScrollBox = new ScrollBoxRenderable(renderer, {
+      id: 'contextual-scroll',
+      flexShrink: 0,
+      maxHeight: 10,
+    })
+    // Enable mouse wheel scrolling on the scroll box
+    this.contextualScrollBox.onMouseDown = () => {
+      this.contextualScrollBox.focus()
+    }
+    this.root.add(this.contextualScrollBox)
+
+    // Usage row
     const usageBox = new BoxRenderable(renderer, {
-      id: 'usage-box',
+      id: 'todo-usage-box',
       paddingLeft: 2,
       paddingRight: 1,
       paddingTop: 1,
@@ -193,19 +236,56 @@ export class RightSidebar {
       borderColor: COLORS.border,
     })
     this.usageText = new TextRenderable(renderer, {
-      id: 'usage-text',
-      content: t`${fg(COLORS.dim)('in:0  out:0  ctx:0%  cost:$0.0000')}`,
+      id: 'todo-usage-text',
+      content: t``,
     })
     usageBox.add(this.usageText)
     this.root.add(usageBox)
+  }
 
-    // Show initial states
-    this._redrawQueue([], [])
-    this._updateWorkflowDiagram('queue')
+  setTodos(todos: TodoItem[]): void {
+    this.todos = todos
+    this._redrawTodos()
+    this.todoHeaderText.content = t`${bold('TODOs')} ${fg(COLORS.dim)(`(${todos.length})`)}`
+  }
+
+  setQueue(queued: QueuedMessage[], interjects: QueuedMessage[]): void {
+    this.currentQueue = queued
+    this.currentInterjects = interjects
+    if (this.currentWorkflowType === 'queue') {
+      this._redrawContextual()
+    }
+  }
+
+  setCronInfo(info: CronInfo): void {
+    this.currentCronInfo = info
+    if (this.currentWorkflowType === 'cron') {
+      this._redrawContextual()
+    }
+  }
+
+  setLoopInfo(info: LoopInfo): void {
+    this.currentLoopInfo = info
+    if (this.currentWorkflowType === 'loop') {
+      this._redrawContextual()
+    }
+  }
+
+  setUsage(usage: { inputTokens?: number; outputTokens?: number; contextPercent?: number } | null, totalCost: number): void {
+    if (!usage) {
+      this.usageText.content = t``
+      return
+    }
+    const parts: string[] = []
+    if (usage.inputTokens) parts.push(`in:${usage.inputTokens}`)
+    if (usage.outputTokens) parts.push(`out:${usage.outputTokens}`)
+    if (usage.contextPercent) parts.push(`ctx:${usage.contextPercent.toFixed(0)}%`)
+    parts.push(`$${totalCost.toFixed(4)}`)
+    this.usageText.content = t`${fg(COLORS.dim)(parts.join(' · '))}`
   }
 
   /**
-   * Set the current workflow type and update the diagram
+   * Set the current workflow type and update the diagram and contextual section
    */
   setWorkflowType(type: WorkflowType, isActive: boolean = false): void {
     this.currentWorkflowType = type
@@ -219,6 +299,9 @@ export class RightSidebar {
     // Update diagram
     this._updateWorkflowDiagram(type)
 
+    // Update contextual section header and content
+    this._redrawContextual()
+
     this.renderer.requestRender()
   }
 
@@ -227,170 +310,266 @@ export class RightSidebar {
    */
   private _updateWorkflowDiagram(type: WorkflowType): void {
     const diagram = getCompactDiagram(type)
-
-    // Simply display the diagram as plain text using template literal
     this.workflowDiagramText.content = t`${diagram.lines.join('\n')}`
   }
 
-  /**
-   * Show a temporary hint about switching workflows
-   */
-  showWorkflowSwitchHint(): void {
-    const hintText = t`${fg(COLORS.dim)('Press Tab to switch workflow')}`
-    // We could add a temporary overlay or update the header temporarily
-    // For now, just flash the type text
-    const originalContent = this.workflowTypeText.content
-    this.workflowTypeText.content = t`${fg(COLORS.yellow)('Tab →')}`
-
-    setTimeout(() => {
-      this.workflowTypeText.content = originalContent
-      this.renderer.requestRender()
-    }, 1000)
-
-    this.renderer.requestRender()
-  }
-
-  setQueue(queued: QueuedMessage[], interjects: QueuedMessage[]): void {
-    this._redrawQueue(queued, interjects)
-    const total = queued.length + interjects.length
-    this.queueHeaderText.content = t`${bold('Queue')} ${fg(COLORS.dim)(`(${total})`)}`
-  }
-
-  clearQueuedMessages(): void {
-    this.setQueue([], [])
-  }
-
-  setUsage(inputTokens: number, outputTokens: number, contextPercent: number, cost: number): void {
-    this.usageText.content = t`${fg(COLORS.dim)(`in:${inputTokens}  out:${outputTokens}  ctx:${contextPercent.toFixed(0)}%  cost:$${cost.toFixed(4)}`)}`
-  }
-
-  /**
-   * Display cron job info in the sidebar
-   */
-  setCronInfo(info: {
-    isConfigured: boolean;
-    schedule?: string;
-    prompt?: string;
-    nextRunAt?: string;
-    lastRunAt?: string;
-    timeUntilNextMs?: number;
-  }): void {
-    if (!info.isConfigured) {
-      // Hide by clearing content (box is still there but empty)
-      this.cronScheduleText.content = t``
-      this.cronPromptText.content = t``
-      this.cronCountdownText.content = t``
-      this.renderer.requestRender()
-      return
-    }
-
-    // Update schedule text
-    const scheduleStr = info.schedule || 'Not set'
-    this.cronScheduleText.content = t`${fg(COLORS.primary)('Every:')} ${scheduleStr}`
-
-    // Update prompt text (truncated)
-    const promptStr = info.prompt || 'Not set'
-    const truncatedPrompt = promptStr.length > 25 ? promptStr.slice(0, 22) + '…' : promptStr
-    this.cronPromptText.content = t`${fg(COLORS.dim)('Prompt:')} ${truncatedPrompt}`
-
-    // Update countdown
-    let countdownStr = ''
-    if (info.timeUntilNextMs !== undefined && info.timeUntilNextMs > 0) {
-      countdownStr = `Next: ${formatDuration(info.timeUntilNextMs)}`
-    } else if (info.timeUntilNextMs !== undefined && info.timeUntilNextMs <= 0) {
-      countdownStr = 'Next: Ready!'
-    } else {
-      countdownStr = 'Next: Not scheduled'
-    }
-    this.cronCountdownText.content = t`${fg(COLORS.yellow)(countdownStr)}`
-
-    this.renderer.requestRender()
-  }
-
-  /**
-   * Hide cron info from the sidebar
-   */
-  clearCronInfo(): void {
-    // Hide by clearing content
-    this.cronScheduleText.content = t``
-    this.cronPromptText.content = t``
-    this.cronCountdownText.content = t``
-    this.renderer.requestRender()
-  }
-
-  private _getContentText(content: QueuedMessage['content']): string {
-    return content;
-  }
-
-  private _redrawQueue(queued: QueuedMessage[], interjects: QueuedMessage[]): void {
-    for (const row of this.queueRows) {
-      this.queueScrollBox.remove(row.id)
+  private _redrawTodos(): void {
+    for (const row of this.todoRows) {
+      this.todoScrollBox.remove(row.id)
       row.destroyRecursively()
     }
-    this.queueRows = []
+    this.todoRows = []
 
-    if (queued.length === 0 && interjects.length === 0) {
+    if (this.todos.length === 0) {
       const emptyText = new TextRenderable(this.renderer, {
-        id: 'queue-empty',
-        content: t`${fg(COLORS.dim)('Empty')}`,
+        id: 'todo-empty',
+        content: t`${fg(COLORS.dim)('No todos')}`,
       })
       const emptyBox = new BoxRenderable(this.renderer, {
-        id: 'queue-empty-box',
+        id: 'todo-empty-box',
         paddingLeft: 2,
         paddingTop: 1,
       })
       emptyBox.add(emptyText)
-      this.queueScrollBox.add(emptyBox)
-      this.queueRows.push(emptyBox)
+      this.todoScrollBox.add(emptyBox)
+      this.todoRows.push(emptyBox)
+      return
+    }
+
+    for (let i = 0; i < this.todos.length; i++) {
+      const todo = this.todos[i]
+
+      const statusColor = STATUS_COLORS[todo.status]
+      const priorityColor = PRIORITY_COLORS[todo.priority]
+
+      const icon = STATUS_ICONS[todo.status]
+      const pri = `[${todo.priority[0].toUpperCase()}]`
+      const label = todo.content.length > 22 ? todo.content.slice(0, 22) + '…' : todo.content
+
+      const iconChunk = t`${fg(statusColor)(icon)}`
+      const priChunk = t`${fg(priorityColor)(` ${pri}`)}`
+      const labelChunk = t`${fg(statusColor)(` ${label}`)}`
+      const rowContent = new StyledText([...iconChunk.chunks, ...priChunk.chunks, ...labelChunk.chunks])
+
+      const rowText = new TextRenderable(this.renderer, {
+        id: `todo-row-text-${i}`,
+        content: rowContent,
+      })
+
+      const rowBox = new BoxRenderable(this.renderer, {
+        id: `todo-row-${i}`,
+        paddingLeft: 2,
+        paddingRight: 1,
+      })
+
+      rowBox.onMouseDown = () => {
+        const nextStatus = STATUS_ORDER[(STATUS_ORDER.indexOf(todo.status) + 1) % STATUS_ORDER.length]
+        this.callbacks.onUpdate(todo.id, { status: nextStatus })
+      }
+
+      rowBox.add(rowText)
+      this.todoScrollBox.add(rowBox)
+      this.todoRows.push(rowBox)
+    }
+  }
+
+  private _getContentText(content: QueuedMessage['content']): string {
+    return typeof content === 'string' ? content : '[complex content]'
+  }
+
+  private _formatDuration(ms: number): string {
+    if (ms <= 0) return 'Ready!'
+    const seconds = Math.floor(ms / 1000)
+    const minutes = Math.floor(seconds / 60)
+    const hours = Math.floor(minutes / 60)
+
+    if (hours > 0) return `${hours}h ${minutes % 60}m`
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`
+    return `${seconds}s`
+  }
+
+  private _redrawContextual(): void {
+    // Clear existing rows
+    for (const row of this.contextualRows) {
+      this.contextualScrollBox.remove(row.id)
+      row.destroyRecursively()
+    }
+    this.contextualRows = []
+
+    // Draw based on workflow type
+    switch (this.currentWorkflowType) {
+      case 'queue':
+        this._drawQueueContextual()
+        break
+      case 'cron':
+        this._drawCronContextual()
+        break
+      case 'loop':
+        this._drawLoopContextual()
+        break
+    }
+  }
+
+  private _drawQueueContextual(): void {
+    const queued = this.currentQueue
+    const interjects = this.currentInterjects
+    const total = queued.length + interjects.length
+
+    this.contextualHeaderText.content = t`${bold('Queue')} ${fg(COLORS.dim)(`(${total})`)}`
+
+    if (queued.length === 0 && interjects.length === 0) {
+      const emptyText = new TextRenderable(this.renderer, {
+        id: 'contextual-empty',
+        content: t`${fg(COLORS.dim)('Empty')}`,
+      })
+      const emptyBox = new BoxRenderable(this.renderer, {
+        id: 'contextual-empty-box',
+        paddingLeft: 2,
+        paddingTop: 0,
+      })
+      emptyBox.add(emptyText)
+      this.contextualScrollBox.add(emptyBox)
+      this.contextualRows.push(emptyBox)
       return
     }
 
     let rowIdx = 0
 
-    // Interjects first (spliced into next LLM iteration)
+    // Interjects first (they run next)
     for (const msg of interjects) {
       const contentText = this._getContentText(msg.content)
-      const label = contentText.length > 19 ? contentText.slice(0, 19) + '…' : contentText
+      const label = contentText.length > 26 ? contentText.slice(0, 26) + '…' : contentText
       const prefixChunk = t`${fg(COLORS.red)('!! ')}`
       const labelChunk = t`${fg(COLORS.yellow)(label)}`
       const rowContent = new StyledText([...prefixChunk.chunks, ...labelChunk.chunks])
 
       const rowText = new TextRenderable(this.renderer, {
-        id: `queue-interject-text-${rowIdx}`,
+        id: `contextual-interject-text-${rowIdx}`,
         content: rowContent,
       })
       const rowBox = new BoxRenderable(this.renderer, {
-        id: `queue-interject-${rowIdx}`,
+        id: `contextual-interject-${rowIdx}`,
         paddingLeft: 2,
         paddingRight: 1,
       })
       rowBox.add(rowText)
-      this.queueScrollBox.add(rowBox)
-      this.queueRows.push(rowBox)
+      this.contextualScrollBox.add(rowBox)
+      this.contextualRows.push(rowBox)
       rowIdx++
     }
 
-    // Then queued messages (run after current task completes)
+    // Then queued messages
     for (const msg of queued) {
       const contentText = this._getContentText(msg.content)
-      const label = contentText.length > 20 ? contentText.slice(0, 20) + '…' : contentText
-      const prefixChunk = t`${fg(COLORS.blue)('→ ')}`
+      const label = contentText.length > 27 ? contentText.slice(0, 27) + '…' : contentText
+      const prefixChunk = t`${fg(COLORS.blue)('  → ')}`
       const labelChunk = t`${fg(COLORS.white)(label)}`
       const rowContent = new StyledText([...prefixChunk.chunks, ...labelChunk.chunks])
 
       const rowText = new TextRenderable(this.renderer, {
-        id: `queue-msg-text-${rowIdx}`,
+        id: `contextual-msg-text-${rowIdx}`,
         content: rowContent,
       })
       const rowBox = new BoxRenderable(this.renderer, {
-        id: `queue-msg-${rowIdx}`,
+        id: `contextual-msg-${rowIdx}`,
         paddingLeft: 2,
         paddingRight: 1,
       })
       rowBox.add(rowText)
-      this.queueScrollBox.add(rowBox)
-      this.queueRows.push(rowBox)
+      this.contextualScrollBox.add(rowBox)
+      this.contextualRows.push(rowBox)
       rowIdx++
     }
+  }
+
+  private _drawCronContextual(): void {
+    const info = this.currentCronInfo
+    this.contextualHeaderText.content = t`${bold('Cron')}`
+
+    const lines: string[] = []
+
+    if (info.schedule) {
+      lines.push(`${fg(COLORS.primary)('Schedule:')} ${info.schedule}`)
+    }
+
+    if (info.prompt) {
+      const promptText = info.prompt.length > 26 ? info.prompt.slice(0, 24) + '…' : info.prompt
+      lines.push(`${fg(COLORS.primary)('Prompt:')} ${promptText}`)
+    }
+
+    if (info.timeUntilNextMs !== undefined) {
+      lines.push(`${fg(COLORS.yellow)('Next:')} ${this._formatDuration(info.timeUntilNextMs)}`)
+    }
+
+    if (info.lastRunAt) {
+      const lastRun = new Date(info.lastRunAt)
+      lines.push(`${fg(COLORS.dim)(`Last: ${lastRun.toLocaleTimeString()}`)}`)
+    }
+
+    if (lines.length === 0) {
+      lines.push(`${fg(COLORS.dim)('Not configured')}`)
+    }
+
+    // Draw each line
+    lines.forEach((line, idx) => {
+      const rowText = new TextRenderable(this.renderer, {
+        id: `contextual-cron-text-${idx}`,
+        content: t`${line}`,
+      })
+      const rowBox = new BoxRenderable(this.renderer, {
+        id: `contextual-cron-${idx}`,
+        paddingLeft: 2,
+        paddingRight: 1,
+      })
+      rowBox.add(rowText)
+      this.contextualScrollBox.add(rowBox)
+      this.contextualRows.push(rowBox)
+    })
+  }
+
+  private _drawLoopContextual(): void {
+    const info = this.currentLoopInfo
+    this.contextualHeaderText.content = t`${bold('Loop')}${info.isActive ? fg(COLORS.green)(' ●') : ''}`
+
+    const lines: string[] = []
+
+    if (info.workPrompt) {
+      const workText = info.workPrompt.length > 26 ? info.workPrompt.slice(0, 24) + '…' : info.workPrompt
+      lines.push(`${fg(COLORS.primary)('Work:')} ${workText}`)
+    }
+
+    if (info.closingCondition) {
+      const condText = info.closingCondition.length > 20 ? info.closingCondition.slice(0, 18) + '…' : info.closingCondition
+      lines.push(`${fg(COLORS.primary)('Until:')} ${condText}`)
+    }
+
+    if (info.maxIterations) {
+      lines.push(`${fg(COLORS.primary)('Max:')} ${info.currentIteration || 0}/${info.maxIterations}`)
+    }
+
+    if (info.phase && info.phase !== 'idle') {
+      const phaseColor = info.phase === 'working' ? COLORS.green : COLORS.yellow
+      lines.push(`${fg(phaseColor)(`Status: ${info.phase}`)}`)
+    }
+
+    if (lines.length === 0) {
+      lines.push(`${fg(COLORS.dim)('Use /loop to configure')}`)
+    }
+
+    // Draw each line
+    lines.forEach((line, idx) => {
+      const rowText = new TextRenderable(this.renderer, {
+        id: `contextual-loop-text-${idx}`,
+        content: t`${line}`,
+      })
+      const rowBox = new BoxRenderable(this.renderer, {
+        id: `contextual-loop-${idx}`,
+        paddingLeft: 2,
+        paddingRight: 1,
+      })
+      rowBox.add(rowText)
+      this.contextualScrollBox.add(rowBox)
+      this.contextualRows.push(rowBox)
+    })
   }
 }

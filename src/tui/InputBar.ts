@@ -142,6 +142,12 @@ export class InputBar {
         return
       }
 
+      // Escape should propagate to global handler for abort functionality (when menu is closed)
+      if (key.name === 'escape' && !menu.visible) {
+        // Let Escape propagate to global handler
+        return
+      }
+
       // ── Default key handling ─────────────────────────────────────────
       previousOnKeyDown?.(key)
 
