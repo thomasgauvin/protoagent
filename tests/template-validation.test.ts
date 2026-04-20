@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { parse } from 'jsonc-parser';
-import { RUNTIME_CONFIG_TEMPLATE } from '../src/config.js';
+import { RUNTIME_CONFIG_TEMPLATE } from '../src/config-core.js';
 
 test('RUNTIME_CONFIG_TEMPLATE parses to valid JSONC without errors', () => {
   const errors: Array<{ error: number; offset: number; length: number }> = [];

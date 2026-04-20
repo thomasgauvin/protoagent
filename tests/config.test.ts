@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getRuntimeConfigPath, readConfig, resolveApiKey, writeConfig, writeInitConfig } from '../src/config.js';
+import { getRuntimeConfigPath, readConfig, resolveApiKey, writeConfig, writeInitConfig } from '../src/config-core.js';
 import { getActiveRuntimeConfigPath, loadRuntimeConfig, resetRuntimeConfigForTests } from '../src/runtime-config.js';
 
 test.afterEach(() => {
