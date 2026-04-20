@@ -7,13 +7,20 @@
     "README.md"
   ],
   "bin": {
-    "protoagent": "./dist/cli.js"
+    "protoagent": "./dist/cli.js",
+    "protoagent-api": "./dist/api/cli.js"
   },
   "scripts": {
     "clean": "bun -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "dev": "bun src/cli.ts",
+    "dev:api": "bun src/api/cli.ts",
+    "dev:web": "bun run --cwd web dev",
+    "dev:all": "concurrently \"bun run dev:api\" \"bun run dev:web\" --kill-others",
+    "build:web": "bun run --cwd web build",
     "test": "bun test",
-    "build": "bun build src/cli.ts --outdir dist --target bun --format esm && chmod +x dist/cli.js",
+    "build:cli": "bun build src/cli.ts --outdir dist --target bun --format esm && chmod +x dist/cli.js",
+    "build:api": "bun build src/api/cli.ts --outdir dist/api --target bun --format esm && chmod +x dist/api/cli.js",
+    "build": "bun run build:cli && bun run build:api",
     "build:watch": "bun build src/cli.ts --outdir dist --target bun --format esm --watch",
     "prepack": "bun run build",
     "docs:dev": "concurrently \"npm run docs:dev:worker\" \"npm run docs:dev:docs\" --kill-others",
@@ -49,6 +56,7 @@
     "@opentui/core": "^0.1.97",
     "commander": "^14.0.1",
     "diff": "^8.0.4",
+    "hono": "^4.7.10",
     "he": "^1.2.0",
     "html-to-text": "^9.0.5",
     "jsonc-parser": "^3.3.1",

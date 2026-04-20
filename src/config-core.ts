@@ -28,6 +28,10 @@ export type InitConfigWriteStatus = 'created' | 'exists' | 'overwritten'
 const CONFIG_DIR_MODE = 0o700
 const CONFIG_FILE_MODE = 0o600
 
+function getHomeDir(): string {
+  return process.env.HOME || process.env.USERPROFILE || os.homedir()
+}
+
 function hardenPermissions(targetPath: string, mode: number): void {
   if (process.platform === 'win32') return
   chmodSync(targetPath, mode)
@@ -55,13 +59,13 @@ export function resolveApiKey(config: Pick<Config, 'provider' | 'apiKey'>): stri
 }
 
 export const getConfigDirectory = () => {
-  const homeDir = os.homedir()
+  const homeDir = getHomeDir()
   if (process.platform === 'win32') return path.join(homeDir, 'AppData', 'Local', 'protoagent')
   return path.join(homeDir, '.local', 'share', 'protoagent')
 }
 
 export const getUserRuntimeConfigDirectory = () => {
-  const homeDir = os.homedir()
+  const homeDir = getHomeDir()
   if (process.platform === 'win32') return path.join(homeDir, 'AppData', 'Local', 'protoagent')
   return path.join(homeDir, '.config', 'protoagent')
 }

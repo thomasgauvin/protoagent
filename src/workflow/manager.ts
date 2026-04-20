@@ -125,6 +125,7 @@ export class WorkflowManager {
     }
 
     this.currentWorkflow = newWorkflow;
+    this.updateCronTool();
 
     // Notify listeners
     this.onWorkflowChange?.(type, this.currentWorkflow.getState());

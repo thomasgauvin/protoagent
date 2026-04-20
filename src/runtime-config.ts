@@ -122,12 +122,18 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfigFile = {
 
 let runtimeConfigCache: RuntimeConfigFile | null = null;
 
+function getHomeDir(): string {
+  return process.env.HOME
+    || process.env.USERPROFILE
+    || os.homedir();
+}
+
 function getProjectRuntimeConfigPath(): string {
   return path.join(process.cwd(), '.protoagent', 'protoagent.jsonc');
 }
 
 function getUserRuntimeConfigPath(): string {
-  const homeDir = os.homedir();
+  const homeDir = getHomeDir();
   if (process.platform === 'win32') {
     return path.join(homeDir, 'AppData', 'Local', 'protoagent', 'protoagent.jsonc');
   }
