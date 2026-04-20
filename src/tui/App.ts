@@ -1061,7 +1061,8 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     type?: 'queue' | 'loop' | 'cron',
     loopConfig?: { workPrompt: string; closingConditionPrompt: string; maxIterations: number },
   ): void {
-    if (process.env.PROTOAGENT_TUI_VIA_SDK !== '1') return
+    // Opt out of SDK-driven workflow mirroring with PROTOAGENT_TUI_VIA_SDK=0.
+    if (process.env.PROTOAGENT_TUI_VIA_SDK === '0') return
     if (!options.tabRuntime || !session) return
     const sessionId = session.id
     const runtime = options.tabRuntime
@@ -1496,7 +1497,9 @@ ${fg('#cccccc')(desc)}`
       // instead of calling runAgenticLoop directly. The runtime owns
       // session state, workflow, approvals, and persistence; the TUI just
       // renders events and reads the final snapshot back.
-      const sdkModeEnabled = process.env.PROTOAGENT_TUI_VIA_SDK === '1' && !!options.tabRuntime && !!session
+      // SDK-driven path is the default. Opt out with PROTOAGENT_TUI_VIA_SDK=0.
+      const flag = process.env.PROTOAGENT_TUI_VIA_SDK
+      const sdkModeEnabled = flag !== '0' && !!options.tabRuntime && !!session
       if (sdkModeEnabled && options.tabRuntime && session) {
         logger.info('TUI turn via SDK (flagged)', { sessionId: session.id })
         // Fresh abort controller (the runtime has its own; this one is only
@@ -1515,6 +1518,25 @@ ${fg('#cccccc')(desc)}`
         // it. The TUI has already constructed and saved a Session, so this
         // is usually a no-op, but be safe.
         await saveSession(session)
+
+        // In SDK mode the runtime owns interjects. Forward any interjects
+        // that accumulated locally (e.g. from a loaded session) into the
+        // runtime before the turn starts, then clear the local queue so
+        // the UI counter is accurate.
+        if (pendingInterjects.length > 0) {
+          const toForward = pendingInterjects.splice(0)
+          for (const interject of toForward) {
+            try {
+              await tabRuntime.client.sendMessage(session.id, interject.content, 'send')
+            } catch (err) {
+              logger.warn('Failed to forward local interject to runtime', {
+                error: err instanceof Error ? err.message : String(err),
+              })
+            }
+          }
+          statusBar.setQueueState(queuedCount, pendingInterjects.length)
+          updateQueuedMessages()
+        }
 
         await runSdkTurn({
           client: tabRuntime.client,
@@ -2156,7 +2178,7 @@ ${fg('#cccccc')(desc)}`
         // the in-flight runSdkTurn picks them up via its getInterjects()
         // callback. Under the legacy path, they accumulate in local state
         // and are consumed on the next runAgenticLoop iteration.
-        const sdkMode = process.env.PROTOAGENT_TUI_VIA_SDK === '1' && !!options.tabRuntime && !!session
+        const sdkMode = process.env.PROTOAGENT_TUI_VIA_SDK !== '0' && !!options.tabRuntime && !!session
         if (sdkMode && options.tabRuntime && session) {
           options.tabRuntime.client
             .sendMessage(session.id, content, 'send')
