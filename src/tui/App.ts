@@ -1013,6 +1013,11 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
         session.workflowState = workflowManager.getState()
       }
 
+      // Mirror the switch into the runtime when SDK mode is on, so runtime
+      // state stays aligned with the TUI's local workflow. Fire-and-forget;
+      // runtime is not yet the source of truth for rendering.
+      mirrorWorkflowToRuntime('switch', newType)
+
       logger.debug(`Switched workflow from ${oldType} to ${newType}, view to ${nextView}`)
     }
 
@@ -1037,7 +1042,71 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
       if (session) {
         session.workflowState = workflowManager.getState()
       }
+
+      mirrorWorkflowToRuntime('stop')
     }
+  }
+
+  /**
+   * When PROTOAGENT_TUI_VIA_SDK=1 is on, mirror local workflow changes into
+   * the runtime's per-session workflow so both stay aligned. Local remains
+   * the source of truth for rendering in this stage; full unification (the
+   * runtime driving the UI) is a later stage.
+   *
+   * Fire-and-forget: any runtime error is logged but does not crash the UI,
+   * since the local workflow change already succeeded.
+   */
+  function mirrorWorkflowToRuntime(
+    action: 'switch' | 'start' | 'stop',
+    type?: 'queue' | 'loop' | 'cron',
+    loopConfig?: { workPrompt: string; closingConditionPrompt: string; maxIterations: number },
+  ): void {
+    if (process.env.PROTOAGENT_TUI_VIA_SDK !== '1') return
+    if (!options.tabRuntime || !session) return
+    const sessionId = session.id
+    const runtime = options.tabRuntime
+
+    const run = async () => {
+      // Runtime must be initialized and the session must be known to it.
+      // initialize() is idempotent; session load via getSession activates it.
+      try {
+        await runtime.coreRuntime.initialize()
+        // Ensure the runtime has a context for this session. If it doesn't
+        // yet, this will load + activate it. This is safe during the TUI's
+        // lifetime because we only have one session per tab.
+        try {
+          await runtime.client.getSession(sessionId)
+        } catch {
+          // If the session hasn't been persisted yet we can't mirror;
+          // the next real turn will re-persist and a future mirror call
+          // will succeed.
+          return
+        }
+
+        if (action === 'switch' && type) {
+          await runtime.client.setWorkflow(sessionId, type)
+        } else if (action === 'start') {
+          const startInput: { type?: 'queue' | 'loop' | 'cron'; loopInstructions?: string; endCondition?: string; maxIterations?: number } = {}
+          if (type) startInput.type = type
+          if (loopConfig) {
+            startInput.loopInstructions = loopConfig.workPrompt
+            startInput.endCondition = loopConfig.closingConditionPrompt
+            startInput.maxIterations = loopConfig.maxIterations
+          }
+          await runtime.client.startWorkflow(sessionId, startInput)
+        } else if (action === 'stop') {
+          await runtime.client.stopWorkflow(sessionId)
+        }
+      } catch (err) {
+        logger.warn('Failed to mirror workflow change to runtime', {
+          action,
+          type,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    void run()
   }
 
   function showApprovalPrompt(req: ApprovalRequest): void {
@@ -1119,6 +1188,15 @@ ${fg('#cccccc')(desc)}`
         // Configure the loop workflow
         const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
         loopWorkflow.updateConfig({
+          workPrompt: result.workPrompt,
+          closingConditionPrompt: result.closingConditionPrompt,
+          maxIterations: result.maxIterations,
+        })
+
+        // Mirror the loop config + switch into the runtime under the flag,
+        // so the runtime has the same workflow configuration ready for
+        // stage 8+.
+        mirrorWorkflowToRuntime('start', 'loop', {
           workPrompt: result.workPrompt,
           closingConditionPrompt: result.closingConditionPrompt,
           maxIterations: result.maxIterations,
@@ -1969,6 +2047,7 @@ ${fg('#cccccc')(desc)}`
         if (arg === 'cycle') {
           const newType = workflowManager.cycleWorkflow()
           if (session) session.workflowState = workflowManager.getState()
+          mirrorWorkflowToRuntime('switch', newType)
           completionMessages = [
             ...completionMessages,
             { role: 'user', content: `[workflow cycle]` } as any,
@@ -1981,6 +2060,7 @@ ${fg('#cccccc')(desc)}`
           try {
             workflowManager.switchWorkflow(arg as typeof validTypes[number])
             if (session) session.workflowState = workflowManager.getState()
+            mirrorWorkflowToRuntime('switch', arg as typeof validTypes[number])
             completionMessages = [
               ...completionMessages,
               { role: 'user', content: `[workflow ${arg}]` } as any,
@@ -2108,6 +2188,7 @@ ${fg('#cccccc')(desc)}`
           if (session) {
             session.workflowState = workflowManager.getState()
           }
+          mirrorWorkflowToRuntime('stop')
         }
         return
       }
