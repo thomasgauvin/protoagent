@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readConfig, writeConfig, writeInitConfig } from './config-core.js'
+import { runExec } from './exec.js'
 import { createMultiTabApp } from './tui/createMultiTabApp.js'
 import { startDebugServer } from './tui/debug-server.js'
 import { setupTerminalCleanup } from './tui/terminal-cleanup.js'
@@ -126,6 +127,28 @@ program
       return
     }
     console.log('Interactive init not yet supported in OpenTUI mode. Use --project or --user flags.')
+  })
+
+program
+  .command('exec')
+  .description('Run a single message headlessly via the SDK (no TUI). Proves SDK↔runtime decoupling.')
+  .requiredOption('--message <text>', 'Message to send to the agent')
+  .option('--runtime <mode>', 'SDK transport: core (in-process) or api (remote HTTP)', 'core')
+  .option('--base-url <url>', 'Base URL for --runtime=api', 'http://127.0.0.1:3000')
+  .option('--session <id>', 'Resume an existing session by ID')
+  .option('--json', 'Emit raw SDK events as JSON lines instead of formatted text')
+  .option('--dangerously-skip-permissions', 'Auto-approve all file writes and shell commands (core runtime only)')
+  .action(async (options) => {
+    const runtime = options.runtime === 'api' ? 'api' : 'core'
+    const code = await runExec({
+      runtime,
+      baseUrl: options.baseUrl,
+      sessionId: options.session,
+      message: options.message,
+      json: Boolean(options.json),
+      dangerouslySkipPermissions: Boolean(options.dangerouslySkipPermissions),
+    })
+    process.exit(code)
   })
 
 program.parse(process.argv)
