@@ -93,6 +93,7 @@ import {
 import { ToolRegistry } from '../tools/registry.js'
 import { McpManager } from '../mcp/manager.js'
 import { ApprovalManager } from '../utils/approval-manager.js'
+import { runSdkTurn } from './sdk-run-turn.js'
 
 import { MessageHistory } from './MessageHistory.js'
 import { InputBar, type SubmitMode } from './InputBar.js'
@@ -1411,80 +1412,134 @@ ${fg('#cccccc')(desc)}`
       const pricing = getModelPricing(config.provider, config.model)
       const requestDefaults = getRequestDefaultParams(config.provider, config.model)
 
-      // Workflow loop - continue while workflow says we should
-      let shouldContinueWorkflow = true
-
-      while (shouldContinueWorkflow && workflowManager.isActive()) {
-        // Check abort signal
-        if (abortController?.signal.aborted) {
-          break
-        }
-
+      // ─── SDK-driven path (flagged) ─────────────────────────────────
+      // When PROTOAGENT_TUI_VIA_SDK=1 is set AND a TabRuntime was provided
+      // via options.tabRuntime, route this turn through the SDK client
+      // instead of calling runAgenticLoop directly. The runtime owns
+      // session state, workflow, approvals, and persistence; the TUI just
+      // renders events and reads the final snapshot back.
+      const sdkModeEnabled = process.env.PROTOAGENT_TUI_VIA_SDK === '1' && !!options.tabRuntime && !!session
+      if (sdkModeEnabled && options.tabRuntime && session) {
+        logger.info('TUI turn via SDK (flagged)', { sessionId: session.id })
+        // Fresh abort controller (the runtime has its own; this one is only
+        // for UI callbacks that read it).
         abortController = new AbortController()
         options.registerAbortController?.(abortController)
 
-        const updated = await runAgenticLoop(
-          client,
-          config.model,
-          [...completionMessages],
-          userContent,
-          handleAgentEvent,
-          {
-            pricing: pricing || undefined,
-            abortSignal: abortController.signal,
-            sessionId: session?.id,
-            requestDefaults,
-            approvalManager,
-            toolRegistry,
-            systemPromptAddition: workflowResult.systemPromptAddition,
-            getInterjects: () => {
-              const msgs = pendingInterjects.splice(0).map(
-                (q): Message => ({ role: 'user', content: `[interject] ${q.content}` })
-              )
-              if (msgs.length > 0) {
-                statusBar.setQueueState(queuedCount, pendingInterjects.length)
-              }
-              return msgs
-            },
-          },
-        )
-        completionMessages = updated
-        msgHistory.setMessages(completionMessages, '', false)
+        const tabRuntime = options.tabRuntime
 
-        // Get the last assistant message for workflow response handling
-        const lastMsg = completionMessages[completionMessages.length - 1]
-        if (lastMsg && lastMsg.role === 'assistant') {
-          shouldContinueWorkflow = workflowManager.onResponse(lastMsg)
-        } else {
-          shouldContinueWorkflow = false
-        }
+        // Ensure the CoreRuntime inside TabRuntime is initialized. This
+        // reads real config, opens MCP (idempotent against the global
+        // manager), and creates the LLM client.
+        await tabRuntime.coreRuntime.initialize()
 
-        // Check for workflow-specific next iteration message (for loop workflow)
-        if (shouldContinueWorkflow && workflowManager.getCurrentType() === 'loop') {
-          const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
-          const nextMsg = loopWorkflow.getNextMessage()
-          if (nextMsg) {
-            completionMessages = [...completionMessages, nextMsg]
-          }
-        }
-
-        // Update workflow display
-        updateWorkflowDisplay()
-      }
-
-      // Workflow complete - save session
-      if (session && client && config) {
-        session.completionMessages = completionMessages
-        session.todos = getTodosForSession(session.id)
-        session.queuedMessages = getQueueForSession(session.id)
-        session.interjectMessages = [...pendingInterjects]
-        session.workflowState = workflowManager.getState()
-        session.totalCost = totalCost
-        // Note: Title is generated once at the start of the session, not here
+        // Make sure the session exists in storage so the runtime can load
+        // it. The TUI has already constructed and saved a Session, so this
+        // is usually a no-op, but be safe.
         await saveSession(session)
 
+        await runSdkTurn({
+          client: tabRuntime.client,
+          sessionId: session.id,
+          userContent,
+          onAgentEvent: handleAgentEvent,
+          onLifecycleEvent: (event) => {
+            // When the runtime announces a fresh snapshot (e.g., after a
+            // turn completes) we pull its authoritative messages into the
+            // TUI's local state so the next turn builds on the same view.
+            if (event.type === 'session_updated' || event.type === 'session_activated' || event.type === 'snapshot') {
+              const data = event.data as { session?: { completionMessages?: Message[] } } | undefined
+              const inner = data && 'session' in data ? data.session : (event.data as any)
+              const msgs = inner?.completionMessages
+              if (Array.isArray(msgs) && msgs.length > 0) {
+                completionMessages = msgs as Message[]
+              }
+            }
+          },
+        })
+
+        // Runtime has persisted the session; don't double-write from the
+        // TUI. Just surface any title updates.
         if (options.onTitleUpdate) {
           options.onTitleUpdate(session.title)
+        }
+      } else {
+        // ─── Legacy path: direct runAgenticLoop ─────────────────────
+        // Workflow loop - continue while workflow says we should
+        let shouldContinueWorkflow = true
+
+        while (shouldContinueWorkflow && workflowManager.isActive()) {
+          // Check abort signal
+          if (abortController?.signal.aborted) {
+            break
+          }
+
+          abortController = new AbortController()
+          options.registerAbortController?.(abortController)
+
+          const updated = await runAgenticLoop(
+            client,
+            config.model,
+            [...completionMessages],
+            userContent,
+            handleAgentEvent,
+            {
+              pricing: pricing || undefined,
+              abortSignal: abortController.signal,
+              sessionId: session?.id,
+              requestDefaults,
+              approvalManager,
+              toolRegistry,
+              systemPromptAddition: workflowResult.systemPromptAddition,
+              getInterjects: () => {
+                const msgs = pendingInterjects.splice(0).map(
+                  (q): Message => ({ role: 'user', content: `[interject] ${q.content}` })
+                )
+                if (msgs.length > 0) {
+                  statusBar.setQueueState(queuedCount, pendingInterjects.length)
+                }
+                return msgs
+              },
+            },
+          )
+          completionMessages = updated
+          msgHistory.setMessages(completionMessages, '', false)
+
+          // Get the last assistant message for workflow response handling
+          const lastMsg = completionMessages[completionMessages.length - 1]
+          if (lastMsg && lastMsg.role === 'assistant') {
+            shouldContinueWorkflow = workflowManager.onResponse(lastMsg)
+          } else {
+            shouldContinueWorkflow = false
+          }
+
+          // Check for workflow-specific next iteration message (for loop workflow)
+          if (shouldContinueWorkflow && workflowManager.getCurrentType() === 'loop') {
+            const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
+            const nextMsg = loopWorkflow.getNextMessage()
+            if (nextMsg) {
+              completionMessages = [...completionMessages, nextMsg]
+            }
+          }
+
+          // Update workflow display
+          updateWorkflowDisplay()
+        }
+
+        // Workflow complete - save session
+        if (session && client && config) {
+          session.completionMessages = completionMessages
+          session.todos = getTodosForSession(session.id)
+          session.queuedMessages = getQueueForSession(session.id)
+          session.interjectMessages = [...pendingInterjects]
+          session.workflowState = workflowManager.getState()
+          session.totalCost = totalCost
+          // Note: Title is generated once at the start of the session, not here
+          await saveSession(session)
+
+          if (options.onTitleUpdate) {
+            options.onTitleUpdate(session.title)
+          }
         }
       }
     } catch (err: any) {
