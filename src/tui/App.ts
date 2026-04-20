@@ -1454,6 +1454,48 @@ ${fg('#cccccc')(desc)}`
               if (Array.isArray(msgs) && msgs.length > 0) {
                 completionMessages = msgs as Message[]
               }
+              return
+            }
+
+            // Route runtime-emitted approvals through the existing TUI
+            // overlay. Resolution goes back to the runtime via
+            // client.resolveApproval, matching the SDK contract.
+            if (event.type === 'approval_required') {
+              const approval = event.data as {
+                id: string
+                type: ApprovalRequest['type']
+                description: string
+                detail?: string
+                sessionId?: string
+              } | undefined
+              if (!approval || !approval.id) {
+                return
+              }
+              const request: ApprovalRequest = {
+                id: approval.id,
+                type: approval.type,
+                description: approval.description,
+                detail: approval.detail,
+                sessionId: approval.sessionId,
+              }
+              // The overlay will call pendingApproval.resolve(decision) on
+              // user choice. We delegate that to the SDK.
+              pendingApproval = {
+                request,
+                resolve: (decision: ApprovalResponse) => {
+                  // Fire-and-forget; the runtime handles the decision async.
+                  tabRuntime.client
+                    .resolveApproval(approval.id, decision)
+                    .catch((err: unknown) => {
+                      logger.warn('SDK approval resolution failed', {
+                        id: approval.id,
+                        error: err instanceof Error ? err.message : String(err),
+                      })
+                    })
+                },
+              }
+              showApprovalPrompt(request)
+              return
             }
           },
         })
