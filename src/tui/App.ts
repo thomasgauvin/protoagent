@@ -49,7 +49,6 @@ import { readConfig, resolveApiKey, type Config } from '../config-core.js'
 import { loadRuntimeConfig } from '../runtime-config.js'
 import { getProvider, getModelPricing, getRequestDefaultParams } from '../providers.js'
 import {
-  runAgenticLoop,
   initializeMessages,
   type Message,
   type AgentEvent,
@@ -1061,8 +1060,6 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     type?: 'queue' | 'loop' | 'cron',
     loopConfig?: { workPrompt: string; closingConditionPrompt: string; maxIterations: number },
   ): void {
-    // Opt out of SDK-driven workflow mirroring with PROTOAGENT_TUI_VIA_SDK=0.
-    if (process.env.PROTOAGENT_TUI_VIA_SDK === '0') return
     if (!options.tabRuntime || !session) return
     const sessionId = session.id
     const runtime = options.tabRuntime
@@ -1497,10 +1494,11 @@ ${fg('#cccccc')(desc)}`
       // instead of calling runAgenticLoop directly. The runtime owns
       // session state, workflow, approvals, and persistence; the TUI just
       // renders events and reads the final snapshot back.
-      // SDK-driven path is the default. Opt out with PROTOAGENT_TUI_VIA_SDK=0.
-      const flag = process.env.PROTOAGENT_TUI_VIA_SDK
-      const sdkModeEnabled = flag !== '0' && !!options.tabRuntime && !!session
-      if (sdkModeEnabled && options.tabRuntime && session) {
+      // SDK-driven path. Every tab carries a TabRuntime, so in production
+      // this is always taken. The else branch exists only as a defensive
+      // fallback for tests or misconfigured harnesses that don't wire a
+      // TabRuntime; we no longer support an opt-out to the legacy path.
+      if (options.tabRuntime && session) {
         logger.info('TUI turn via SDK (flagged)', { sessionId: session.id })
         // Fresh abort controller (the runtime has its own; this one is only
         // for UI callbacks that read it).
@@ -1606,83 +1604,12 @@ ${fg('#cccccc')(desc)}`
           options.onTitleUpdate(session.title)
         }
       } else {
-        // ─── Legacy path: direct runAgenticLoop ─────────────────────
-        // Workflow loop - continue while workflow says we should
-        let shouldContinueWorkflow = true
-
-        while (shouldContinueWorkflow && workflowManager.isActive()) {
-          // Check abort signal
-          if (abortController?.signal.aborted) {
-            break
-          }
-
-          abortController = new AbortController()
-          options.registerAbortController?.(abortController)
-
-          const updated = await runAgenticLoop(
-            client,
-            config.model,
-            [...completionMessages],
-            userContent,
-            handleAgentEvent,
-            {
-              pricing: pricing || undefined,
-              abortSignal: abortController.signal,
-              sessionId: session?.id,
-              requestDefaults,
-              approvalManager,
-              toolRegistry,
-              systemPromptAddition: workflowResult.systemPromptAddition,
-              getInterjects: () => {
-                const msgs = pendingInterjects.splice(0).map(
-                  (q): Message => ({ role: 'user', content: `[interject] ${q.content}` })
-                )
-                if (msgs.length > 0) {
-                  statusBar.setQueueState(queuedCount, pendingInterjects.length)
-                }
-                return msgs
-              },
-            },
-          )
-          completionMessages = updated
-          msgHistory.setMessages(completionMessages, '', false)
-
-          // Get the last assistant message for workflow response handling
-          const lastMsg = completionMessages[completionMessages.length - 1]
-          if (lastMsg && lastMsg.role === 'assistant') {
-            shouldContinueWorkflow = workflowManager.onResponse(lastMsg)
-          } else {
-            shouldContinueWorkflow = false
-          }
-
-          // Check for workflow-specific next iteration message (for loop workflow)
-          if (shouldContinueWorkflow && workflowManager.getCurrentType() === 'loop') {
-            const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
-            const nextMsg = loopWorkflow.getNextMessage()
-            if (nextMsg) {
-              completionMessages = [...completionMessages, nextMsg]
-            }
-          }
-
-          // Update workflow display
-          updateWorkflowDisplay()
-        }
-
-        // Workflow complete - save session
-        if (session && client && config) {
-          session.completionMessages = completionMessages
-          session.todos = getTodosForSession(session.id)
-          session.queuedMessages = getQueueForSession(session.id)
-          session.interjectMessages = [...pendingInterjects]
-          session.workflowState = workflowManager.getState()
-          session.totalCost = totalCost
-          // Note: Title is generated once at the start of the session, not here
-          await saveSession(session)
-
-          if (options.onTitleUpdate) {
-            options.onTitleUpdate(session.title)
-          }
-        }
+        // Defensive: if no TabRuntime was wired (test harnesses, etc.)
+        // there is nothing to run. Surface an error rather than silently
+        // doing nothing.
+        throw new Error(
+          'TUI hot path requires a TabRuntime; none was wired into AppOptions.',
+        )
       }
     } catch (err: any) {
       statusBar.setError(`${err.message}`)
@@ -2174,12 +2101,9 @@ ${fg('#cccccc')(desc)}`
     } else {
       // 'send': if agent is running, treat as interject (Enter = urgent); otherwise run immediately
       if (isLoading) {
-        // Under the SDK-driven path, interjects go through the runtime so
-        // the in-flight runSdkTurn picks them up via its getInterjects()
-        // callback. Under the legacy path, they accumulate in local state
-        // and are consumed on the next runAgenticLoop iteration.
-        const sdkMode = process.env.PROTOAGENT_TUI_VIA_SDK !== '0' && !!options.tabRuntime && !!session
-        if (sdkMode && options.tabRuntime && session) {
+        // Interjects go through the runtime so the in-flight runSdkTurn
+        // picks them up via its getInterjects() callback.
+        if (options.tabRuntime && session) {
           options.tabRuntime.client
             .sendMessage(session.id, content, 'send')
             .catch((err: unknown) => {
