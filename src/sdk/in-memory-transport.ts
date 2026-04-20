@@ -51,8 +51,8 @@ export class InMemoryTransport implements Transport {
     }
   }
 
-  async listSessions(): Promise<SessionsResponse> {
-    const result = await this.runtime.listSessions();
+  async listSessions(options?: { limit?: number; offset?: number }): Promise<SessionsResponse> {
+    const result = await this.runtime.listSessions(options);
     return result as SessionsResponse;
   }
 

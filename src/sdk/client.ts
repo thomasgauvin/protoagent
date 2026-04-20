@@ -43,8 +43,8 @@ export class ProtoAgentClient {
     return this.transport.close();
   }
 
-  listSessions(): Promise<SessionsResponse> {
-    return this.transport.listSessions();
+  listSessions(options?: { limit?: number; offset?: number }): Promise<SessionsResponse> {
+    return this.transport.listSessions(options);
   }
 
   createSession(): Promise<SessionSnapshot> {

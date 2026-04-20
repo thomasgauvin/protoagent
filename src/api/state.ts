@@ -250,7 +250,7 @@ export class ApiRuntime {
     };
   }
 
-  async listSessions(): Promise<{
+  async listSessions(options?: { limit?: number; offset?: number }): Promise<{
     sessions: Awaited<ReturnType<typeof listStoredSessions>>;
     activeSessionIds: string[];
     /** Legacy field: the most recently activated session (best-effort). */
@@ -258,7 +258,7 @@ export class ApiRuntime {
     running: boolean;
   }> {
     await this.initialize();
-    const sessions = await this.deps.listStoredSessions();
+    const sessions = await this.deps.listStoredSessions(options);
     const activeSessionIds = Array.from(this.contexts.keys());
     const runningAny = Array.from(this.contexts.values()).some(
       (ctx) => ctx.activeRunPromise !== null,

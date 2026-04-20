@@ -117,8 +117,12 @@ export class HttpTransport implements Transport {
     return (await response.text()) as unknown as T;
   }
 
-  async listSessions(): Promise<SessionsResponse> {
-    return this.request<SessionsResponse>('/sessions');
+  async listSessions(options?: { limit?: number; offset?: number }): Promise<SessionsResponse> {
+    const params = new URLSearchParams();
+    if (options?.limit !== undefined) params.set('limit', String(options.limit));
+    if (options?.offset !== undefined) params.set('offset', String(options.offset));
+    const qs = params.toString();
+    return this.request<SessionsResponse>(qs ? `/sessions?${qs}` : '/sessions');
   }
 
   async createSession(): Promise<SessionSnapshot> {

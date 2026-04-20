@@ -40,7 +40,7 @@ export interface Transport {
   /** Close transport-level resources (e.g. background server, http agent). */
   close(): Promise<void>;
 
-  listSessions(): Promise<SessionsResponse>;
+  listSessions(options?: { limit?: number; offset?: number }): Promise<SessionsResponse>;
   createSession(): Promise<SessionSnapshot>;
   getSession(sessionId: string): Promise<SessionSnapshot>;
   deleteSession(sessionId: string): Promise<boolean>;

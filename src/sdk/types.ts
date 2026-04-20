@@ -11,7 +11,7 @@ import type {
   ApiEvent,
   SessionSnapshot,
 } from '../api/state.js';
-import type { Message as CoreMessage } from '../agentic-loop.js';
+import type { AgentEvent, Message as CoreMessage } from '../agentic-loop.js';
 import type { SessionSummary } from '../sessions.js';
 import type { QueuedMessage } from '../message-queue.js';
 import type { TodoItem } from '../tools/todo.js';
@@ -111,3 +111,87 @@ export interface ApiErrorPayload {
   error: string;
   details?: Array<{ path: string; message: string }>;
 }
+
+// ─── Discriminated ApiEvent union ─────────────────────────────────────────
+//
+// The runtime emits two families of events per session:
+//
+//  1. Lifecycle envelopes — session_activated, session_updated,
+//     message_queued, approval_required, approval_resolved,
+//     todos_updated, workflow_updated, skills_updated. These carry
+//     structured payloads.
+//
+//  2. Agent events — text_delta, thinking_delta, tool_call, tool_result,
+//     usage, sub_agent_iteration, interject, iteration_done, error, done.
+//     These carry the AgentEvent shape produced by runAgenticLoop.
+//
+// `ApiEvent<unknown>` is kept for unknown/custom types. The discriminated
+// `SdkEvent` union gives callers `switch (event.type)` with full
+// type narrowing on `event.data`.
+
+export interface SessionActivatedEvent extends ApiEvent<SessionSnapshot> {
+  type: 'session_activated';
+}
+
+export interface SessionUpdatedEvent extends ApiEvent<SessionSnapshot> {
+  type: 'session_updated';
+}
+
+export interface MessageQueuedEvent
+  extends ApiEvent<{ mode: 'queue' | 'interject'; content: string }> {
+  type: 'message_queued';
+}
+
+export interface ApprovalRequiredEvent extends ApiEvent<Approval> {
+  type: 'approval_required';
+}
+
+export interface ApprovalResolvedEvent
+  extends ApiEvent<{ id: string; decision: ApprovalDecision }> {
+  type: 'approval_resolved';
+}
+
+export interface TodosUpdatedEvent extends ApiEvent<{ todos: TodoItem[] }> {
+  type: 'todos_updated';
+}
+
+export interface WorkflowUpdatedEvent extends ApiEvent<WorkflowResponse> {
+  type: 'workflow_updated';
+}
+
+export interface SkillsUpdatedEvent
+  extends ApiEvent<{ activeSkills: string[] }> {
+  type: 'skills_updated';
+}
+
+/**
+ * Agent events wrap an AgentEvent payload. The envelope `type` mirrors the
+ * AgentEvent.type, and `data` is the full AgentEvent for convenience.
+ */
+export interface AgentApiEvent extends ApiEvent<AgentEvent> {
+  type:
+    | 'text_delta'
+    | 'thinking_delta'
+    | 'tool_call'
+    | 'tool_result'
+    | 'usage'
+    | 'sub_agent_iteration'
+    | 'interject'
+    | 'iteration_done'
+    | 'error'
+    | 'done';
+}
+
+/** Discriminated union of every event the runtime is known to emit. */
+export type SdkEvent =
+  | SessionActivatedEvent
+  | SessionUpdatedEvent
+  | MessageQueuedEvent
+  | ApprovalRequiredEvent
+  | ApprovalResolvedEvent
+  | TodosUpdatedEvent
+  | WorkflowUpdatedEvent
+  | SkillsUpdatedEvent
+  | AgentApiEvent;
+
+export type { AgentEvent };

@@ -50,7 +50,19 @@ export function createApiRoutes(runtime: ApiRuntime) {
 
   // ─── Sessions ───────────────────────────────────────────────────────
   app.get('/sessions', async (c) => {
-    return c.json(await runtime.listSessions());
+    const limitStr = c.req.query('limit');
+    const offsetStr = c.req.query('offset');
+    const limit = limitStr !== undefined ? Number(limitStr) : undefined;
+    const offset = offsetStr !== undefined ? Number(offsetStr) : undefined;
+    if (limit !== undefined && (!Number.isFinite(limit) || limit < 0)) {
+      return c.json({ error: 'Invalid limit' }, 400);
+    }
+    if (offset !== undefined && (!Number.isFinite(offset) || offset < 0)) {
+      return c.json({ error: 'Invalid offset' }, 400);
+    }
+    return c.json(
+      await runtime.listSessions({ limit, offset }),
+    );
   });
 
   app.post('/sessions', async (c) => {
