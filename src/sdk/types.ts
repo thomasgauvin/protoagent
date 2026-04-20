@@ -34,6 +34,9 @@ export type {
 
 export interface SessionsResponse {
   sessions: SessionSummary[];
+  /** IDs of all sessions currently activated in the runtime. */
+  activeSessionIds: string[];
+  /** Most recently activated session id; null if none. Kept for convenience. */
   activeSessionId: string | null;
   running: boolean;
 }

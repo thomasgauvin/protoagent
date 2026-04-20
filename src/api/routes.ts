@@ -48,6 +48,7 @@ export function createApiRoutes(runtime: ApiRuntime) {
     return c.json({ ok: true });
   });
 
+  // ─── Sessions ───────────────────────────────────────────────────────
   app.get('/sessions', async (c) => {
     return c.json(await runtime.listSessions());
   });
@@ -78,10 +79,44 @@ export function createApiRoutes(runtime: ApiRuntime) {
     return streamSessionEvents(c, runtime, c.req.param('id'));
   });
 
+  app.post('/sessions/:id/abort', async (c) => {
+    return c.json(await runtime.abortCurrentLoop(c.req.param('id')));
+  });
+
+  // ─── Per-session workflow + todos ────────────────────────────────────
+  app.get('/sessions/:id/workflow', (c) => {
+    return c.json(runtime.getWorkflow(c.req.param('id')));
+  });
+
+  app.post('/sessions/:id/workflow', async (c) => {
+    const body = await parseJson(c.req.raw, workflowBodySchema);
+    return c.json(await runtime.switchWorkflow(c.req.param('id'), body.type));
+  });
+
+  app.post('/sessions/:id/workflow/start', async (c) => {
+    const body = await parseJson(c.req.raw, workflowStartBodySchema);
+    return c.json(await runtime.startWorkflow(c.req.param('id'), body));
+  });
+
+  app.post('/sessions/:id/workflow/stop', async (c) => {
+    return c.json(await runtime.stopWorkflow(c.req.param('id')));
+  });
+
+  app.get('/sessions/:id/todos', (c) => {
+    return c.json({ todos: runtime.getTodos(c.req.param('id')) });
+  });
+
+  app.put('/sessions/:id/todos', async (c) => {
+    const body = await parseJson(c.req.raw, todosBodySchema);
+    return c.json({ todos: await runtime.updateTodos(c.req.param('id'), body.todos) });
+  });
+
+  // ─── Global abort (all running sessions) ─────────────────────────────
   app.post('/abort', async (c) => {
     return c.json(await runtime.abortCurrentLoop());
   });
 
+  // ─── Approvals ──────────────────────────────────────────────────────
   app.get('/approvals', (c) => {
     return c.json({ approvals: runtime.listApprovals() });
   });
@@ -95,33 +130,7 @@ export function createApiRoutes(runtime: ApiRuntime) {
     return c.json({ approval, decision: body.decision });
   });
 
-  app.get('/workflow', (c) => {
-    return c.json(runtime.getWorkflow());
-  });
-
-  app.post('/workflow', async (c) => {
-    const body = await parseJson(c.req.raw, workflowBodySchema);
-    return c.json(await runtime.switchWorkflow(body.type));
-  });
-
-  app.post('/workflow/start', async (c) => {
-    const body = await parseJson(c.req.raw, workflowStartBodySchema);
-    return c.json(await runtime.startWorkflow(body));
-  });
-
-  app.post('/workflow/stop', async (c) => {
-    return c.json(await runtime.stopWorkflow());
-  });
-
-  app.get('/todos', (c) => {
-    return c.json({ todos: runtime.getTodos() });
-  });
-
-  app.put('/todos', async (c) => {
-    const body = await parseJson(c.req.raw, todosBodySchema);
-    return c.json({ todos: await runtime.updateTodos(body.todos) });
-  });
-
+  // ─── Skills + MCP (global) ───────────────────────────────────────────
   app.get('/skills', async (c) => {
     return c.json({ skills: await runtime.listSkills() });
   });

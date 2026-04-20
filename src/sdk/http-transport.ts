@@ -153,7 +153,13 @@ export class HttpTransport implements Transport {
     );
   }
 
-  async abort(): Promise<{ aborted: boolean }> {
+  async abort(sessionId?: string): Promise<{ aborted: boolean }> {
+    if (sessionId) {
+      return this.request<{ aborted: boolean }>(
+        `/sessions/${encodeURIComponent(sessionId)}/abort`,
+        { method: 'POST' },
+      );
+    }
     return this.request<{ aborted: boolean }>('/abort', { method: 'POST' });
   }
 
@@ -175,32 +181,45 @@ export class HttpTransport implements Transport {
     }
   }
 
-  async getWorkflow(): Promise<WorkflowResponse> {
-    return this.request<WorkflowResponse>('/workflow');
+  async getWorkflow(sessionId: string): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/workflow`,
+    );
   }
 
-  async setWorkflow(type: WorkflowType): Promise<WorkflowResponse> {
-    return this.request<WorkflowResponse>('/workflow', { method: 'POST', json: { type } });
+  async setWorkflow(sessionId: string, type: WorkflowType): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/workflow`,
+      { method: 'POST', json: { type } },
+    );
   }
 
-  async startWorkflow(input: WorkflowStartInput): Promise<WorkflowResponse> {
-    return this.request<WorkflowResponse>('/workflow/start', { method: 'POST', json: input });
+  async startWorkflow(sessionId: string, input: WorkflowStartInput): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/workflow/start`,
+      { method: 'POST', json: input },
+    );
   }
 
-  async stopWorkflow(): Promise<WorkflowResponse> {
-    return this.request<WorkflowResponse>('/workflow/stop', { method: 'POST' });
+  async stopWorkflow(sessionId: string): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/workflow/stop`,
+      { method: 'POST' },
+    );
   }
 
-  async getTodos(): Promise<TodoItem[]> {
-    const response = await this.request<{ todos: TodoItem[] }>('/todos');
+  async getTodos(sessionId: string): Promise<TodoItem[]> {
+    const response = await this.request<{ todos: TodoItem[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/todos`,
+    );
     return response.todos;
   }
 
-  async updateTodos(todos: TodoItem[]): Promise<TodoItem[]> {
-    const response = await this.request<{ todos: TodoItem[] }>('/todos', {
-      method: 'PUT',
-      json: { todos },
-    });
+  async updateTodos(sessionId: string, todos: TodoItem[]): Promise<TodoItem[]> {
+    const response = await this.request<{ todos: TodoItem[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/todos`,
+      { method: 'PUT', json: { todos } },
+    );
     return response.todos;
   }
 

@@ -223,7 +223,7 @@ for (const transport of transports) {
       assert.equal(list.activeSessionId, created.id);
       assert.equal(list.sessions.length, 1);
 
-      const workflow = await client.getWorkflow();
+      const workflow = await client.getWorkflow(created.id);
       assert.equal(workflow.activeSessionId, created.id);
       assert.equal(workflow.state.type, 'queue');
 
@@ -233,9 +233,9 @@ for (const transport of transports) {
         status: 'pending' as const,
         priority: 'high' as const,
       };
-      const writtenTodos = await client.updateTodos([todo]);
+      const writtenTodos = await client.updateTodos(created.id, [todo]);
       assert.deepEqual(writtenTodos, [todo]);
-      assert.deepEqual(await client.getTodos(), [todo]);
+      assert.deepEqual(await client.getTodos(created.id), [todo]);
 
       const skills = await client.listSkills();
       assert.equal(skills[0].name, 'demo-skill');
@@ -382,9 +382,78 @@ for (const transport of transports) {
       await cleanup();
     }
   });
+
+  test(`parity/${transport.name}: two concurrent sessions keep independent state`, async () => {
+    const loopRunner: LoopRunner = async (_client, _model, messages, userInput, onEvent) => {
+      onEvent({ type: 'text_delta', content: `echo:${userInput}` });
+      onEvent({ type: 'done' });
+      return [...messages, { role: 'assistant', content: `echo:${userInput}` } as Message];
+    };
+
+    const { client, cleanup } = await transport.factory(loopRunner);
+
+    try {
+      const sessionA = await client.createSession();
+      const sessionB = await client.createSession();
+      assert.notEqual(sessionA.id, sessionB.id);
+
+      const listAfterBoth = await client.listSessions();
+      assert.ok(listAfterBoth.activeSessionIds.includes(sessionA.id));
+      assert.ok(listAfterBoth.activeSessionIds.includes(sessionB.id));
+
+      // Independent todos.
+      await client.updateTodos(sessionA.id, [
+        { id: 'a1', content: 'A task', status: 'pending', priority: 'high' },
+      ]);
+      await client.updateTodos(sessionB.id, [
+        { id: 'b1', content: 'B task', status: 'in_progress', priority: 'low' },
+      ]);
+      assert.deepEqual(await client.getTodos(sessionA.id), [
+        { id: 'a1', content: 'A task', status: 'pending', priority: 'high' },
+      ]);
+      assert.deepEqual(await client.getTodos(sessionB.id), [
+        { id: 'b1', content: 'B task', status: 'in_progress', priority: 'low' },
+      ]);
+
+      // Independent workflow types (keep both queue so downstream message
+      // assertions aren't affected by workflow-specific preamble wrapping).
+      const workflowA = await client.getWorkflow(sessionA.id);
+      const workflowB = await client.getWorkflow(sessionB.id);
+      assert.equal(workflowA.state.type, 'queue');
+      assert.equal(workflowB.state.type, 'queue');
+      assert.equal(workflowA.activeSessionId, sessionA.id);
+      assert.equal(workflowB.activeSessionId, sessionB.id);
+
+      // Independent message streams.
+      const sendA = await client.sendMessage(sessionA.id, 'hello A');
+      const sendB = await client.sendMessage(sessionB.id, 'hello B');
+      assert.equal(sendA.status, 'started');
+      assert.equal(sendB.status, 'started');
+
+      await waitFor(async () => {
+        const [a, b] = await Promise.all([
+          client.getSession(sessionA.id),
+          client.getSession(sessionB.id),
+        ]);
+        return a.running === false && b.running === false;
+      }, 3000);
+
+      const refreshedA = await client.getSession(sessionA.id);
+      const refreshedB = await client.getSession(sessionB.id);
+      const lastA = refreshedA.completionMessages[refreshedA.completionMessages.length - 1];
+      const lastB = refreshedB.completionMessages[refreshedB.completionMessages.length - 1];
+      assert.equal((lastA as { content: string }).content, 'echo:hello A');
+      assert.equal((lastB as { content: string }).content, 'echo:hello B');
+    } finally {
+      await cleanup();
+    }
+  });
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;

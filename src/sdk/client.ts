@@ -67,8 +67,8 @@ export class ProtoAgentClient {
     return this.transport.sendMessage(sessionId, content, mode);
   }
 
-  abort(): Promise<{ aborted: boolean }> {
-    return this.transport.abort();
+  abort(sessionId?: string): Promise<{ aborted: boolean }> {
+    return this.transport.abort(sessionId);
   }
 
   listApprovals(): Promise<Approval[]> {
@@ -79,28 +79,28 @@ export class ProtoAgentClient {
     return this.transport.resolveApproval(id, decision);
   }
 
-  getWorkflow(): Promise<WorkflowResponse> {
-    return this.transport.getWorkflow();
+  getWorkflow(sessionId: string): Promise<WorkflowResponse> {
+    return this.transport.getWorkflow(sessionId);
   }
 
-  setWorkflow(type: WorkflowType): Promise<WorkflowResponse> {
-    return this.transport.setWorkflow(type);
+  setWorkflow(sessionId: string, type: WorkflowType): Promise<WorkflowResponse> {
+    return this.transport.setWorkflow(sessionId, type);
   }
 
-  startWorkflow(input: WorkflowStartInput): Promise<WorkflowResponse> {
-    return this.transport.startWorkflow(input);
+  startWorkflow(sessionId: string, input: WorkflowStartInput): Promise<WorkflowResponse> {
+    return this.transport.startWorkflow(sessionId, input);
   }
 
-  stopWorkflow(): Promise<WorkflowResponse> {
-    return this.transport.stopWorkflow();
+  stopWorkflow(sessionId: string): Promise<WorkflowResponse> {
+    return this.transport.stopWorkflow(sessionId);
   }
 
-  getTodos(): Promise<TodoItem[]> {
-    return this.transport.getTodos();
+  getTodos(sessionId: string): Promise<TodoItem[]> {
+    return this.transport.getTodos(sessionId);
   }
 
-  updateTodos(todos: TodoItem[]): Promise<TodoItem[]> {
-    return this.transport.updateTodos(todos);
+  updateTodos(sessionId: string, todos: TodoItem[]): Promise<TodoItem[]> {
+    return this.transport.updateTodos(sessionId, todos);
   }
 
   listSkills(): Promise<SkillSummary[]> {

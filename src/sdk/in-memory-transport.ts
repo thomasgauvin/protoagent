@@ -1,10 +1,6 @@
 /**
  * InMemoryTransport — drives SDK calls directly against a CoreRuntime
  * instance in the same process.
- *
- * This is the transport used by the CLI (stage 2) so that the TUI can run
- * against the exact same runtime surface the HTTP server uses, without a
- * network hop.
  */
 
 import { CoreRuntime, type CoreRuntimeDependencies, type CoreRuntimeOptions } from '../core/runtime.js';
@@ -80,8 +76,8 @@ export class InMemoryTransport implements Transport {
     return this.runtime.sendMessage(sessionId, content, mode);
   }
 
-  async abort(): Promise<{ aborted: boolean }> {
-    return this.runtime.abortCurrentLoop();
+  async abort(sessionId?: string): Promise<{ aborted: boolean }> {
+    return this.runtime.abortCurrentLoop(sessionId);
   }
 
   async listApprovals(): Promise<Approval[]> {
@@ -92,28 +88,28 @@ export class InMemoryTransport implements Transport {
     return this.runtime.resolveApproval(id, decision);
   }
 
-  async getWorkflow(): Promise<WorkflowResponse> {
-    return this.runtime.getWorkflow() as WorkflowResponse;
+  async getWorkflow(sessionId: string): Promise<WorkflowResponse> {
+    return this.runtime.getWorkflow(sessionId) as WorkflowResponse;
   }
 
-  async setWorkflow(type: WorkflowType): Promise<WorkflowResponse> {
-    return (await this.runtime.switchWorkflow(type)) as WorkflowResponse;
+  async setWorkflow(sessionId: string, type: WorkflowType): Promise<WorkflowResponse> {
+    return (await this.runtime.switchWorkflow(sessionId, type)) as WorkflowResponse;
   }
 
-  async startWorkflow(input: WorkflowStartInput): Promise<WorkflowResponse> {
-    return (await this.runtime.startWorkflow(input)) as WorkflowResponse;
+  async startWorkflow(sessionId: string, input: WorkflowStartInput): Promise<WorkflowResponse> {
+    return (await this.runtime.startWorkflow(sessionId, input)) as WorkflowResponse;
   }
 
-  async stopWorkflow(): Promise<WorkflowResponse> {
-    return (await this.runtime.stopWorkflow()) as WorkflowResponse;
+  async stopWorkflow(sessionId: string): Promise<WorkflowResponse> {
+    return (await this.runtime.stopWorkflow(sessionId)) as WorkflowResponse;
   }
 
-  async getTodos(): Promise<TodoItem[]> {
-    return this.runtime.getTodos();
+  async getTodos(sessionId: string): Promise<TodoItem[]> {
+    return this.runtime.getTodos(sessionId);
   }
 
-  async updateTodos(todos: TodoItem[]): Promise<TodoItem[]> {
-    return this.runtime.updateTodos(todos);
+  async updateTodos(sessionId: string, todos: TodoItem[]): Promise<TodoItem[]> {
+    return this.runtime.updateTodos(sessionId, todos);
   }
 
   async listSkills(): Promise<SkillSummary[]> {
@@ -141,8 +137,7 @@ export class InMemoryTransport implements Transport {
     });
 
     // Emit an initial snapshot event to match HttpTransport (which receives
-    // one from the server on connect). We do this asynchronously so the
-    // caller has a chance to wire up state before the snapshot arrives.
+    // one from the server on connect).
     queueMicrotask(async () => {
       try {
         const session = await this.runtime.getSessionSnapshot(sessionId);

@@ -6,6 +6,9 @@
  * agnostic: the same method surface is available whether the runtime
  * lives in the same process (InMemoryTransport) or on a remote server
  * (HttpTransport).
+ *
+ * All session-scoped operations take an explicit `sessionId`. There is no
+ * implicit "active session" on the runtime.
  */
 
 import type {
@@ -47,18 +50,24 @@ export interface Transport {
     content: string,
     mode?: 'send' | 'queue',
   ): Promise<SendMessageResponse>;
-  abort(): Promise<{ aborted: boolean }>;
+
+  /**
+   * Abort an in-flight run for a single session. When `sessionId` is omitted,
+   * the runtime aborts every running session (convenience used by `exec` and
+   * the API's global `/abort`).
+   */
+  abort(sessionId?: string): Promise<{ aborted: boolean }>;
 
   listApprovals(): Promise<Approval[]>;
   resolveApproval(id: string, decision: ApprovalDecision): Promise<Approval | null>;
 
-  getWorkflow(): Promise<WorkflowResponse>;
-  setWorkflow(type: WorkflowType): Promise<WorkflowResponse>;
-  startWorkflow(input: WorkflowStartInput): Promise<WorkflowResponse>;
-  stopWorkflow(): Promise<WorkflowResponse>;
+  getWorkflow(sessionId: string): Promise<WorkflowResponse>;
+  setWorkflow(sessionId: string, type: WorkflowType): Promise<WorkflowResponse>;
+  startWorkflow(sessionId: string, input: WorkflowStartInput): Promise<WorkflowResponse>;
+  stopWorkflow(sessionId: string): Promise<WorkflowResponse>;
 
-  getTodos(): Promise<TodoItem[]>;
-  updateTodos(todos: TodoItem[]): Promise<TodoItem[]>;
+  getTodos(sessionId: string): Promise<TodoItem[]>;
+  updateTodos(sessionId: string, todos: TodoItem[]): Promise<TodoItem[]>;
 
   listSkills(): Promise<SkillSummary[]>;
   activateSkill(name: string): Promise<SkillActivationResponse>;

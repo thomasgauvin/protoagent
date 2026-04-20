@@ -156,6 +156,21 @@ export interface SessionSnapshot extends Session {
   running: boolean;
 }
 
+/**
+ * Per-session state. One `SessionContext` exists per active session in the
+ * runtime. This replaces the old single-active-session fields.
+ */
+interface SessionContext {
+  session: Session;
+  completionMessages: Message[];
+  pendingInterjects: ReturnType<typeof interjectMessage>[];
+  workflowManager: WorkflowManager;
+  totalCost: number;
+  abortController: AbortController | null;
+  activeRunPromise: Promise<void> | null;
+  abortRequested: boolean;
+}
+
 export class ApiRuntime {
   private readonly events = new EventEmitter();
   private readonly approvalManager = new ApprovalManager();
@@ -164,18 +179,13 @@ export class ApiRuntime {
   private readonly options: ApiRuntimeOptions;
   private readonly deps: ApiRuntimeDependencies;
 
+  /** All active sessions known to this runtime, keyed by session id. */
+  private readonly contexts = new Map<string, SessionContext>();
+
   private initialized = false;
   private initializePromise: Promise<void> | null = null;
   private config: Config | null = null;
   private client: OpenAI | null = null;
-  private activeSession: Session | null = null;
-  private completionMessages: Message[] = [];
-  private pendingInterjects: ReturnType<typeof interjectMessage>[] = [];
-  private workflowManager: WorkflowManager | null = null;
-  private totalCost = 0;
-  private abortController: AbortController | null = null;
-  private activeRunPromise: Promise<void> | null = null;
-  private abortRequested = false;
 
   constructor(options: ApiRuntimeOptions = {}, dependencies: Partial<ApiRuntimeDependencies> = {}) {
     this.options = options;
@@ -202,7 +212,6 @@ export class ApiRuntime {
 
     this.config = config;
     this.client = this.deps.createClient(config);
-    this.workflowManager = this.createWorkflowManager();
 
     this.approvalManager.setApprovalHandler(async (request) => {
       const approvalId = this.createApprovalId(request.id);
@@ -229,7 +238,7 @@ export class ApiRuntime {
 
   async close(): Promise<void> {
     this.resolveAllPendingApprovals('reject');
-    await this.abortCurrentLoop();
+    await this.abortAllRuns();
     await this.deps.closeMcp();
   }
 
@@ -241,13 +250,24 @@ export class ApiRuntime {
     };
   }
 
-  async listSessions(): Promise<{ sessions: Awaited<ReturnType<typeof listStoredSessions>>; activeSessionId: string | null; running: boolean }> {
+  async listSessions(): Promise<{
+    sessions: Awaited<ReturnType<typeof listStoredSessions>>;
+    activeSessionIds: string[];
+    /** Legacy field: the most recently activated session (best-effort). */
+    activeSessionId: string | null;
+    running: boolean;
+  }> {
     await this.initialize();
     const sessions = await this.deps.listStoredSessions();
+    const activeSessionIds = Array.from(this.contexts.keys());
+    const runningAny = Array.from(this.contexts.values()).some(
+      (ctx) => ctx.activeRunPromise !== null,
+    );
     return {
       sessions,
-      activeSessionId: this.activeSession?.id ?? null,
-      running: this.isRunning(),
+      activeSessionIds,
+      activeSessionId: activeSessionIds[activeSessionIds.length - 1] ?? null,
+      running: runningAny,
     };
   }
 
@@ -261,20 +281,21 @@ export class ApiRuntime {
     clearMessageQueue(session.id);
     await this.deps.saveSession(session);
     await this.activateSession(session);
-    return this.getActiveSessionSnapshot();
+    return this.getSessionSnapshotFromContext(session.id);
   }
 
   async getSession(sessionId: string): Promise<SessionSnapshot> {
     await this.initialize();
     const session = await this.loadExistingSession(sessionId);
     await this.activateSession(session);
-    return this.getActiveSessionSnapshot();
+    return this.getSessionSnapshotFromContext(sessionId);
   }
 
   async getSessionSnapshot(sessionId: string): Promise<SessionSnapshot> {
     await this.initialize();
-    if (this.activeSession?.id === sessionId) {
-      return this.getActiveSessionSnapshot();
+    const context = this.contexts.get(sessionId);
+    if (context) {
+      return this.getSessionSnapshotFromContext(sessionId);
     }
 
     const session = await this.loadExistingSession(sessionId);
@@ -288,13 +309,10 @@ export class ApiRuntime {
   async deleteSession(sessionId: string): Promise<boolean> {
     await this.initialize();
 
-    if (this.activeSession?.id === sessionId) {
-      await this.abortCurrentLoop();
-      this.activeSession = null;
-      this.completionMessages = [];
-      this.pendingInterjects = [];
-      this.totalCost = 0;
-      this.workflowManager = this.createWorkflowManager();
+    const context = this.contexts.get(sessionId);
+    if (context) {
+      await this.abortRun(sessionId);
+      this.contexts.delete(sessionId);
     }
 
     return this.deps.deleteStoredSession(sessionId);
@@ -315,51 +333,50 @@ export class ApiRuntime {
     const session = await this.loadExistingSession(sessionId);
     await this.activateSession(session);
 
+    const context = this.requireContext(sessionId);
+
     if (mode === 'queue') {
       enqueueMessage(trimmed, sessionId);
-      await this.persistActiveSession();
+      await this.persistContext(context);
       this.emitSessionEvent(sessionId, 'message_queued', { mode: 'queue', content: trimmed });
-      if (!this.activeRunPromise) {
+      if (!context.activeRunPromise) {
         const next = getNextQueued(sessionId);
         if (next) {
           this.startRunSequence(sessionId, next.content);
-          return { status: 'started', session: this.getActiveSessionSnapshot() };
+          return { status: 'started', session: this.getSessionSnapshotFromContext(sessionId) };
         }
       }
-      return { status: 'queued', session: this.getActiveSessionSnapshot() };
+      return { status: 'queued', session: this.getSessionSnapshotFromContext(sessionId) };
     }
 
-    if (this.activeRunPromise) {
-      this.pendingInterjects.push(interjectMessage(trimmed, sessionId));
-      await this.persistActiveSession();
+    if (context.activeRunPromise) {
+      context.pendingInterjects.push(interjectMessage(trimmed, sessionId));
+      await this.persistContext(context);
       this.emitSessionEvent(sessionId, 'message_queued', { mode: 'interject', content: trimmed });
-      return { status: 'interjected', session: this.getActiveSessionSnapshot() };
+      return { status: 'interjected', session: this.getSessionSnapshotFromContext(sessionId) };
     }
 
     this.startRunSequence(sessionId, trimmed);
-    return { status: 'started', session: this.getActiveSessionSnapshot() };
+    return { status: 'started', session: this.getSessionSnapshotFromContext(sessionId) };
   }
 
-  async abortCurrentLoop(): Promise<{ aborted: boolean }> {
+  /**
+   * Abort a single session's in-flight run. If `sessionId` is omitted, aborts
+   * every running session.
+   */
+  async abortCurrentLoop(sessionId?: string): Promise<{ aborted: boolean }> {
     await this.initialize();
 
-    if (!this.activeRunPromise) {
-      return { aborted: false };
+    if (sessionId) {
+      return { aborted: await this.abortRun(sessionId) };
     }
 
-    this.abortRequested = true;
-    this.abortController?.abort();
-    this.resolveAllPendingApprovals('reject');
-
-    try {
-      await this.activeRunPromise;
-    } catch (error) {
-      logger.warn('Run aborted with error', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+    let aborted = false;
+    for (const id of Array.from(this.contexts.keys())) {
+      const wasAborted = await this.abortRun(id);
+      aborted = aborted || wasAborted;
     }
-
-    return { aborted: true };
+    return { aborted };
   }
 
   listApprovals(): ApiApproval[] {
@@ -387,13 +404,14 @@ export class ApiRuntime {
     return pending.approval;
   }
 
-  getWorkflow() {
-    const workflowManager = this.requireActiveWorkflowManager();
+  getWorkflow(sessionId: string) {
+    const context = this.requireContext(sessionId);
+    const workflowManager = context.workflowManager;
     const currentType = workflowManager.getCurrentType();
     const base = {
       state: workflowManager.getState(),
       info: workflowManager.getWorkflowInfo(),
-      activeSessionId: this.activeSession?.id ?? null,
+      activeSessionId: sessionId,
     };
 
     if (currentType === 'loop') {
@@ -417,15 +435,15 @@ export class ApiRuntime {
     return base;
   }
 
-  async switchWorkflow(type: WorkflowType) {
-    const workflowManager = this.requireActiveWorkflowManager();
-    workflowManager.switchWorkflow(workflowTypeSchema.parse(type));
-    await this.persistActiveSession();
-    this.emitWorkflowUpdated();
-    return this.getWorkflow();
+  async switchWorkflow(sessionId: string, type: WorkflowType) {
+    const context = this.requireContext(sessionId);
+    context.workflowManager.switchWorkflow(workflowTypeSchema.parse(type));
+    await this.persistContext(context);
+    this.emitWorkflowUpdated(sessionId);
+    return this.getWorkflow(sessionId);
   }
 
-  async startWorkflow(input: {
+  async startWorkflow(sessionId: string, input: {
     type?: WorkflowType;
     loopInstructions?: string;
     endCondition?: string;
@@ -433,7 +451,8 @@ export class ApiRuntime {
     cronSchedule?: string;
     cronPrompt?: string;
   } = {}) {
-    const workflowManager = this.requireActiveWorkflowManager();
+    const context = this.requireContext(sessionId);
+    const workflowManager = context.workflowManager;
     if (input.type) {
       workflowManager.switchWorkflow(workflowTypeSchema.parse(input.type));
     }
@@ -463,30 +482,30 @@ export class ApiRuntime {
       workflowManager.start();
     }
 
-    await this.persistActiveSession();
-    this.emitWorkflowUpdated();
-    return this.getWorkflow();
+    await this.persistContext(context);
+    this.emitWorkflowUpdated(sessionId);
+    return this.getWorkflow(sessionId);
   }
 
-  async stopWorkflow() {
-    const workflowManager = this.requireActiveWorkflowManager();
-    workflowManager.stop();
-    await this.persistActiveSession();
-    this.emitWorkflowUpdated();
-    return this.getWorkflow();
+  async stopWorkflow(sessionId: string) {
+    const context = this.requireContext(sessionId);
+    context.workflowManager.stop();
+    await this.persistContext(context);
+    this.emitWorkflowUpdated(sessionId);
+    return this.getWorkflow(sessionId);
   }
 
-  getTodos(): TodoItem[] {
-    const session = this.requireActiveSession();
-    return getTodosForSession(session.id);
+  getTodos(sessionId: string): TodoItem[] {
+    this.requireContext(sessionId);
+    return getTodosForSession(sessionId);
   }
 
-  async updateTodos(todos: TodoItem[]): Promise<TodoItem[]> {
-    const session = this.requireActiveSession();
-    setTodosForSession(session.id, todos);
-    await this.persistActiveSession();
-    this.emitSessionEvent(session.id, 'todos_updated', { todos });
-    return this.getTodos();
+  async updateTodos(sessionId: string, todos: TodoItem[]): Promise<TodoItem[]> {
+    const context = this.requireContext(sessionId);
+    setTodosForSession(sessionId, todos);
+    await this.persistContext(context);
+    this.emitSessionEvent(sessionId, 'todos_updated', { todos });
+    return this.getTodos(sessionId);
   }
 
   async listSkills() {
@@ -512,10 +531,13 @@ export class ApiRuntime {
     }
 
     this.activeSkills.set(name, content);
-    if (this.activeSession) {
-      await this.refreshActiveSessionSystemPrompt();
-      await this.persistActiveSession();
-      this.emitSessionEvent(this.activeSession.id, 'skills_updated', {
+
+    // Refresh every active session's system prompt + emit an event so all
+    // connected clients get a fresh snapshot.
+    for (const context of this.contexts.values()) {
+      await this.refreshContextSystemPrompt(context);
+      await this.persistContext(context);
+      this.emitSessionEvent(context.session.id, 'skills_updated', {
         activeSkills: Array.from(this.activeSkills.keys()),
       });
     }
@@ -537,31 +559,21 @@ export class ApiRuntime {
     return this.getMcpStatus();
   }
 
+  // ─── Per-session lifecycle ─────────────────────────────────────────────
+
   private async activateSession(session: Session): Promise<void> {
-    if (this.activeSession?.id === session.id) {
-      this.completionMessages = ensureSystemPromptAtTop(
-        this.completionMessages,
+    const existing = this.contexts.get(session.id);
+    if (existing) {
+      existing.completionMessages = ensureSystemPromptAtTop(
+        existing.completionMessages,
         await this.buildCurrentSystemPrompt(),
       );
-      this.activeSession.completionMessages = this.completionMessages;
-      await this.persistActiveSession();
+      existing.session.completionMessages = existing.completionMessages;
+      await this.persistContext(existing);
       return;
     }
 
-    if (this.activeRunPromise) {
-      await this.abortCurrentLoop();
-    }
-
-    if (this.activeSession) {
-      await this.persistActiveSession();
-    }
-
-    this.activeSession = session;
-    this.totalCost = typeof session.totalCost === 'number' ? session.totalCost : 0;
-    this.pendingInterjects = Array.isArray(session.interjectMessages)
-      ? [...session.interjectMessages]
-      : [];
-    this.completionMessages = ensureSystemPromptAtTop(
+    const completionMessages = ensureSystemPromptAtTop(
       Array.isArray(session.completionMessages) ? session.completionMessages : [],
       await this.buildCurrentSystemPrompt(),
     );
@@ -569,33 +581,53 @@ export class ApiRuntime {
     setTodosForSession(session.id, Array.isArray(session.todos) ? session.todos : []);
     loadQueueFromSession(Array.isArray(session.queuedMessages) ? session.queuedMessages : [], session.id);
 
-    this.workflowManager = this.createWorkflowManager();
+    const workflowManager = this.createWorkflowManagerFor(session.id);
     if (session.workflowState) {
-      this.workflowManager.deserialize(session.workflowState);
+      workflowManager.deserialize(session.workflowState);
     }
 
-    this.activeSession.completionMessages = this.completionMessages;
-    await this.persistActiveSession();
-    this.emitSessionEvent(session.id, 'session_activated', this.getActiveSessionSnapshot());
-    this.emitWorkflowUpdated();
+    session.completionMessages = completionMessages;
+
+    const context: SessionContext = {
+      session,
+      completionMessages,
+      pendingInterjects: Array.isArray(session.interjectMessages)
+        ? [...session.interjectMessages]
+        : [],
+      workflowManager,
+      totalCost: typeof session.totalCost === 'number' ? session.totalCost : 0,
+      abortController: null,
+      activeRunPromise: null,
+      abortRequested: false,
+    };
+
+    this.contexts.set(session.id, context);
+
+    await this.persistContext(context);
+    this.emitSessionEvent(session.id, 'session_activated', this.getSessionSnapshotFromContext(session.id));
+    this.emitWorkflowUpdated(session.id);
   }
 
-  private createWorkflowManager(): WorkflowManager {
+  private createWorkflowManagerFor(sessionId: string): WorkflowManager {
     const workflowManager = new WorkflowManager();
     workflowManager.registerToolRegistry(this.deps.toolRegistry);
     workflowManager.setCronScheduleHandler(async ({ schedule, prompt }) => {
       const current = workflowManager.getCurrentWorkflow() as CronWorkflow;
       current.setSchedule(schedule, prompt);
-      await this.persistActiveSession();
-      this.emitWorkflowUpdated();
+      const context = this.contexts.get(sessionId);
+      if (context) {
+        await this.persistContext(context);
+        this.emitWorkflowUpdated(sessionId);
+      }
       return `Cron schedule set: ${schedule}. Prompt: "${prompt}"`;
     });
     return workflowManager;
   }
 
   private startRunSequence(sessionId: string, initialMessage: string): void {
-    if (this.activeRunPromise) {
-      throw new Error('A session is already running.');
+    const context = this.requireContext(sessionId);
+    if (context.activeRunPromise) {
+      throw new Error(`Session ${sessionId} is already running.`);
     }
 
     const runPromise = this.runSequence(sessionId, initialMessage)
@@ -609,81 +641,85 @@ export class ApiRuntime {
         });
       })
       .finally(() => {
-        if (this.activeRunPromise === runPromise) {
-          this.activeRunPromise = null;
-          this.abortController = null;
-          this.abortRequested = false;
+        const ctx = this.contexts.get(sessionId);
+        if (ctx && ctx.activeRunPromise === runPromise) {
+          ctx.activeRunPromise = null;
+          ctx.abortController = null;
+          ctx.abortRequested = false;
         }
       });
 
-    this.activeRunPromise = runPromise;
+    context.activeRunPromise = runPromise;
   }
 
   private async runSequence(sessionId: string, initialMessage: string): Promise<void> {
     let nextMessage: string | null = initialMessage;
-    while (nextMessage && !this.abortRequested) {
+    while (nextMessage) {
+      const context = this.contexts.get(sessionId);
+      if (!context || context.abortRequested) break;
       await this.runSingleTurn(sessionId, nextMessage);
-      if (this.abortRequested || this.activeSession?.id !== sessionId) {
-        break;
-      }
+      const after = this.contexts.get(sessionId);
+      if (!after || after.abortRequested) break;
       nextMessage = getNextQueued(sessionId)?.content ?? null;
     }
   }
 
   private async runSingleTurn(sessionId: string, userContent: string): Promise<void> {
-    if (!this.client || !this.config || !this.workflowManager || this.activeSession?.id !== sessionId) {
-      throw new Error('Session is not active.');
+    if (!this.client || !this.config) {
+      throw new Error('Runtime is not initialized.');
     }
+
+    const context = this.requireContext(sessionId);
 
     const parsedContent = await this.deps.parseInputWithImages(userContent);
-    if (!this.workflowManager.isActive()) {
-      this.workflowManager.start();
+    if (!context.workflowManager.isActive()) {
+      context.workflowManager.start();
     }
 
-    const workflowResult = this.workflowManager.processMessage(parsedContent, this.completionMessages);
-    this.completionMessages = workflowResult.messages;
+    const workflowResult = context.workflowManager.processMessage(parsedContent, context.completionMessages);
+    context.completionMessages = workflowResult.messages;
 
-    const startingInterjects = this.pendingInterjects.splice(0);
+    const startingInterjects = context.pendingInterjects.splice(0);
     if (startingInterjects.length > 0) {
       const extra = startingInterjects.map((message) => ({
         role: 'user' as const,
         content: `[interject] ${message.content}`,
       }));
-      this.completionMessages = [...this.completionMessages, ...extra];
+      context.completionMessages = [...context.completionMessages, ...extra];
     }
 
-    if (this.activeSession.title === 'New session') {
-      this.activeSession.title = this.deps.generateTitle(this.completionMessages);
+    if (context.session.title === 'New session') {
+      context.session.title = this.deps.generateTitle(context.completionMessages);
     }
 
-    await this.persistActiveSession();
-    this.emitSessionEvent(sessionId, 'session_updated', this.getActiveSessionSnapshot());
+    await this.persistContext(context);
+    this.emitSessionEvent(sessionId, 'session_updated', this.getSessionSnapshotFromContext(sessionId));
 
     const pricing = this.deps.getModelPricing(this.config.provider, this.config.model);
     const requestDefaults = this.deps.getRequestDefaultParams(this.config.provider, this.config.model);
     let shouldContinueWorkflow = true;
 
-    while (shouldContinueWorkflow && this.workflowManager.isActive()) {
-      if (this.abortRequested) {
+    while (shouldContinueWorkflow && context.workflowManager.isActive()) {
+      if (context.abortRequested) {
         break;
       }
 
-      this.abortController = new AbortController();
+      context.abortController = new AbortController();
       const updated = await this.deps.runAgenticLoop(
         this.client,
         this.config.model,
-        [...this.completionMessages],
+        [...context.completionMessages],
         userContent,
         (event) => this.handleAgentEvent(sessionId, event),
         {
           pricing: pricing || undefined,
-          abortSignal: this.abortController.signal,
+          abortSignal: context.abortController.signal,
           sessionId,
           requestDefaults,
           approvalManager: this.approvalManager,
           systemPromptAddition: this.combineSystemPromptAdditions(workflowResult.systemPromptAddition),
           getInterjects: () => {
-            const interjects = this.pendingInterjects.splice(0).map(
+            const interjects = context.pendingInterjects.splice(0).map(
               (message): Message => ({ role: 'user', content: `[interject] ${message.content}` }),
             );
             return interjects;
@@ -691,36 +727,38 @@ export class ApiRuntime {
         },
       );
 
-      this.completionMessages = updated;
-      await this.persistActiveSession();
-      this.emitSessionEvent(sessionId, 'session_updated', this.getActiveSessionSnapshot());
+      context.completionMessages = updated;
+      await this.persistContext(context);
+      this.emitSessionEvent(sessionId, 'session_updated', this.getSessionSnapshotFromContext(sessionId));
 
-      const lastMessage = this.completionMessages[this.completionMessages.length - 1];
+      const lastMessage = context.completionMessages[context.completionMessages.length - 1];
       if (lastMessage && lastMessage.role === 'assistant') {
-        shouldContinueWorkflow = this.workflowManager.onResponse(lastMessage);
+        shouldContinueWorkflow = context.workflowManager.onResponse(lastMessage);
       } else {
         shouldContinueWorkflow = false;
       }
 
-      if (shouldContinueWorkflow && this.workflowManager.getCurrentType() === 'loop') {
-        const loopWorkflow = this.workflowManager.getCurrentWorkflow() as LoopWorkflow;
+      if (shouldContinueWorkflow && context.workflowManager.getCurrentType() === 'loop') {
+        const loopWorkflow = context.workflowManager.getCurrentWorkflow() as LoopWorkflow;
         const nextWorkflowMessage = loopWorkflow.getNextMessage();
         if (nextWorkflowMessage) {
-          this.completionMessages = [...this.completionMessages, nextWorkflowMessage];
-          await this.persistActiveSession();
-          this.emitSessionEvent(sessionId, 'session_updated', this.getActiveSessionSnapshot());
+          context.completionMessages = [...context.completionMessages, nextWorkflowMessage];
+          await this.persistContext(context);
+          this.emitSessionEvent(sessionId, 'session_updated', this.getSessionSnapshotFromContext(sessionId));
         }
       }
     }
   }
 
   private handleAgentEvent(sessionId: string, event: AgentEvent): void {
-    if (event.type === 'usage' && event.usage) {
-      this.totalCost += event.usage.cost;
-    }
-
-    if (event.type === 'sub_agent_iteration' && event.subAgentUsage) {
-      this.totalCost += event.subAgentUsage.estimatedCost;
+    const context = this.contexts.get(sessionId);
+    if (context) {
+      if (event.type === 'usage' && event.usage) {
+        context.totalCost += event.usage.cost;
+      }
+      if (event.type === 'sub_agent_iteration' && event.subAgentUsage) {
+        context.totalCost += event.subAgentUsage.estimatedCost;
+      }
     }
 
     this.emitSessionEvent(sessionId, event.type, event);
@@ -738,45 +776,43 @@ export class ApiRuntime {
     return additions.length > 0 ? additions.join('\n\n') : undefined;
   }
 
-  private async refreshActiveSessionSystemPrompt(): Promise<void> {
-    if (!this.activeSession) return;
-    this.completionMessages = ensureSystemPromptAtTop(
-      this.completionMessages,
+  private async refreshContextSystemPrompt(context: SessionContext): Promise<void> {
+    context.completionMessages = ensureSystemPromptAtTop(
+      context.completionMessages,
       await this.buildCurrentSystemPrompt(),
     );
-    this.activeSession.completionMessages = this.completionMessages;
+    context.session.completionMessages = context.completionMessages;
   }
 
-  private async persistActiveSession(): Promise<void> {
-    if (!this.activeSession || !this.workflowManager) return;
-
-    this.activeSession.completionMessages = this.completionMessages;
-    this.activeSession.todos = getTodosForSession(this.activeSession.id);
-    this.activeSession.queuedMessages = getQueueForSession(this.activeSession.id);
-    this.activeSession.interjectMessages = [...this.pendingInterjects];
-    this.activeSession.workflowState = this.workflowManager.getState();
-    this.activeSession.totalCost = this.totalCost;
-    await this.deps.saveSession(this.activeSession);
+  private async persistContext(context: SessionContext): Promise<void> {
+    const { session, workflowManager } = context;
+    session.completionMessages = context.completionMessages;
+    session.todos = getTodosForSession(session.id);
+    session.queuedMessages = getQueueForSession(session.id);
+    session.interjectMessages = [...context.pendingInterjects];
+    session.workflowState = workflowManager.getState();
+    session.totalCost = context.totalCost;
+    await this.deps.saveSession(session);
   }
 
-  private getActiveSessionSnapshot(): SessionSnapshot {
-    const session = this.requireActiveSession();
+  private getSessionSnapshotFromContext(sessionId: string): SessionSnapshot {
+    const context = this.requireContext(sessionId);
     return {
-      ...session,
-      completionMessages: this.completionMessages,
-      todos: getTodosForSession(session.id),
-      queuedMessages: getQueueForSession(session.id),
-      interjectMessages: [...this.pendingInterjects],
-      workflowState: this.workflowManager?.getState(),
-      totalCost: this.totalCost,
+      ...context.session,
+      completionMessages: context.completionMessages,
+      todos: getTodosForSession(sessionId),
+      queuedMessages: getQueueForSession(sessionId),
+      interjectMessages: [...context.pendingInterjects],
+      workflowState: context.workflowManager.getState(),
+      totalCost: context.totalCost,
       active: true,
-      running: this.isRunning(),
+      running: context.activeRunPromise !== null,
     };
   }
 
-  private emitWorkflowUpdated(): void {
-    if (!this.activeSession) return;
-    this.emitSessionEvent(this.activeSession.id, 'workflow_updated', this.getWorkflow());
+  private emitWorkflowUpdated(sessionId: string): void {
+    if (!this.contexts.has(sessionId)) return;
+    this.emitSessionEvent(sessionId, 'workflow_updated', this.getWorkflow(sessionId));
   }
 
   private emitSessionEvent<T>(sessionId: string, type: string, data: T): void {
@@ -811,16 +847,47 @@ export class ApiRuntime {
     }
   }
 
+  private async abortRun(sessionId: string): Promise<boolean> {
+    const context = this.contexts.get(sessionId);
+    if (!context || !context.activeRunPromise) {
+      return false;
+    }
+
+    context.abortRequested = true;
+    context.abortController?.abort();
+
+    // Reject approvals specifically tied to this session, leaving others alone.
+    for (const [id, pending] of this.pendingApprovals) {
+      if (pending.approval.sessionId === sessionId) {
+        this.pendingApprovals.delete(id);
+        pending.resolve('reject');
+        this.emitSessionEvent(sessionId, 'approval_resolved', { id, decision: 'reject' });
+      }
+    }
+
+    try {
+      await context.activeRunPromise;
+    } catch (error) {
+      logger.warn('Run aborted with error', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return true;
+  }
+
+  private async abortAllRuns(): Promise<void> {
+    const ids = Array.from(this.contexts.keys());
+    await Promise.all(ids.map((id) => this.abortRun(id)));
+  }
+
   private async loadExistingSession(sessionId: string): Promise<Session> {
     const session = await this.deps.loadSession(sessionId);
     if (!session) {
       throw new ApiError(404, `Session "${sessionId}" not found.`);
     }
     return session;
-  }
-
-  private isRunning(): boolean {
-    return this.activeRunPromise !== null;
   }
 
   private requireConfig(): Config {
@@ -830,18 +897,11 @@ export class ApiRuntime {
     return this.config;
   }
 
-  private requireActiveSession(): Session {
-    if (!this.activeSession) {
-      throw new ApiError(400, 'No active session. Activate or create a session first.');
+  private requireContext(sessionId: string): SessionContext {
+    const context = this.contexts.get(sessionId);
+    if (!context) {
+      throw new ApiError(400, `Session "${sessionId}" is not active. Load or create it first.`);
     }
-    return this.activeSession;
-  }
-
-  private requireActiveWorkflowManager(): WorkflowManager {
-    this.requireActiveSession();
-    if (!this.workflowManager) {
-      throw new ApiError(503, 'Workflow manager is not initialized.');
-    }
-    return this.workflowManager;
+    return context;
   }
 }

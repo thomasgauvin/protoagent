@@ -238,15 +238,15 @@ test('message route returns 400 for invalid request body', async () => {
 test('workflow route returns ApiError status codes', async () => {
   const app = createRouteTestApp({
     getWorkflow: () => {
-      throw new ApiError(400, 'No active session. Activate or create a session first.');
+      throw new ApiError(400, 'Session "unknown" is not active. Load or create it first.');
     },
   });
 
-  const response = await app.request('/workflow');
+  const response = await app.request('/sessions/unknown/workflow');
 
   assert.equal(response.status, 400);
   const payload = await readJson(response);
-  assert.equal(payload.error, 'No active session. Activate or create a session first.');
+  assert.equal(payload.error, 'Session "unknown" is not active. Load or create it first.');
 });
 
 test('session route returns 404 for missing sessions', async () => {
@@ -278,23 +278,24 @@ test('full integration: sessions, workflow, todos, skills, and mcp routes operat
 
   const listResponse = await requestJson(harness.app, '/sessions');
   const listPayload = await readJson(listResponse);
+  assert.deepEqual(listPayload.activeSessionIds, [sessionId]);
   assert.equal(listPayload.activeSessionId, sessionId);
   assert.equal(listPayload.sessions.length, 1);
 
-  const workflowResponse = await requestJson(harness.app, '/workflow');
+  const workflowResponse = await requestJson(harness.app, `/sessions/${sessionId}/workflow`);
   const workflow = await readJson(workflowResponse);
   assert.equal(workflow.activeSessionId, sessionId);
   assert.equal(workflow.state.type, 'queue');
 
   const todo = { id: 'todo-1', content: 'Ship API SDK', status: 'pending', priority: 'high' };
-  const putTodosResponse = await requestJson(harness.app, '/todos', {
+  const putTodosResponse = await requestJson(harness.app, `/sessions/${sessionId}/todos`, {
     method: 'PUT',
     json: { todos: [todo] },
   });
   assert.equal(putTodosResponse.status, 200);
   assert.deepEqual((await readJson(putTodosResponse)).todos, [todo]);
 
-  const getTodosResponse = await requestJson(harness.app, '/todos');
+  const getTodosResponse = await requestJson(harness.app, `/sessions/${sessionId}/todos`);
   assert.deepEqual((await readJson(getTodosResponse)).todos, [todo]);
 
   const skillsResponse = await requestJson(harness.app, '/skills');
