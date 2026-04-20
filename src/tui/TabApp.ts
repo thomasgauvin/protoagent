@@ -17,6 +17,7 @@ import { ToolRegistry } from '../tools/registry.js'
 import { McpManager } from '../mcp/manager.js'
 import { ApprovalManager } from '../utils/approval-manager.js'
 import { createApp, type AppOptions } from './App.js'
+import { TabRuntime } from './tab-runtime.js'
 import { clearMessageQueue } from '../message-queue.js'
 import { clearTodos } from '../tools/todo.js'
 import { logger } from '../utils/logger.js'
@@ -46,6 +47,7 @@ export class TabApp {
   private toolRegistry: ToolRegistry
   private mcpManager: McpManager
   private approvalManager: ApprovalManager
+  private tabRuntime: TabRuntime
   private isActive: boolean = false
   private rootBox?: BoxRenderable
   private title: string = 'New Agent'
@@ -71,6 +73,14 @@ export class TabApp {
     this.toolRegistry = new ToolRegistry()
     this.mcpManager = new McpManager(this.toolRegistry)
     this.approvalManager = new ApprovalManager()
+
+    // Per-tab SDK surface. Not initialized here — initialization pulls real
+    // config/MCP/LLM client and is deferred until a later stage migrates the
+    // hot path. Session-level reads (list/load) work without initialization.
+    this.tabRuntime = new TabRuntime({
+      toolRegistry: this.toolRegistry,
+      dangerouslySkipPermissions: options.dangerouslySkipPermissions,
+    })
   }
 
   /**
@@ -192,6 +202,7 @@ export class TabApp {
     const externalOnApprovalChange = this.options.onApprovalChange
     const externalOnFork = this.options.onFork
     const externalOnNewTab = this.options.onNewTab
+    const externalOnOpenManager = this.options.onOpenManager
     const externalOnSaveAndExit = this.options.onSaveAndExit
     const externalOnPinTab = this.options.onPinTab
     const externalOnMcpReady = this.options.onMcpReady
@@ -200,6 +211,7 @@ export class TabApp {
       toolRegistry: this.toolRegistry,
       mcpManager: this.mcpManager,
       approvalManager: this.approvalManager,
+      tabRuntime: this.tabRuntime,
       container: this.container,
       initialMessage: this.initialMessage,
       isActiveTab: () => this.isActive,
@@ -218,6 +230,7 @@ export class TabApp {
       },
       onFork: externalOnFork,
       onNewTab: externalOnNewTab,
+      onOpenManager: externalOnOpenManager,
       onSaveAndExit: externalOnSaveAndExit,
       onPinTab: externalOnPinTab,
       registerScrollToBottom: (scrollToBottom: () => void) => {
@@ -279,6 +292,13 @@ export class TabApp {
     logger.debug(`Clearing tool registry`)
     this.toolRegistry.clearDynamicTools()
 
+    // 5b. Close the per-tab SDK runtime facade. Safe if uninitialized.
+    try {
+      await this.tabRuntime.close()
+    } catch (err: any) {
+      logger.warn(`Tab runtime close failed: ${err?.message || err}`)
+    }
+
     // 6. Run registered cleanup callbacks (UI cleanup)
     logger.debug(`Running ${this.cleanupCallbacks.length} cleanup callbacks`)
     for (const callback of this.cleanupCallbacks) {
@@ -332,5 +352,15 @@ export class TabApp {
    */
   getApprovalManager(): ApprovalManager {
     return this.approvalManager
+  }
+
+  /**
+   * Get the per-tab SDK runtime facade.
+   *
+   * Lazily initialized on construction but not yet fully bootstrapped; used
+   * today for session-level reads and, in later stages, for the hot path.
+   */
+  getTabRuntime(): TabRuntime {
+    return this.tabRuntime
   }
 }

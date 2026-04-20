@@ -116,6 +116,7 @@ import {
 const SLASH_COMMANDS = [
   { name: '/help', description: 'Show all available commands' },
   { name: '/new', description: 'Create a new tab' },
+  { name: '/manager', description: 'Open (or switch to) the Manager Agent tab' },
   { name: '/session', description: 'List, search, and open previous sessions' },
   { name: '/pop', description: 'Pop next queued message' },
   { name: '/clear', description: 'Clear the queue' },
@@ -172,6 +173,11 @@ export interface AppOptions {
   toolRegistry?: ToolRegistry
   mcpManager?: McpManager
   approvalManager?: ApprovalManager
+  // Optional per-tab SDK runtime facade. When provided, the tab can route
+  // session-level reads and other SDK-backed operations through this client
+  // instead of importing storage modules directly. Does not affect the hot
+  // streaming path yet.
+  tabRuntime?: import('./tab-runtime.js').TabRuntime
   // Optional container for multi-tab mode (if omitted, uses renderer.root)
   container?: BoxRenderable
   // Optional initial message to send when the tab starts (for /new suffix)
@@ -190,6 +196,8 @@ export interface AppOptions {
   onFork?: (sessionId: string, title?: string) => Promise<void>
   // Optional callback to create a new empty tab (optionally with initial message)
   onNewTab?: (initialMessage?: string) => Promise<void>
+  // Optional callback to open (or focus) the Manager tab. Used by /manager.
+  onOpenManager?: () => Promise<void>
   // Optional callback to save all tabs and exit (for /quit command)
   onSaveAndExit?: () => Promise<void>
   // Registration hook: called with a fn that scrolls to bottom; TabApp stores it and calls when tab becomes visible
@@ -206,6 +214,11 @@ export interface AppOptions {
   onMcpReady?: () => void
   // Registration hook: called with a fn that ensures main view is shown; TabApp stores it and calls when tab becomes visible (for restored tabs)
   registerEnsureMainView?: (fn: () => void) => void
+  // Optional extra text appended to the system prompt. Used by the Manager
+  // tab to inject role-specific guidance without forking App.ts.
+  systemPromptExtra?: string
+  // Optional default title for new tabs (Manager uses "★ Manager")
+  defaultTitle?: string
 }
 
 // ─── Build OpenAI client ───
@@ -405,11 +418,21 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   })
   viewContainers.set('loop', loopView)
 
-  // Add all views to mainView (only one visible at a time)
+  // Add all views to mainView (only one visible at a time).
+  //
+  // Important: set initial visibility explicitly. The default is visible=true,
+  // and if we left all four views on, they'd stack inside mainView — that's
+  // exactly the "workflow diagrams stacked below the chat" regression we
+  // were seeing. `switchView` below only toggles `.visible` on transitions,
+  // so without this seed the non-bot views render until the user Tab-cycles.
   mainView.add(botView)
+  ;(botView as any).visible = true
   mainView.add(queueView)
+  ;(queueView as any).visible = false
   mainView.add(cronView)
+  ;(cronView as any).visible = false
   mainView.add(loopView)
+  ;(loopView as any).visible = false
 
   // ─── MessageHistory (fills chat area vertically) ───
   const msgHistory = new MessageHistory({
@@ -443,9 +466,15 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   function switchView(view: ViewType): void {
     if (view === currentView) return
 
-    // Hide all views
+    // Hide all other views, show only the selected one.
+    //
+    // Previous implementation tried `container.style = { display: 'none' }`,
+    // but opentui's BoxRenderable has no `display` CSS-like field; the
+    // assignment was silently dropped and every view stayed rendered at
+    // once, stacking the Queue/Cron/Loop workflow diagrams underneath the
+    // chat view. Renderable exposes a real `.visible` boolean — use that.
     for (const [type, container] of viewContainers) {
-      ;(container as any).style = { ...(container as any).style, display: type === view ? 'flex' : 'none' }
+      ;(container as any).visible = type === view
     }
 
     currentView = view
@@ -1016,8 +1045,18 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     const desc = truncate(req.description, 80)
     const detail = req.detail ? truncate(req.detail, 120) : ''
 
-    approvalText.content = t`${bold(fg(COLORS.primary)('Approval Required'))}
-${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
+    // NOTE: opentui's `t` template tag preserves StyledText fragments, but
+    // nesting a plain JS template literal like `` `\n${fg(...)('...')}` ``
+    // inside a `t`…`` substitution calls `.toString()` on the StyledText,
+    // which yields the literal string "[object Object]". Split the two
+    // variants (with/without detail) so the styled fragment stays a direct
+    // substitution of the outer `t`…`` tag.
+    approvalText.content = detail
+      ? t`${bold(fg(COLORS.primary)('Approval Required'))}
+${fg('#cccccc')(desc)}
+${fg(COLORS.dim)(detail)}`
+      : t`${bold(fg(COLORS.primary)('Approval Required'))}
+${fg('#cccccc')(desc)}`
 
     // Reset selection to first option
     approvalSelectedIndex = 0
@@ -1462,7 +1501,8 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
 
   // ─── Handle slash commands ───
   async function handleSlashCommand(cmd: string): Promise<boolean> {
-    const command = cmd.trim().split(/\s+/)[0]?.toLowerCase()
+    const parts = cmd.trim().split(/\s+/)
+    const command = parts[0]?.toLowerCase()
     switch (command) {
       case '/quit':
       case '/exit': {
@@ -1516,6 +1556,21 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
           await options.onNewTab(initialMsg)
         } catch (err) {
           statusBar.setError(`Failed to create new tab: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        return true
+      case '/manager':
+        // Keyboard-accessible alternative to clicking the "★ Manager"
+        // button in the sidebar. `createManagerTab` is idempotent: it
+        // focuses the existing manager tab if one already exists, or
+        // creates a new one otherwise.
+        if (!options.onOpenManager) {
+          statusBar.setError('/manager requires multi-tab mode')
+          return true
+        }
+        try {
+          await options.onOpenManager()
+        } catch (err) {
+          statusBar.setError(`Failed to open Manager tab: ${err instanceof Error ? err.message : String(err)}`)
         }
         return true
       case '/session': {
@@ -1794,8 +1849,65 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
         }
         return true
       }
-      default:
-        return false
+      case '/workflow': {
+        // `/workflow`           — show current type
+        // `/workflow queue|cron|loop` — switch to that type
+        // `/workflow cycle`      — advance to next type (same as the key binding)
+        if (!workflowManager) {
+          statusBar.setError('/workflow: workflow manager not initialized')
+          return true
+        }
+        const arg = (parts[1] || '').trim().toLowerCase()
+        const validTypes = ['queue', 'cron', 'loop'] as const
+        if (!arg) {
+          const current = workflowManager.getCurrentType()
+          completionMessages = [
+            ...completionMessages,
+            { role: 'user', content: '[workflow]' } as any,
+            { role: 'assistant', content: `Current workflow: ${current}. Use /workflow <queue|cron|loop> to switch, or /workflow cycle to advance.` } as any,
+          ]
+          msgHistory.setMessages(completionMessages)
+          return true
+        }
+        if (arg === 'cycle') {
+          const newType = workflowManager.cycleWorkflow()
+          if (session) session.workflowState = workflowManager.getState()
+          completionMessages = [
+            ...completionMessages,
+            { role: 'user', content: `[workflow cycle]` } as any,
+            { role: 'assistant', content: `Workflow switched to: ${newType}` } as any,
+          ]
+          msgHistory.setMessages(completionMessages)
+          return true
+        }
+        if ((validTypes as readonly string[]).includes(arg)) {
+          try {
+            workflowManager.switchWorkflow(arg as typeof validTypes[number])
+            if (session) session.workflowState = workflowManager.getState()
+            completionMessages = [
+              ...completionMessages,
+              { role: 'user', content: `[workflow ${arg}]` } as any,
+              { role: 'assistant', content: `Workflow switched to: ${arg}` } as any,
+            ]
+            msgHistory.setMessages(completionMessages)
+          } catch (err) {
+            statusBar.setError(`/workflow failed: ${err instanceof Error ? err.message : String(err)}`)
+          }
+          return true
+        }
+        statusBar.setError(`/workflow: unknown type "${arg}". Use queue, cron, loop, or cycle.`)
+        return true
+      }
+      default: {
+        // Command starts with "/" but we have no handler. Treat as unknown
+        // slash command (rather than silently forwarding the literal text to
+        // the LLM, which is confusing and wastes tokens). Only commands we
+        // explicitly route should reach the LLM — via mutation of content
+        // before submit, not via the fallthrough.
+        const cmdName = parts[0] || cmd
+        statusBar.setError(`Unknown command: ${cmdName}. Type /help for the list of commands.`)
+        return true
+      }
     }
   }
 
@@ -2124,8 +2236,12 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
       logger.debug(`Session load result: ${loadedSession ? 'found' : 'not found'}, messages: ${loadedSession?.completionMessages?.length || 0}`)
       if (loadedSession) {
         // Use per-tab toolRegistry when generating system prompt for loaded session
-        // to ensure MCP tools are included in the tool descriptions
-        const sp = await generateSystemPrompt(toolRegistry)
+        // to ensure MCP tools are included in the tool descriptions. Append
+        // `systemPromptExtra` (e.g. the Manager's role preamble) if provided.
+        let sp = await generateSystemPrompt(toolRegistry)
+        if (options.systemPromptExtra && options.systemPromptExtra.trim()) {
+          sp = `${sp}\n\n---\n${options.systemPromptExtra.trim()}`
+        }
         loadedSession.completionMessages = ensureSystemPromptAtTop(loadedSession.completionMessages, sp)
         setTodosForSession(loadedSession.id, loadedSession.todos)
         loadQueueFromSession(loadedSession.queuedMessages, loadedSession.id)
@@ -2167,7 +2283,9 @@ ${fg('#cccccc')(desc)}${detail ? `\n${fg(COLORS.dim)(detail)}` : ''}`
     }
 
     if (!loadedSession) {
-      const initialMsgs = await initializeMessages()
+      // Pass the per-tab toolRegistry + optional extra preamble so the
+      // Manager tab sees its role + manager-tool descriptions.
+      const initialMsgs = await initializeMessages(toolRegistry, options.systemPromptExtra)
       completionMessages = initialMsgs
       const newSession = createSession(config.model, config.provider)
       clearTodos(newSession.id)
