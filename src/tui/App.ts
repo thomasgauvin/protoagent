@@ -2152,9 +2152,33 @@ ${fg('#cccccc')(desc)}`
     } else {
       // 'send': if agent is running, treat as interject (Enter = urgent); otherwise run immediately
       if (isLoading) {
-        pendingInterjects.push(interjectMessage(content, session?.id))
-        statusBar.setQueueState(queuedCount, pendingInterjects.length)
-        updateQueuedMessages()
+        // Under the SDK-driven path, interjects go through the runtime so
+        // the in-flight runSdkTurn picks them up via its getInterjects()
+        // callback. Under the legacy path, they accumulate in local state
+        // and are consumed on the next runAgenticLoop iteration.
+        const sdkMode = process.env.PROTOAGENT_TUI_VIA_SDK === '1' && !!options.tabRuntime && !!session
+        if (sdkMode && options.tabRuntime && session) {
+          options.tabRuntime.client
+            .sendMessage(session.id, content, 'send')
+            .catch((err: unknown) => {
+              logger.warn('SDK interject send failed; falling back to local queue', {
+                error: err instanceof Error ? err.message : String(err),
+              })
+              pendingInterjects.push(interjectMessage(content, session?.id))
+              statusBar.setQueueState(queuedCount, pendingInterjects.length)
+              updateQueuedMessages()
+            })
+          // Reflect the interject in the UI immediately; the runtime will
+          // emit a message_queued lifecycle event too, but the user expects
+          // instant feedback.
+          pendingInterjects.push(interjectMessage(content, session?.id))
+          statusBar.setQueueState(queuedCount, pendingInterjects.length)
+          updateQueuedMessages()
+        } else {
+          pendingInterjects.push(interjectMessage(content, session?.id))
+          statusBar.setQueueState(queuedCount, pendingInterjects.length)
+          updateQueuedMessages()
+        }
       } else {
         await runAgenticTurn(content)
       }
