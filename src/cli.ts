@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readConfig, writeConfig, writeInitConfig } from './config-core.js'
 import { runExec } from './exec.js'
+import { acquireAgentLock, setAgentName, getAgentName } from './multi-tab-sessions.js'
 import { createMultiTabApp } from './tui/createMultiTabApp.js'
 import { startDebugServer } from './tui/debug-server.js'
 import { setupTerminalCleanup } from './tui/terminal-cleanup.js'
@@ -32,6 +33,18 @@ program
   .option('--session <id>', 'Resume a previous session by ID')
   .option('--name <name>', 'Agent instance name for isolated session groups', 'default')
   .action(async (options) => {
+    // Check for existing instance BEFORE creating renderer
+    // This ensures error messages are visible (renderer would mess with terminal)
+    const agentName = options.name || 'default'
+    setAgentName(agentName)
+    const lockResult = await acquireAgentLock()
+    if (!lockResult.locked) {
+      console.error(`\nError: ${lockResult.error}`)
+      console.error(`\nTo run multiple ProtoAgent instances, use different agent names:`)
+      console.error(`  protoagent --name ${agentName}-2\n`)
+      process.exit(1)
+    }
+
     // Setup terminal cleanup to disable mouse tracking on exit/crash
     // This prevents mouse escape sequences from leaking to other terminals
     setupTerminalCleanup()

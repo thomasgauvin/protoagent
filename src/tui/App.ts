@@ -4,41 +4,26 @@
  * Creates and wires up:
  *  - Header / status bar
  *  - MessageHistory (left, scrollable)
- *  - Workflow views (Queue, Cron) - full screen, cycled via Tab
  *  - InputBar (bottom)
+ *  - Right sidebar: workflow diagram + todos + contextual workflow info
  *  - Approval prompt (overlay text when a tool needs approval)
  *
- * Layout:
- * Tab cycles through three views:
- * ┌────────────────────────────────────────┐  BOT VIEW (chat)
- * │  Chat History                          │
- * ├────────────────────────────────────────┤
- * │ ⠙ Thinking…                            │  status row
- * │ ┌──────────────────────────────────┐   │  input bar
- * │ │ > [type here]                    │   │
- * │ └──────────────────────────────────┘   │
- * └────────────────────────────────────────┘
+ * There is a single layout (chat on the left, workflow sidebar on the right).
+ * Tab / Shift+Tab cycle the active workflow (queue → loop → cron → queue),
+ * which swaps the diagram and contextual info shown in the right sidebar;
+ * the chat view itself never changes.
  *
- * ┌────────────────────────────────────────┐  QUEUE VIEW
- * │  Queue Workflow                        │
- * │  ┌─┐ ┌─┐ ┌─┐                          │
- * │  │A│→│B│→│C│                          │
- * │  └─┘ └─┘ └─┘                          │
- * │                                        │
- * │  Queued Messages:                      │
- * │  → Task 1                              │
- * │  → Task 2                              │
- * └────────────────────────────────────────┘
- *
- * ┌────────────────────────────────────────┐  CRON VIEW
- * │  Cron Workflow                         │
- * │  ┌──────┐                              │
- * │  │ ⏰   │                              │
- * │  └──┬───┘                              │
- * │     ↓                                  │
- * │  Next run: 30s                         │
- * │  Prompt: "Check status"                │
- * └────────────────────────────────────────┘
+ * ┌───────────────────────────┬──────────────┐
+ * │  Chat History             │  Workflow    │
+ * │                           │  diagram +   │
+ * │                           │  todos +     │
+ * │                           │  queue/cron/ │
+ * ├───────────────────────────┤  loop info   │
+ * │ ⠙ Thinking…               │              │
+ * │ ┌───────────────────────┐ │              │
+ * │ │ > [type here]         │ │              │
+ * │ └───────────────────────┘ │              │
+ * └───────────────────────────┴──────────────┘
  */
 
 import { type CliRenderer, BoxRenderable, TextRenderable, t, fg, bold, StyledText, CliRenderEvents } from '@opentui/core'
@@ -108,9 +93,16 @@ import {
   type WorkflowState,
   getNextWorkflowType,
   WORKFLOW_METADATA,
-  formatDuration,
-  getCompactDiagram,
 } from '../workflow/index.js'
+import {
+  startWebServer,
+  stopWebServer,
+  getWebServerUrl,
+  isWebServerRunning,
+  openWebBrowser,
+  isWebDistAvailable,
+  buildWebIfNeeded,
+} from './web-server.js'
 
 // ─── Slash commands ───
 const SLASH_COMMANDS = [
@@ -127,6 +119,7 @@ const SLASH_COMMANDS = [
   { name: '/loop', description: 'Setup and run a loop workflow' },
   { name: '/pin', description: 'Pin the current tab to keep it at the top' },
   { name: '/unpin', description: 'Unpin the current tab' },
+  { name: '/web', description: 'Open the web UI in your browser' },
   { name: '/quit', description: 'Exit ProtoAgent' },
   { name: '/exit', description: 'Alias for /quit' },
 ]
@@ -154,7 +147,7 @@ const HELP_TEXT = [
   '',
   'Keyboard shortcuts:',
   '  Enter           Send message',
-  '  Tab             Cycle workflow: Bot → Queue → Loop → Cron → Bot',
+  '  Tab / Shift+Tab Cycle workflow: Queue → Loop → Cron → Queue',
   '  Esc             Abort running agent task',
   '  Ctrl+C          Save tabs and exit',
   '  Ctrl+L          Toggle light/dark theme',
@@ -219,6 +212,11 @@ export interface AppOptions {
   systemPromptExtra?: string
   // Optional default title for new tabs (Manager uses "★ Manager")
   defaultTitle?: string
+  // When true, hide the workflow-related parts of the right sidebar
+  // (workflow diagram + queue/cron/loop contextual info) and disable
+  // Tab/Shift+Tab workflow cycling. The Manager tab sets this because it
+  // doesn't run workflows and shouldn't display the queue/cron/loop UI.
+  hideWorkflowSidebar?: boolean
 }
 
 // ─── Build OpenAI client ───
@@ -231,6 +229,8 @@ function buildClient(config: Config): OpenAI {
     throw new Error(
       envVar
         ? `Missing API key for ${providerName}. Set it in config or export ${envVar}.`
+        : provider?.headers && Object.keys(provider.headers).length > 0
+          ? `Missing auth for ${providerName}. Check the configured headers and any referenced environment variables.`
         : `Missing API key for ${providerName}.`,
     )
   }
@@ -342,97 +342,61 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     options.onLoadingChange?.(loading)
   }
 
-  // ─── View state management ───
-  type ViewType = 'bot' | 'queue' | 'cron' | 'loop'
-  let currentView: ViewType = 'bot'
-  const viewContainers: Map<ViewType, BoxRenderable> = new Map()
-
-  // ─── BOT VIEW: Chat interface with right sidebar ───
-  const botView = new BoxRenderable(renderer, {
-    id: 'bot-view',
+  // ─── Chat layout: chat area on the left, workflow sidebar on the right ───
+  const chatLayout = new BoxRenderable(renderer, {
+    id: 'chat-layout',
     flexDirection: 'row', // Horizontal: chat left, sidebar right
     flexGrow: 1,
     overflow: 'hidden',
   })
-  viewContainers.set('bot', botView)
 
-  // ─── Chat area (left side of bot view) ───
+  // ─── Chat area (left side) ───
   const chatArea = new BoxRenderable(renderer, {
     id: 'chat-area',
     flexDirection: 'column',
     flexGrow: 1,
     overflow: 'hidden',
   })
-  botView.add(chatArea)
+  chatLayout.add(chatArea)
 
-  // ─── Right sidebar (Workflow + TODOs + Queue) ───
-  const rightSidebar = new RightSidebar(renderer, {
-    onAdd: (content: string) => {
-      if (session) {
-        const { addTodo } = require('../tools/todo.js')
-        addTodo(content, session.id)
-        rightSidebar.setTodos(getTodosForSession(session.id))
-      }
-    },
-    onDelete: (id: string) => {
-      if (session) {
-        const { deleteTodo } = require('../tools/todo.js')
-        deleteTodo(id, session.id)
-        rightSidebar.setTodos(getTodosForSession(session.id))
-      }
-    },
-    onUpdate: (id: string, updates) => {
-      if (session) {
-        const { updateTodo } = require('../tools/todo.js')
-        updateTodo(id, updates, session.id)
-        rightSidebar.setTodos(getTodosForSession(session.id))
-      }
-    },
-  })
-  botView.add(rightSidebar.root)
-
-  // ─── QUEUE VIEW: Workflow visualization ───
-  const queueView = new BoxRenderable(renderer, {
-    id: 'queue-view',
-    flexDirection: 'column',
-    flexGrow: 1,
-    overflow: 'hidden',
-  })
-  viewContainers.set('queue', queueView)
-
-  // ─── CRON VIEW: Cron workflow visualization ───
-  const cronView = new BoxRenderable(renderer, {
-    id: 'cron-view',
-    flexDirection: 'column',
-    flexGrow: 1,
-    overflow: 'hidden',
-  })
-  viewContainers.set('cron', cronView)
-
-  // ─── LOOP VIEW: Loop workflow visualization ───
-  const loopView = new BoxRenderable(renderer, {
-    id: 'loop-view',
-    flexDirection: 'column',
-    flexGrow: 1,
-    overflow: 'hidden',
-  })
-  viewContainers.set('loop', loopView)
-
-  // Add all views to mainView (only one visible at a time).
+  // ─── Right sidebar (workflow diagram + todos + contextual info) ───
   //
-  // Important: set initial visibility explicitly. The default is visible=true,
-  // and if we left all four views on, they'd stack inside mainView — that's
-  // exactly the "workflow diagrams stacked below the chat" regression we
-  // were seeing. `switchView` below only toggles `.visible` on transitions,
-  // so without this seed the non-bot views render until the user Tab-cycles.
-  mainView.add(botView)
-  ;(botView as any).visible = true
-  mainView.add(queueView)
-  ;(queueView as any).visible = false
-  mainView.add(cronView)
-  ;(cronView as any).visible = false
-  mainView.add(loopView)
-  ;(loopView as any).visible = false
+  // Manager tabs pass hideWorkflowSidebar=true so the sidebar shows only
+  // the todo list — the Manager orchestrates other tabs and does not run
+  // workflows of its own.
+  const rightSidebar = new RightSidebar(
+    renderer,
+    {
+      onAdd: (content: string) => {
+        if (session) {
+          const { addTodo } = require('../tools/todo.js')
+          addTodo(content, session.id)
+          rightSidebar.setTodos(getTodosForSession(session.id))
+        }
+      },
+      onDelete: (id: string) => {
+        if (session) {
+          const { deleteTodo } = require('../tools/todo.js')
+          deleteTodo(id, session.id)
+          rightSidebar.setTodos(getTodosForSession(session.id))
+        }
+      },
+      onUpdate: (id: string, updates) => {
+        if (session) {
+          const { updateTodo } = require('../tools/todo.js')
+          updateTodo(id, updates, session.id)
+          rightSidebar.setTodos(getTodosForSession(session.id))
+        }
+      },
+    },
+    { hideWorkflow: options.hideWorkflowSidebar },
+  )
+  chatLayout.add(rightSidebar.root)
+  if (options.hideWorkflowSidebar) {
+    statusBar.hideWorkflow()
+  }
+
+  mainView.add(chatLayout)
 
   // ─── MessageHistory (fills chat area vertically) ───
   const msgHistory = new MessageHistory({
@@ -461,299 +425,6 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
 
   // Clicking the status rows also refocuses input
   statusBar.statusRoot.onMouseDown = () => { inputBar.focus() }
-
-  // ─── View switching function ───
-  function switchView(view: ViewType): void {
-    if (view === currentView) return
-
-    // Hide all other views, show only the selected one.
-    //
-    // Previous implementation tried `container.style = { display: 'none' }`,
-    // but opentui's BoxRenderable has no `display` CSS-like field; the
-    // assignment was silently dropped and every view stayed rendered at
-    // once, stacking the Queue/Cron/Loop workflow diagrams underneath the
-    // chat view. Renderable exposes a real `.visible` boolean — use that.
-    for (const [type, container] of viewContainers) {
-      ;(container as any).visible = type === view
-    }
-
-    currentView = view
-
-    // Update status bar with current view
-    statusBar.setViewIndicator(view)
-
-    // Refresh view content
-    if (view === 'queue') {
-      updateQueueView()
-    } else if (view === 'cron') {
-      updateCronView()
-    } else if (view === 'loop') {
-      updateLoopView()
-    }
-
-    renderer.requestRender()
-    logger.debug(`Switched to view: ${view}`)
-  }
-
-  // ─── Build Queue View Content ───
-  const queueViewHeader = new TextRenderable(renderer, {
-    id: 'queue-view-header',
-    content: t`${bold('Queue Workflow')}`,
-  })
-  const queueHeaderBox = new BoxRenderable(renderer, {
-    id: 'queue-header-box',
-    paddingTop: 1,
-    paddingLeft: 2,
-    paddingBottom: 1,
-    flexShrink: 0,
-  })
-  queueHeaderBox.add(queueViewHeader)
-  queueView.add(queueHeaderBox)
-
-  const queueDiagramText = new TextRenderable(renderer, {
-    id: 'queue-diagram-text',
-    content: t``, // Will be set by updateQueueView
-  })
-  const queueDiagramBox = new BoxRenderable(renderer, {
-    id: 'queue-diagram-box',
-    paddingLeft: 2,
-    paddingBottom: 2,
-    flexShrink: 0,
-  })
-  queueDiagramBox.add(queueDiagramText)
-  queueView.add(queueDiagramBox)
-
-  const queueListHeader = new TextRenderable(renderer, {
-    id: 'queue-list-header',
-    content: t`${bold('Queued Messages:')}`,
-  })
-  const queueListHeaderBox = new BoxRenderable(renderer, {
-    id: 'queue-list-header-box',
-    paddingLeft: 2,
-    paddingBottom: 1,
-    flexShrink: 0,
-  })
-  queueListHeaderBox.add(queueListHeader)
-  queueView.add(queueListHeaderBox)
-
-  const queueListContent = new TextRenderable(renderer, {
-    id: 'queue-list-content',
-    content: t``, // Will be set by updateQueueView
-  })
-  const queueListBox = new BoxRenderable(renderer, {
-    id: 'queue-list-box',
-    paddingLeft: 2,
-    flexGrow: 1,
-  })
-  queueListBox.add(queueListContent)
-  queueView.add(queueListBox)
-
-  // ─── Build Cron View Content ───
-  const cronViewHeader = new TextRenderable(renderer, {
-    id: 'cron-view-header',
-    content: t`${bold('Cron Workflow')}`,
-  })
-  const cronHeaderBox = new BoxRenderable(renderer, {
-    id: 'cron-header-box',
-    paddingTop: 1,
-    paddingLeft: 2,
-    paddingBottom: 1,
-    flexShrink: 0,
-  })
-  cronHeaderBox.add(cronViewHeader)
-  cronView.add(cronHeaderBox)
-
-  const cronDiagramText = new TextRenderable(renderer, {
-    id: 'cron-diagram-text',
-    content: t``, // Will be set by updateCronView
-  })
-  const cronDiagramBox = new BoxRenderable(renderer, {
-    id: 'cron-diagram-box',
-    paddingLeft: 2,
-    paddingBottom: 2,
-    flexShrink: 0,
-  })
-  cronDiagramBox.add(cronDiagramText)
-  cronView.add(cronDiagramBox)
-
-  const cronInfoText = new TextRenderable(renderer, {
-    id: 'cron-info-text',
-    content: t``, // Will be set by updateCronView
-  })
-  const cronInfoBox = new BoxRenderable(renderer, {
-    id: 'cron-info-box',
-    paddingLeft: 2,
-    flexGrow: 1,
-  })
-  cronInfoBox.add(cronInfoText)
-  cronView.add(cronInfoBox)
-
-  // ─── Update Queue View ───
-  function updateQueueView(): void {
-    const diagram = getCompactDiagram('queue')
-    queueDiagramText.content = t`${diagram.lines.join('\n')}`
-
-    const allQueued = session?.id ? getQueueForSession(session.id) : []
-    const queued = allQueued.filter(m => m.type === 'queued')
-
-    if (queued.length === 0 && pendingInterjects.length === 0) {
-      queueListContent.content = t`${fg(COLORS.dim)('No queued messages')}`
-    } else {
-      const lines: string[] = []
-
-      // Show interjects first
-      for (const msg of pendingInterjects) {
-        const contentText = typeof msg.content === 'string' ? msg.content : '[complex content]'
-        const label = contentText.length > 50 ? contentText.slice(0, 47) + '...' : contentText
-        lines.push(`${fg(COLORS.red)('!!')} ${fg(COLORS.yellow)(label)}`)
-      }
-
-      // Then queued messages
-      for (const msg of queued) {
-        const contentText = typeof msg.content === 'string' ? msg.content : '[complex content]'
-        const label = contentText.length > 50 ? contentText.slice(0, 47) + '...' : contentText
-        lines.push(`${fg(COLORS.blue)('→')} ${label}`)
-      }
-
-      queueListContent.content = t`${lines.join('\n')}`
-    }
-
-    // Update right sidebar queue
-    rightSidebar.setQueue(queued, pendingInterjects)
-  }
-
-  // ─── Update Cron View ───
-  function updateCronView(): void {
-    const diagram = getCompactDiagram('cron')
-    cronDiagramText.content = t`${diagram.lines.join('\n')}`
-
-    if (!workflowManager) {
-      cronInfoText.content = t`${fg(COLORS.dim)('Cron workflow not initialized')}`
-      return
-    }
-
-    const cronState = workflowManager.getCronState()
-    if (!cronState || !cronState.isConfigured) {
-      cronInfoText.content = t`${fg(COLORS.dim)('No cron schedule configured')}\n\nUse the set_cron_schedule tool to configure.'`
-      return
-    }
-
-    const lines: string[] = []
-    lines.push(`${fg(COLORS.primary)('Schedule:')} ${cronState.schedule}`)
-
-    const promptStr = cronState.prompt || 'Not set'
-    const truncatedPrompt = promptStr.length > 60 ? promptStr.slice(0, 57) + '...' : promptStr
-    lines.push(`${fg(COLORS.primary)('Prompt:')} ${truncatedPrompt}`)
-
-    if (cronState.timeUntilNextMs !== undefined && cronState.timeUntilNextMs > 0) {
-      lines.push(`\n${fg(COLORS.yellow)('Next run:')} ${formatDuration(cronState.timeUntilNextMs)}`)
-    } else if (cronState.timeUntilNextMs !== undefined && cronState.timeUntilNextMs <= 0) {
-      lines.push(`\n${fg(COLORS.green)('Next run: Ready!')}`)
-    }
-
-    if (cronState.lastRunAt) {
-      const lastRun = new Date(cronState.lastRunAt)
-      lines.push(`${fg(COLORS.dim)(`Last run: ${lastRun.toLocaleTimeString()}`)}`)
-    }
-
-    cronInfoText.content = t`${lines.join('\n')}`
-  }
-
-  // ─── Build Loop View Content ───
-  const loopViewHeader = new TextRenderable(renderer, {
-    id: 'loop-view-header',
-    content: t`${bold('🔁 Loop Workflow')}`,
-  })
-  const loopHeaderBox = new BoxRenderable(renderer, {
-    id: 'loop-header-box',
-    paddingTop: 1,
-    paddingLeft: 2,
-    paddingBottom: 1,
-    flexShrink: 0,
-  })
-  loopHeaderBox.add(loopViewHeader)
-  loopView.add(loopHeaderBox)
-
-  const loopDiagramText = new TextRenderable(renderer, {
-    id: 'loop-diagram-text',
-    content: t``, // Will be set by updateLoopView
-  })
-  const loopDiagramBox = new BoxRenderable(renderer, {
-    id: 'loop-diagram-box',
-    paddingLeft: 2,
-    paddingBottom: 2,
-    flexShrink: 0,
-  })
-  loopDiagramBox.add(loopDiagramText)
-  loopView.add(loopDiagramBox)
-
-  const loopInfoText = new TextRenderable(renderer, {
-    id: 'loop-info-text',
-    content: t``, // Will be set by updateLoopView
-  })
-  const loopInfoBox = new BoxRenderable(renderer, {
-    id: 'loop-info-box',
-    paddingLeft: 2,
-    flexGrow: 1,
-  })
-  loopInfoBox.add(loopInfoText)
-  loopView.add(loopInfoBox)
-
-  // ─── Update Loop View ───
-  function updateLoopView(): void {
-    const diagram = getCompactDiagram('loop')
-    loopDiagramText.content = t`${diagram.lines.join('\n')}`
-
-    if (!workflowManager) {
-      loopInfoText.content = t`${fg(COLORS.dim)('Loop workflow not initialized')}`
-      return
-    }
-
-    const state = workflowManager.getState()
-    if (state.type !== 'loop') {
-      loopInfoText.content = t`${fg(COLORS.dim)('Switch to loop workflow to see details')}`
-      return
-    }
-
-    const loopWorkflow = workflowManager.getCurrentWorkflow() as LoopWorkflow
-    const config = loopWorkflow.getConfig()
-    const progress = loopWorkflow.getProgress()
-
-    const lines: string[] = []
-
-    // Configuration
-    const workPrompt = config.workPrompt || 'Not configured'
-    const truncatedWorkPrompt = workPrompt.length > 60 ? workPrompt.slice(0, 57) + '...' : workPrompt
-    lines.push(`${fg(COLORS.primary)('Work Prompt:')} ${truncatedWorkPrompt}`)
-
-    const closingCondition = config.closingConditionPrompt || 'Not configured'
-    const truncatedClosing = closingCondition.length > 60 ? closingCondition.slice(0, 57) + '...' : closingCondition
-    lines.push(`${fg(COLORS.primary)('Closing Condition:')} ${truncatedClosing}`)
-
-    lines.push(`${fg(COLORS.primary)('Max Iterations:')} ${config.maxIterations || 10}`)
-
-    // Progress
-    lines.push('')
-    if (state.isActive) {
-      const progressBar = '█'.repeat(Math.floor(progress.percentComplete / 10)) + '░'.repeat(10 - Math.floor(progress.percentComplete / 10))
-      lines.push(`${fg(COLORS.yellow)('Progress:')} [${progressBar}] ${progress.currentIteration}/${progress.maxIterations}`)
-      if (progress.phase === 'evaluating') {
-        lines.push(`${fg(COLORS.green)('Status:')} Evaluating closing condition...`)
-      } else if (progress.phase === 'working') {
-        lines.push(`${fg(COLORS.green)('Status:')} Running iteration ${progress.currentIteration}`)
-      } else {
-        lines.push(`${fg(COLORS.dim)('Status:')} Ready`)
-      }
-    } else {
-      if (config.workPrompt && config.closingConditionPrompt) {
-        lines.push(`${fg(COLORS.dim)('Status:')} Ready to start`)
-      } else {
-        lines.push(`${fg(COLORS.dim)('Status:')} Use /loop to configure`)
-      }
-    }
-
-    loopInfoText.content = t`${lines.join('\n')}`
-  }
 
   // Clicking anywhere in the chat area refocuses the input
   chatArea.onMouseDown = () => {
@@ -852,9 +523,13 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
     // Update interject panel with full text
     const interjectMsgs = pendingInterjects.map(m => ({ id: m.id, content: m.content }))
     msgHistory.setInterjects(interjectMsgs)
-    // Update queue view if it's currently visible
-    if (currentView === 'queue') {
-      updateQueueView()
+    // Refresh the sidebar queue list so the user sees queued / interject messages
+    // update in real time (previously this required being on the queue view).
+    if (workflowManager?.getCurrentType() === 'queue') {
+      const queued = session?.id
+        ? getQueueForSession(session.id).filter(m => m.type === 'queued')
+        : []
+      rightSidebar.setQueue(queued, pendingInterjects)
     }
   }
 
@@ -880,20 +555,12 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   }
 
   /**
-   * Update the workflow display based on current view
+   * Update the workflow display (right sidebar only — the main view is
+   * always the chat).
    */
   function updateWorkflowDisplay(): void {
     if (!workflowManager) return
     const state = workflowManager.getState()
-
-    // Update the appropriate view
-    if (state.type === 'cron') {
-      updateCronView()
-    } else if (state.type === 'loop') {
-      updateLoopView()
-    } else if (state.type === 'queue') {
-      updateQueueView()
-    }
 
     // Update right sidebar workflow type and diagram
     rightSidebar.setWorkflowType(state.type, state.isActive)
@@ -905,8 +572,8 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
       rightSidebar.setCronInfo({
         schedule: cronState?.schedule,
         prompt: cronState?.prompt,
-        nextRunAt: cronState?.cronNextRunAt,
-        lastRunAt: cronState?.cronLastRunAt,
+        nextRunAt: cronState?.nextRunAt,
+        lastRunAt: cronState?.lastRunAt,
         timeUntilNextMs: cronState?.timeUntilNextMs,
       })
     } else if (state.type === 'loop') {
@@ -961,9 +628,9 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
       }
     }
 
-    // Update the cron display with current countdown if cron view is active
-    if (currentView === 'cron') {
-      updateCronView()
+    // Refresh the sidebar cron info so the countdown ticks down live
+    if (workflowManager.getCurrentType() === 'cron') {
+      updateWorkflowDisplay()
     }
   }
 
@@ -987,41 +654,41 @@ export async function createApp(renderer: CliRenderer, options: AppOptions): Pro
   }
 
   /**
-   * Cycle through views: Bot → Queue → Loop → Cron → Bot
+   * Cycle to the next workflow (queue → loop → cron → queue).
+   *
+   * The main view always stays on the chat; only the right sidebar's
+   * diagram and contextual info change.
    */
-  function cycleViews(): void {
-    const views: ViewType[] = ['bot', 'queue', 'loop', 'cron']
-    const currentIndex = views.indexOf(currentView)
-    const nextIndex = (currentIndex + 1) % views.length
-    const nextView = views[nextIndex]
+  function cycleWorkflowType(): void {
+    if (!workflowManager) return
 
-    // Also cycle the workflow type to match the view
-    if (workflowManager) {
-      const oldType = workflowManager.getCurrentType()
-      const newType = workflowManager.cycleWorkflow()
+    const oldType = workflowManager.getCurrentType()
+    const newType = workflowManager.cycleWorkflow()
 
-      // Start/stop cron timer based on workflow type
-      if (newType === 'cron') {
-        startCronTimer()
-      } else if (oldType === 'cron') {
-        stopCronTimer()
-      }
-
-      // Update session
-      if (session) {
-        session.workflowState = workflowManager.getState()
-      }
-
-      // Mirror the switch into the runtime when SDK mode is on, so runtime
-      // state stays aligned with the TUI's local workflow. Fire-and-forget;
-      // runtime is not yet the source of truth for rendering.
-      mirrorWorkflowToRuntime('switch', newType)
-
-      logger.debug(`Switched workflow from ${oldType} to ${newType}, view to ${nextView}`)
+    // Start/stop cron timer based on workflow type
+    if (newType === 'cron') {
+      startCronTimer()
+    } else if (oldType === 'cron') {
+      stopCronTimer()
     }
 
-    // Switch to the next view
-    switchView(nextView)
+    // Update session
+    if (session) {
+      session.workflowState = workflowManager.getState()
+    }
+
+    // Mirror the switch into the runtime when SDK mode is on, so runtime
+    // state stays aligned with the TUI's local workflow. Fire-and-forget;
+    // runtime is not yet the source of truth for rendering.
+    mirrorWorkflowToRuntime('switch', newType)
+
+    // Refresh the right sidebar so the diagram + contextual info update
+    // immediately; also update the status bar indicator.
+    updateWorkflowDisplay()
+    statusBar.setWorkflowType(newType, workflowManager.isActive())
+    renderer.requestRender()
+
+    logger.debug(`Switched workflow: ${oldType} → ${newType}`)
   }
 
   /**
@@ -1199,9 +866,6 @@ ${fg('#cccccc')(desc)}`
           closingConditionPrompt: result.closingConditionPrompt,
           maxIterations: result.maxIterations,
         })
-
-        // Switch to loop view
-        switchView('loop')
 
         // Show confirmation message
         completionMessages = [
@@ -1853,9 +1517,9 @@ ${fg('#cccccc')(desc)}`
         clearMessageQueue(session?.id)
         queuedCount = 0
         statusBar.setQueueState(0, pendingInterjects.length)
-        // Update queue view if it's currently visible
-        if (currentView === 'queue') {
-          updateQueueView()
+        // Refresh the sidebar queue list
+        if (workflowManager?.getCurrentType() === 'queue') {
+          rightSidebar.setQueue([], pendingInterjects)
         }
         return true
       case '/rename': {
@@ -1970,6 +1634,45 @@ ${fg('#cccccc')(desc)}`
           msgHistory.setMessages(completionMessages)
         } catch (err) {
           statusBar.setError(`Unpin failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        return true
+      }
+      case '/web': {
+        // Start web server if not running, then open browser
+        setLoading(true, 'Starting web server...')
+        try {
+          // Check if web dist is available, build if not
+          const distAvailable = await isWebDistAvailable()
+          if (!distAvailable) {
+            setLoading(true, 'Building web UI...')
+            const buildResult = await buildWebIfNeeded()
+            if (!buildResult.success) {
+              statusBar.setError(buildResult.message)
+              setLoading(false)
+              return true
+            }
+          }
+
+          // Start server if not already running
+          setLoading(true, 'Starting web server...')
+          let url = getWebServerUrl()
+          if (!url) {
+            const result = await startWebServer({
+              dangerouslySkipPermissions: options.dangerouslySkipPermissions,
+            })
+            url = result.url
+          }
+
+          // Open browser
+          await openWebBrowser(url)
+
+          completionMessages = [...completionMessages, { role: 'user', content: '[web]' } as any]
+          completionMessages = [...completionMessages, { role: 'assistant', content: `Web UI opened at ${url}` } as any]
+          msgHistory.setMessages(completionMessages)
+        } catch (err) {
+          statusBar.setError(`Failed to start web server: ${err instanceof Error ? err.message : String(err)}`)
+        } finally {
+          setLoading(false)
         }
         return true
       }
@@ -2138,19 +1841,54 @@ ${fg('#cccccc')(desc)}`
       return
     }
 
-    // Tab → cycle views: Bot → Queue → Cron → Bot (only when not loading and not in approval)
-    // This works globally including when input is focused
-    if (key.name === 'tab' && !isLoading && !pendingApproval) {
+    // Tab / Shift+Tab → cycle workflows (queue → loop → cron → queue).
+    //
+    // Both plain Tab and Shift+Tab trigger the same cycle; the user asked
+    // that Shift+Tab specifically work without any extra modifier.
+    // Ctrl+Tab / Ctrl+Shift+Tab are handled a layer up in
+    // createMultiTabApp.ts (they switch between tabs, not workflows) so we
+    // must leave those alone by requiring !key.ctrl here.
+    //
+    // Workflows only make sense for regular session tabs — the Manager tab
+    // doesn't run workflows, so swallow the Tab there too to avoid breaking
+    // keyboard focus.
+    if (
+      key.name === 'tab' &&
+      !key.ctrl &&
+      !key.meta &&
+      !isLoading &&
+      !pendingApproval
+    ) {
       key.preventDefault?.()
-      cycleViews()
+      if (workflowManager && !options.hideWorkflowSidebar) {
+        cycleWorkflowType()
+      }
       return
     }
 
     // Escape → abort agent OR stop workflow
     if (key.name === 'escape') {
       // First try to abort running agent
-      if (isLoading && abortController) {
-        abortController.abort()
+      if (isLoading) {
+        // Local UI-side abort (for callbacks that read abortController.signal).
+        if (abortController) {
+          abortController.abort()
+        }
+        // In the SDK-driven path the agentic loop runs inside the runtime,
+        // so we must also tell the runtime to abort the in-flight run.
+        // Without this, pressing Escape only flips a local flag and the
+        // runtime keeps streaming tokens.
+        if (options.tabRuntime && session) {
+          const sessionId = session.id
+          options.tabRuntime.client
+            .abort(sessionId)
+            .catch((err: unknown) => {
+              logger.warn('SDK abort failed', {
+                sessionId,
+                error: err instanceof Error ? err.message : String(err),
+              })
+            })
+        }
         // Also stop the workflow to keep state consistent (allows restart)
         if (workflowManager?.isActive()) {
           workflowManager.stop()

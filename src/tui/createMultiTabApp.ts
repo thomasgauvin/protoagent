@@ -13,9 +13,10 @@ import { type CliRenderer, CliRenderEvents } from '@opentui/core'
 import { readConfig } from '../config-core.js'
 import { TabManager } from './TabManager.js'
 import { logger } from '../utils/logger.js'
-import { saveTabGroup, loadLastTabGroup, clearLastTabGroup, type TabSessionInfo, setAgentName, acquireAgentLock, releaseAgentLock, getAgentName } from '../multi-tab-sessions.js'
+import { saveTabGroup, loadLastTabGroup, clearLastTabGroup, type TabSessionInfo, releaseAgentLock, getAgentName } from '../multi-tab-sessions.js'
 import { applyDetectedTheme, getThemeMode, toggleTheme } from './theme.js'
 import { restoreTerminal } from './terminal-cleanup.js'
+import { stopWebServer } from './web-server.js'
 
 export interface MultiTabAppOptions {
   dangerouslySkipPermissions?: boolean
@@ -29,18 +30,8 @@ export interface MultiTabAppOptions {
  */
 export async function createMultiTabApp(renderer: CliRenderer, options: MultiTabAppOptions): Promise<void> {
   try {
-    // Set agent name for session isolation (default: 'default')
-    setAgentName(options.agentName || 'default')
-
-    // Acquire lock to prevent multiple instances of the same agent
-    const lockResult = await acquireAgentLock()
-    if (!lockResult.locked) {
-      logger.error(lockResult.error || `Another instance of agent '${getAgentName()}' is already running`)
-      console.error(`\nError: ${lockResult.error}`)
-      console.error(`\nTo run multiple ProtoAgent instances, use different agent names:`)
-      console.error(`  protoagent --name ${getAgentName()}-2`)
-      process.exit(1)
-    }
+    // Note: Agent name is set and lock is acquired in cli.ts BEFORE renderer is created
+    // This ensures error messages are visible to users (renderer interferes with terminal output)
 
     const config = readConfig('active')
     if (!config) {
@@ -74,6 +65,8 @@ export async function createMultiTabApp(renderer: CliRenderer, options: MultiTab
       } catch (err: any) {
         logger.error(`Failed to save tabs: ${err.message}`)
       }
+      // Stop web server if running
+      await stopWebServer()
       // Release lock before destroying renderer
       await releaseAgentLock()
       // Restore terminal state (disable mouse tracking, show cursor, etc.)
@@ -90,20 +83,12 @@ export async function createMultiTabApp(renderer: CliRenderer, options: MultiTab
     })
 
     // Register save-and-exit callback for /quit command
-    // This saves all tabs, stops them, and exits - preserving them for restart
+    // This saves all tabs, stops them, and exits - preserving them for restart.
+    // Routes through the shared gracefulExit helper defined below so /quit
+    // gets the same 5s hard-exit fallback as Ctrl+C, and a second /quit or
+    // Ctrl+C while this is running forces an immediate exit.
     tabManager.setSaveAndExitCallback(async () => {
-      logger.info('Exiting via /quit command...')
-      // 1. Stop/abort all running sessions FIRST (to prevent new work)
-      logger.info('Stopping all tabs before exit...')
-      await tabManager.stopAllTabs()
-      // 2. Save all tabs (after stopping, so state is stable)
-      logger.info('Saving all tabs...')
-      await saveAndExit(false)
-      // 3. Release the agent lock
-      await releaseAgentLock()
-      logger.info('All tabs saved and stopped, exiting...')
-      // 4. Exit
-      process.exit(0)
+      await gracefulExit('/quit')
     })
 
     // Register tabs-changed callback to persist immediately when tabs change
@@ -197,15 +182,54 @@ export async function createMultiTabApp(renderer: CliRenderer, options: MultiTab
       }
     })
 
+    // Exit state — ensures a second Ctrl+C (or a hung graceful shutdown)
+    // can always bail out without the user having to `kill -9` the process.
+    let exitInProgress = false
+    let hardExitTimer: ReturnType<typeof setTimeout> | null = null
+
+    async function gracefulExit(reason: string): Promise<void> {
+      if (exitInProgress) {
+        // User hit Ctrl+C (or /quit) a second time while we were still
+        // trying to clean up. They want out NOW. Restore the terminal so
+        // the shell isn't left in alt-screen/raw mode, then exit hard.
+        logger.warn(`${reason}: graceful exit already in progress, hard-exiting`)
+        if (hardExitTimer) clearTimeout(hardExitTimer)
+        try { restoreTerminal() } catch {}
+        process.exit(130)
+      }
+      exitInProgress = true
+      logger.info(`${reason}: saving and exiting ProtoAgent...`)
+
+      // Belt-and-suspenders: if save/stop hang for any reason (stuck MCP
+      // handshake, fs lock contention, slow session title generation…),
+      // fall back to a hard exit after 5s. Without this, the TUI can
+      // appear frozen and force the user to kill the terminal.
+      hardExitTimer = setTimeout(() => {
+        logger.error(`${reason}: graceful shutdown timed out after 5s, hard-exiting`)
+        try { restoreTerminal() } catch {}
+        process.exit(130)
+      }, 5000)
+      hardExitTimer.unref?.()
+
+      try {
+        // Save FIRST (before stopping so tabs aren't marked closed)
+        await saveAndExit(false)
+        await tabManager.stopAllTabs()
+      } catch (err: any) {
+        logger.error(`${reason}: error during graceful exit: ${err?.message || err}`)
+      } finally {
+        if (hardExitTimer) { clearTimeout(hardExitTimer); hardExitTimer = null }
+        try { restoreTerminal() } catch {}
+        process.exit(0)
+      }
+    }
+
     // Global keyboard shortcuts
     renderer.keyInput.on('keypress', async (key: any) => {
       // Ctrl+C: save tabs, stop, and exit
       if (key.ctrl && !key.meta && key.name === 'c') {
-        logger.info('Saving and exiting ProtoAgent...')
-        // Save FIRST (before stopping so tabs aren't marked closed)
-        await saveAndExit(false)
-        await tabManager.stopAllTabs()
-        process.exit(0)
+        await gracefulExit('Ctrl+C')
+        return
       }
 
       // Ctrl+T: create new tab
@@ -271,15 +295,19 @@ export async function createMultiTabApp(renderer: CliRenderer, options: MultiTab
       }
     })
 
-    // SIGTERM handler (clean shutdown on kill)
+    // SIGTERM handler (clean shutdown on kill). Routes through the same
+    // gracefulExit path as Ctrl+C and /quit so timeout/hard-exit behavior
+    // is identical regardless of how the shutdown was initiated.
     process.on('SIGTERM', async () => {
-      logger.info('Received SIGTERM, saving and exiting...')
-      // Save FIRST (before stopping so tabs aren't marked closed)
-      await saveAndExit(false)
-      await tabManager.stopAllTabs()
-      // Lock is released by saveAndExit
-      // Terminal cleanup happens in beforeExit handler
-      process.exit(0)
+      await gracefulExit('SIGTERM')
+    })
+
+    // SIGINT (from OS, not from the TUI's keypress handler) — can happen
+    // if Node's raw-mode flag is off for any reason, or if the user sends
+    // `kill -INT` from another process. Don't rely only on the keypress
+    // hook catching Ctrl+C.
+    process.on('SIGINT', async () => {
+      await gracefulExit('SIGINT')
     })
 
     // Auto-save every 5 minutes
