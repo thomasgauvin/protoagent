@@ -136,9 +136,9 @@ export class InputBar {
         }
       }
 
-      // Tab key should propagate to cycle views (don't intercept when menu is closed)
+      // Tab / Shift+Tab should propagate to the global handler for workflow
+      // switching (don't intercept when the slash-command menu is closed).
       if (key.name === 'tab' && !menu.visible) {
-        // Let Tab propagate to global handler for workflow switching
         return
       }
 
@@ -172,7 +172,7 @@ export class InputBar {
     if (loading) {
       this.chatInput.setPlaceholder('Enter to interject · Esc to abort')
     } else {
-      this.chatInput.setPlaceholder('Message…  (Enter to send · Tab cycles views)')
+      this.chatInput.setPlaceholder('Message…  (Enter to send · Tab cycles workflows)')
     }
   }
 

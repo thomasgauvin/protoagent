@@ -1,0 +1,347 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /*
+   * Colors mirror src/tui/theme.ts as HSL triplets so they compose with
+   * Tailwind's `hsl(var(--x) / <alpha>)` syntax.
+   *
+   * Light theme (system default)
+   *   primary #0d8f5a (green), secondary #f3f4f6 (gray-50), 
+   *   background #ffffff, foreground #1f2937 (gray-800)
+   *   yellow #d97706, blue #2563eb, red #dc2626, border #e5e7eb
+   *
+   * Dark theme
+   *   primary #09a469 (bright green), secondary #1f2937 (gray-900),
+   *   background #000000, foreground #e5e7eb (gray-200)
+   *   yellow #fbbf24, blue #60a5fa, red #f87171, border #374151
+   */
+  :root {
+    /* Base semantic palette - Light mode */
+    --background: 0 0% 100%;
+    --foreground: 215 25% 17%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 17%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 17%;
+    
+    /* Primary brand color */
+    --primary: 152 60% 35%;
+    --primary-foreground: 0 0% 100%;
+    
+    /* Secondary neutral tones */
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 215 25% 17%;
+    
+    /* Muted states */
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    
+    /* Accent for highlights */
+    --accent: 220 90% 56%;
+    --accent-foreground: 0 0% 100%;
+    
+    /* Status colors */
+    --success: 152 60% 35%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 0%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --info: 217 91% 60%;
+    --info-foreground: 0 0% 100%;
+    
+    /* Borders and inputs */
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 152 60% 35%;
+    --radius: 0.375rem;
+
+    /* TUI semantic palette - Light mode */
+    --tui-primary: 152 60% 35%;
+    --tui-green: 152 60% 35%;
+    --tui-dim: 220 9% 46%;
+    --tui-gray: 220 9% 60%;
+    --tui-white: 215 25% 17%;
+    --tui-darkbg: 220 14% 96%;
+    --tui-yellow: 38 92% 50%;
+    --tui-blue: 217 91% 60%;
+    --tui-red: 0 84% 60%;
+    --tui-border: 220 13% 91%;
+  }
+
+  .dark {
+    /* Dark mode overrides */
+    --background: 0 0% 2%;
+    --foreground: 220 13% 91%;
+    --card: 0 0% 8%;
+    --card-foreground: 220 13% 91%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 220 13% 91%;
+    
+    /* Primary brand color - brighter for dark mode */
+    --primary: 152 72% 46%;
+    --primary-foreground: 0 0% 2%;
+    
+    /* Secondary neutral tones */
+    --secondary: 220 13% 13%;
+    --secondary-foreground: 220 13% 91%;
+    
+    /* Muted states */
+    --muted: 220 13% 13%;
+    --muted-foreground: 220 9% 52%;
+    
+    /* Accent for highlights */
+    --accent: 220 90% 66%;
+    --accent-foreground: 0 0% 2%;
+    
+    /* Status colors */
+    --success: 152 72% 46%;
+    --success-foreground: 0 0% 2%;
+    --warning: 44 96% 56%;
+    --warning-foreground: 0 0% 2%;
+    --destructive: 0 84% 70%;
+    --destructive-foreground: 0 0% 2%;
+    --info: 217 91% 70%;
+    --info-foreground: 0 0% 2%;
+    
+    /* Borders and inputs */
+    --border: 220 13% 20%;
+    --input: 220 13% 20%;
+    --ring: 152 72% 46%;
+
+    /* TUI semantic palette - Dark mode */
+    --tui-primary: 152 72% 46%;
+    --tui-green: 152 72% 46%;
+    --tui-dim: 220 9% 52%;
+    --tui-gray: 220 13% 52%;
+    --tui-white: 220 13% 91%;
+    --tui-darkbg: 0 0% 8%;
+    --tui-yellow: 44 96% 56%;
+    --tui-blue: 217 91% 70%;
+    --tui-red: 0 84% 70%;
+    --tui-border: 220 13% 20%;
+  }
+
+  *,
+  *::before,
+  *::after {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    @apply h-full w-full overflow-hidden;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings:
+      'rlig' 1,
+      'calt' 1;
+  }
+
+  /* Code blocks and technical content use monospace */
+  code, pre, .font-mono, .monospace {
+    font-family: 'JetBrains Mono', 'Fira Code', 'ui-monospace',
+      'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', monospace;
+  }
+
+  /* Selection styling */
+  ::selection {
+    background-color: hsl(var(--primary) / 0.2);
+    color: inherit;
+  }
+
+  /* Focus-visible for better accessibility */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  [role="button"]:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* Minimal scrollbar with theme support */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.5);
+    border-radius: 4px;
+    transition: background-color 0.2s ease;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.8);
+  }
+
+  /* Smooth transitions for theme switching */
+  * {
+    @apply transition-colors duration-200;
+  }
+
+  input, textarea, select {
+    @apply transition-all duration-200;
+  }
+}
+
+@layer utilities {
+  /* TUI text colors */
+  .text-tui-dim {
+    color: hsl(var(--tui-dim) / var(--tw-text-opacity, 1));
+  }
+  .text-tui-primary {
+    color: hsl(var(--tui-primary) / var(--tw-text-opacity, 1));
+  }
+  .text-tui-green {
+    color: hsl(var(--tui-green) / var(--tw-text-opacity, 1));
+  }
+  .text-tui-gray {
+    color: hsl(var(--tui-gray) / var(--tw-text-opacity, 1));
+  }
+  .text-tui-yellow {
+    color: hsl(var(--tui-yellow) / var(--tw-text-opacity, 1));
+  }
+  .text-tui-blue {
+    color: hsl(var(--tui-blue) / var(--tw-text-opacity, 1));
+  }
+  .text-tui-red {
+    color: hsl(var(--tui-red) / var(--tw-text-opacity, 1));
+  }
+  .text-tui-white {
+    color: hsl(var(--tui-white) / var(--tw-text-opacity, 1));
+  }
+
+  /* TUI background colors */
+  .bg-tui-darkbg {
+    background-color: hsl(var(--tui-darkbg) / var(--tw-bg-opacity, 1));
+  }
+  .bg-tui-primary {
+    background-color: hsl(var(--tui-primary) / var(--tw-bg-opacity, 1));
+  }
+  .bg-tui-green {
+    background-color: hsl(var(--tui-green) / var(--tw-bg-opacity, 1));
+  }
+
+  /* TUI border colors */
+  .border-tui {
+    border-color: hsl(var(--tui-border) / var(--tw-border-opacity, 1));
+  }
+  .border-tui-primary {
+    border-color: hsl(var(--tui-primary) / var(--tw-border-opacity, 1));
+  }
+  .border-tui-yellow {
+    border-color: hsl(var(--tui-yellow) / var(--tw-border-opacity, 1));
+  }
+
+  /* Semantic status utilities */
+  .text-success {
+    color: hsl(var(--success) / var(--tw-text-opacity, 1));
+  }
+  .text-warning {
+    color: hsl(var(--warning) / var(--tw-text-opacity, 1));
+  }
+  .text-info {
+    color: hsl(var(--info) / var(--tw-text-opacity, 1));
+  }
+
+  .bg-success {
+    background-color: hsl(var(--success) / var(--tw-bg-opacity, 1));
+  }
+  .bg-warning {
+    background-color: hsl(var(--warning) / var(--tw-bg-opacity, 1));
+  }
+  .bg-info {
+    background-color: hsl(var(--info) / var(--tw-bg-opacity, 1));
+  }
+
+  /* Interactive element utilities */
+  .interactive {
+    @apply cursor-pointer transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring;
+  }
+
+  /* Subtle background for hover states */
+  .hover-bg {
+    @apply hover:bg-secondary/50 dark:hover:bg-secondary/30 transition-colors duration-150;
+  }
+
+  /* Message bubble styling */
+  .message-bubble {
+    @apply rounded-md border border-tui px-3 py-2 text-sm font-mono;
+  }
+
+  .message-bubble-light {
+    @apply bg-card text-card-foreground;
+  }
+
+  .message-bubble-dark {
+    @apply dark:bg-card dark:text-card-foreground;
+  }
+
+  /* Input field enhancement */
+  .input-field {
+    @apply rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:focus-visible:ring-offset-background;
+  }
+
+  /* Semantic badge colors */
+  .badge-success {
+    @apply bg-success/10 text-success dark:bg-success/20;
+  }
+  .badge-warning {
+    @apply bg-warning/10 text-warning dark:bg-warning/20;
+  }
+  .badge-info {
+    @apply bg-info/10 text-info dark:bg-info/20;
+  }
+  .badge-error {
+    @apply bg-destructive/10 text-destructive dark:bg-destructive/20;
+  }
+}
+
+/* Braille dot spinner (mirrors tui/Spinner.ts at 100ms cadence) */
+@keyframes spinner-braille {
+  0%   { content: '⠋'; }
+  10%  { content: '⠙'; }
+  20%  { content: '⠹'; }
+  30%  { content: '⠸'; }
+  40%  { content: '⠼'; }
+  50%  { content: '⠴'; }
+  60%  { content: '⠦'; }
+  70%  { content: '⠧'; }
+  80%  { content: '⠇'; }
+  90%  { content: '⠏'; }
+  100% { content: '⠋'; }
+}
+
+.spinner::before {
+  content: '⠋';
+  animation: spinner-braille 1s steps(10, end) infinite;
+}
+
+/* Blinking cursor used at end of streaming text */
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.cursor-blink {
+  animation: cursor-blink 1s steps(2, end) infinite;
+}

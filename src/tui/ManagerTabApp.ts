@@ -33,7 +33,7 @@ import { ToolRegistry } from '../tools/registry.js'
 import { McpManager } from '../mcp/manager.js'
 import { ApprovalManager } from '../utils/approval-manager.js'
 import { TabRuntime } from './tab-runtime.js'
-import { loadSession, saveSession, createSession, type Session } from '../sessions.js'
+import { loadSession, saveSession, createSession, listSessions, type Session } from '../sessions.js'
 import { enqueueMessage, interjectMessage, getQueueForSession } from '../message-queue.js'
 import { getTodosForSession } from '../tools/todo.js'
 import { logger } from '../utils/logger.js'
@@ -41,6 +41,7 @@ import { logger } from '../utils/logger.js'
 export interface ManagerTabAppConfig {
   renderer: CliRenderer
   tabManager: TabManager
+  tabId: string
   container?: BoxRenderable
   onClose?: () => void
   /** Extra AppOptions passed through to the inner TabApp (e.g. onNewTab, onOpenManager, etc. from TabManager). */
@@ -68,6 +69,26 @@ const MANAGER_TOOLS = [
   {
     type: 'function' as const,
     function: {
+      name: 'list_conversations',
+      description:
+        'List conversations known to this ProtoAgent instance. Default scope is open/live conversations (currently open tabs). Can also show saved inactive conversations or closed/archived ones.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scope: {
+            type: 'string',
+            enum: ['open', 'saved', 'closed', 'all'],
+            description: 'Which conversations to include. Default: open.',
+          },
+          limit: { type: 'number', description: 'Max conversations to return. Default 20.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'read_tab_conversation',
       description: 'Read the most recent messages from a specific tab. Useful for seeing what another session is doing before acting on it.',
       parameters: {
@@ -77,6 +98,22 @@ const MANAGER_TOOLS = [
           limit: { type: 'number', description: 'How many recent messages to return. Default 20.' },
         },
         required: ['tab_id'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'read_conversation',
+      description:
+        'Read the most recent messages from a conversation by tab id or session id. Works for open/live conversations and saved or closed ones on disk.',
+      parameters: {
+        type: 'object',
+        properties: {
+          conversation_id: { type: 'string', description: 'A tab id or session id.' },
+          limit: { type: 'number', description: 'How many recent messages to return. Default 20.' },
+        },
+        required: ['conversation_id'],
       },
     },
   },
@@ -149,7 +186,7 @@ const MANAGER_TOOLS = [
     type: 'function' as const,
     function: {
       name: 'close_tab',
-      description: 'Close a tab. Its session is saved and can be restored later.',
+      description: 'Close a tab and archive that conversation out of the live tab set.',
       parameters: {
         type: 'object',
         properties: { tab_id: { type: 'string' } },
@@ -236,6 +273,19 @@ const MANAGER_TOOLS = [
   {
     type: 'function' as const,
     function: {
+      name: 'get_conversation_status',
+      description:
+        'Get detailed status for a conversation by tab id or session id, including whether it is open/live, saved inactive, or closed/archived.',
+      parameters: {
+        type: 'object',
+        properties: { conversation_id: { type: 'string' } },
+        required: ['conversation_id'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'get_full_status',
       description:
         'Get a comprehensive status snapshot across all tabs — totals, which are active/idle/queued, blockers (sessions with queued work but not active).',
@@ -270,10 +320,13 @@ Delegate work to other sessions, monitor their progress, and keep the user's ove
 
 ## Available control tools
 **Read / observe:**
+- list_conversations — best first tool for “what conversations are current/open/closed?”
 - list_tabs — summary of all tabs with counts
 - get_tab_status — detailed status of one tab
+- get_conversation_status — status by tab id or session id, including saved/closed conversations
 - get_tab_todos — that tab's TODO list
 - read_tab_conversation — recent messages from any tab
+- read_conversation — recent messages from any conversation by tab/session id
 - get_full_status — high-level overview + blockers
 - summarize_all_sessions — what each tab is working on
 
@@ -288,6 +341,8 @@ Delegate work to other sessions, monitor their progress, and keep the user's ove
 - send_message_in_tab — interject (if tab is busy) or start a new turn (if idle)
 
 ## Guidance
+- When the user asks about **current conversations**, **open tabs**, **live sessions**, or **closed conversations**, start with list_conversations or get_conversation_status.
+- Do **not** inspect session files with bash/read_file for conversation inventory unless the user explicitly asks about on-disk storage.
 - **Prefer queue_in_tab over send_message_in_tab** unless there's a real reason to interrupt.
 - **Use create_tab for independent parallel work.** Don't stuff everything into one session.
 - **Use fork_tab** when the user says "try another approach" or "what if we did it differently" — fork the relevant tab, then queue the alternative in the new one.
@@ -312,9 +367,10 @@ export class ManagerTabApp {
   private container?: BoxRenderable
   private extraOptions: Partial<AppOptions>
 
-  constructor({ renderer, tabManager, container, onClose, options }: ManagerTabAppConfig) {
+  constructor({ renderer, tabManager, tabId, container, onClose, options }: ManagerTabAppConfig) {
     this.renderer = renderer
     this.tabManager = tabManager
+    this.tabId = tabId
     this.onClose = onClose
     this.extraOptions = options ?? {}
     this.container = container
@@ -341,30 +397,97 @@ export class ManagerTabApp {
     // Resolve either a tab_id (e.g. "tab-3", "manager-1") or a session id
     // to the TabApp. Accepting both shapes lets the model use whatever
     // handle it most recently saw — we don't force it to remember which.
+    const getTabById = (tabId: string): any | null => {
+      return (this.tabManager as any).tabs?.get(tabId) ?? null
+    }
+
     const resolveTab = (idOrSession: string): { tabId: string; tab: any } | null => {
       const tabIds = this.tabManager.getAllTabIds()
       if (tabIds.includes(idOrSession)) {
-        const tab = (this.tabManager as any).tabs?.get(idOrSession)
+        const tab = getTabById(idOrSession)
         return tab ? { tabId: idOrSession, tab } : null
       }
       // Try by session id
       for (const tid of tabIds) {
-        const tab = (this.tabManager as any).tabs?.get(tid)
+        const tab = getTabById(tid)
         const sid = tab?.getSessionId?.()
         if (sid === idOrSession) return { tabId: tid, tab }
       }
       return null
     }
 
+    const getLastUserMessagePreview = (session: Session): string | null => {
+      const lastUserMsg = [...(session.completionMessages || [])]
+        .reverse()
+        .find((m) => m.role === 'user' && typeof m.content === 'string')
+      if (!lastUserMsg || typeof lastUserMsg.content !== 'string') return null
+      return lastUserMsg.content.slice(0, 200)
+    }
+
+    const buildConversationRow = async (
+      session: Session,
+      resolved?: { tabId: string; tab: any } | null,
+    ): Promise<Record<string, unknown>> => {
+      const isOpen = Boolean(resolved)
+      const todos = isOpen ? getTodosForSession(session.id) : session.todos
+      const queue = isOpen ? getQueueForSession(session.id) : session.queuedMessages
+      const activeId = this.tabManager.getActiveTabId()
+      return {
+        session_id: session.id,
+        tab_id: resolved?.tabId ?? null,
+        title: resolved?.tab?.getTitle?.() ?? session.title ?? 'New session',
+        scope: isOpen ? 'open' : session.deleted ? 'closed' : 'saved',
+        is_open: isOpen,
+        is_active: resolved?.tabId === activeId,
+        is_running: Boolean(resolved?.tab?.getIsRunning?.()),
+        has_approval_pending: Boolean(resolved?.tab?.getHasApprovalPending?.()),
+        is_pinned: resolved?.tabId ? this.tabManager.isTabPinned(resolved.tabId) : false,
+        is_manager: resolved?.tabId === this.tabId,
+        provider: session.provider,
+        model: session.model,
+        updated_at: session.updatedAt,
+        created_at: session.createdAt,
+        message_count: session.completionMessages?.length ?? 0,
+        queued_messages: queue?.length ?? 0,
+        todos: {
+          total: todos?.length ?? 0,
+          completed: (todos || []).filter((t) => t.status === 'completed').length,
+          in_progress: (todos || []).filter((t) => t.status === 'in_progress').length,
+          pending: (todos || []).filter((t) => t.status === 'pending').length,
+        },
+        last_user_message: getLastUserMessagePreview(session),
+      }
+    }
+
+    const resolveConversation = async (idOrSession: string): Promise<{
+      session: Session
+      resolvedTab: { tabId: string; tab: any } | null
+      scope: 'open' | 'saved' | 'closed'
+    } | null> => {
+      const resolvedTab = resolveTab(idOrSession)
+      if (resolvedTab) {
+        const sessionId = resolvedTab.tab?.getSessionId?.()
+        if (!sessionId) return null
+        const session = await loadSession(sessionId, { includeDeleted: true })
+        if (!session) return null
+        return { session, resolvedTab, scope: 'open' }
+      }
+      const session = await loadSession(idOrSession, { includeDeleted: true })
+      if (!session) return null
+      return { session, resolvedTab: null, scope: session.deleted ? 'closed' : 'saved' }
+    }
+
     this.toolRegistry.registerDynamicHandler('list_tabs', async () => {
       const tabIds = this.tabManager.getAllTabIds()
       const activeId = this.tabManager.getActiveTabId()
       const rows = await Promise.all(tabIds.map(async (tid) => {
-        const tab = (this.tabManager as any).tabs?.get(tid)
+        const tab = getTabById(tid)
         const sessionId: string | undefined = tab?.getSessionId?.()
         const base: Record<string, unknown> = {
           tab_id: tid,
           is_active: tid === activeId,
+          is_running: Boolean(tab?.getIsRunning?.()),
+          has_approval_pending: Boolean(tab?.getHasApprovalPending?.()),
           is_pinned: this.tabManager.isTabPinned(tid),
           is_manager: tid === this.tabId,
           session_id: sessionId ?? null,
@@ -390,16 +513,59 @@ export class ManagerTabApp {
       return JSON.stringify(rows, null, 2)
     })
 
+    this.toolRegistry.registerDynamicHandler('list_conversations', async (args: any) => {
+      const scope = args?.scope ?? 'open'
+      const limit = Math.max(1, Math.min(200, args?.limit ?? 20))
+
+      if (scope === 'open') {
+        const rows = await Promise.all(
+          this.tabManager.getAllTabIds().map(async (tabId) => {
+            const tab = getTabById(tabId)
+            const sessionId: string | undefined = tab?.getSessionId?.()
+            if (!sessionId) return null
+            const session = await loadSession(sessionId, { includeDeleted: true })
+            if (!session) return null
+            return buildConversationRow(session, { tabId, tab })
+          }),
+        )
+        const allConversations = rows.filter(Boolean)
+        const conversations = allConversations.slice(0, limit)
+        return JSON.stringify({ scope: 'open', total: allConversations.length, conversations }, null, 2)
+      }
+
+      const summaries = await listSessions()
+      const rows: Array<Record<string, unknown>> = []
+      for (const summary of summaries) {
+        const session = await loadSession(summary.id, { includeDeleted: true })
+        if (!session) continue
+        const resolvedTab = resolveTab(session.id)
+        const row = await buildConversationRow(session, resolvedTab)
+        if (scope === 'saved' && row.scope !== 'saved') continue
+        if (scope === 'closed' && row.scope !== 'closed') continue
+        rows.push(row)
+      }
+
+      if (scope === 'all') {
+        return JSON.stringify({
+          scope: 'all',
+          total: rows.length,
+          conversations: rows.slice(0, limit),
+        }, null, 2)
+      }
+
+      return JSON.stringify({ scope, total: rows.length, conversations: rows.slice(0, limit) }, null, 2)
+    })
+
     this.toolRegistry.registerDynamicHandler('read_tab_conversation', async (args: any) => {
-      const resolved = resolveTab(args.tab_id)
-      if (!resolved) return `Error: tab ${args.tab_id} not found`
-      const sessionId = resolved.tab?.getSessionId?.()
-      if (!sessionId) return `Error: tab ${args.tab_id} has no session`
-      const session = await loadSession(sessionId)
-      if (!session) return `Error: session ${sessionId} not found`
+      const resolved = await resolveConversation(args.tab_id)
+      if (!resolved) return `Error: conversation ${args.tab_id} not found`
       const limit = Math.max(1, Math.min(200, args.limit ?? 20))
-      const messages = (session.completionMessages || []).slice(-limit)
+      const messages = (resolved.session.completionMessages || []).slice(-limit)
       return JSON.stringify(messages, null, 2)
+    })
+
+    this.toolRegistry.registerDynamicHandler('read_conversation', async (args: any) => {
+      return this.toolRegistry.handleToolCall('read_tab_conversation', { tab_id: args.conversation_id, limit: args.limit })
     })
 
     this.toolRegistry.registerDynamicHandler('queue_in_tab', async (args: any) => {
@@ -452,11 +618,11 @@ export class ManagerTabApp {
     })
 
     this.toolRegistry.registerDynamicHandler('close_tab', async (args: any) => {
-      if (args.tab_id === this.tabId) {
-        return 'Refusing to close the Manager tab via this tool — the user can close it from the sidebar.'
-      }
       const resolved = resolveTab(args.tab_id)
       if (!resolved) return `Error: tab ${args.tab_id} not found`
+      if (resolved.tabId === this.tabId) {
+        return 'Refusing to close the Manager tab via this tool — the user can close it from the sidebar.'
+      }
       await this.tabManager.closeTab(resolved.tabId)
       return `Closed tab ${resolved.tabId}.`
     })
@@ -498,47 +664,21 @@ export class ManagerTabApp {
     })
 
     this.toolRegistry.registerDynamicHandler('get_tab_status', async (args: any) => {
-      const resolved = resolveTab(args.tab_id)
-      if (!resolved) return JSON.stringify({ tab_id: args.tab_id, exists: false })
-      const sessionId: string | undefined = resolved.tab?.getSessionId?.()
-      const status: Record<string, unknown> = {
-        tab_id: resolved.tabId,
-        exists: true,
-        is_active: resolved.tabId === this.tabManager.getActiveTabId(),
-        is_pinned: this.tabManager.isTabPinned(resolved.tabId),
-        is_manager: resolved.tabId === this.tabId,
-        title: resolved.tab?.getTitle?.(),
-        session_id: sessionId ?? null,
-      }
-      if (sessionId) {
-        try {
-          const session = await loadSession(sessionId)
-          if (session) {
-            const todos = getTodosForSession(sessionId)
-            const queue = getQueueForSession(sessionId)
-            status.model = session.model
-            status.provider = session.provider
-            status.message_count = session.completionMessages?.length ?? 0
-            status.todos = {
-              total: todos.length,
-              completed: todos.filter((t) => t.status === 'completed').length,
-              in_progress: todos.filter((t) => t.status === 'in_progress').length,
-              pending: todos.filter((t) => t.status === 'pending').length,
-            }
-            status.queued_messages = queue.length
-          }
-        } catch (err: any) {
-          status.error = err?.message || String(err)
-        }
-      }
-      return JSON.stringify(status, null, 2)
+      const resolved = await resolveConversation(args.tab_id)
+      if (!resolved) return JSON.stringify({ conversation_id: args.tab_id, exists: false })
+      const status = await buildConversationRow(resolved.session, resolved.resolvedTab)
+      return JSON.stringify({ exists: true, ...status }, null, 2)
+    })
+
+    this.toolRegistry.registerDynamicHandler('get_conversation_status', async (args: any) => {
+      return this.toolRegistry.handleToolCall('get_tab_status', { tab_id: args.conversation_id })
     })
 
     this.toolRegistry.registerDynamicHandler('get_full_status', async () => {
       const tabIds = this.tabManager.getAllTabIds()
       const activeId = this.tabManager.getActiveTabId()
       const sessions = await Promise.all(tabIds.map(async (tid) => {
-        const tab = (this.tabManager as any).tabs?.get(tid)
+        const tab = getTabById(tid)
         const sid: string | undefined = tab?.getSessionId?.()
         if (!sid) return null
         try {
@@ -551,7 +691,14 @@ export class ManagerTabApp {
             tab_id: tid,
             session_id: sid,
             title: session.title || tab?.getTitle?.() || 'New Agent',
-            status: tid === activeId ? 'active' : queue.length > 0 ? 'queued_work' : 'idle',
+            status: Boolean(tab?.getIsRunning?.())
+              ? 'running'
+              : tid === activeId
+                ? 'active'
+                : queue.length > 0
+                  ? 'queued_work'
+                  : 'idle',
+            has_approval_pending: Boolean(tab?.getHasApprovalPending?.()),
             is_pinned: this.tabManager.isTabPinned(tid),
             todos: { total: todos.length, completed },
             queued_messages: queue.length,
@@ -587,7 +734,7 @@ export class ManagerTabApp {
       const tabIds = this.tabManager.getAllTabIds()
       const activeId = this.tabManager.getActiveTabId()
       const rows = await Promise.all(tabIds.map(async (tid) => {
-        const tab = (this.tabManager as any).tabs?.get(tid)
+        const tab = getTabById(tid)
         const sid: string | undefined = tab?.getSessionId?.()
         if (!sid) return null
         try {
@@ -607,7 +754,13 @@ export class ManagerTabApp {
             tab_id: tid,
             session_id: sid,
             title: session.title || tab?.getTitle?.() || 'New Agent',
-            status: tid === activeId ? 'active' : pending.length > 0 ? 'working' : 'idle',
+            status: Boolean(tab?.getIsRunning?.())
+              ? 'running'
+              : tid === activeId
+                ? 'active'
+                : pending.length > 0
+                  ? 'working'
+                  : 'idle',
             current_todo: pending[0]?.content ?? null,
             pending_todos: pending.length,
             completed_todos: completed.length,
@@ -648,6 +801,7 @@ export class ManagerTabApp {
       approvalManager: this.approvalManager,
       systemPromptExtra: MANAGER_PREAMBLE,
       defaultTitle: this.title,
+      hideWorkflowSidebar: true,
       // Title updates come from TabApp's auto-title generator — that's fine
       // for normal tabs but the Manager's title should stay pinned. Suppress.
       onTitleUpdate: () => { /* keep "★ Manager" pinned */ },

@@ -7,9 +7,29 @@
  */
 
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 
-const workingDirectory = process.cwd();
+// Working directory — captured once at process start.
+//
+// We store BOTH the logical cwd (what the user sees, e.g. "/tmp/foo") AND
+// its realpath equivalent (e.g. "/private/tmp/foo"). This matters on macOS
+// where "/tmp" is a symlink to "/private/tmp": `fs.realpath()` on a requested
+// path returns the /private/... form, while `process.cwd()` returns the
+// /tmp/... form, so comparing the two naively would spuriously reject every
+// path under /tmp even though it's within cwd.
+const logicalWorkingDirectory = process.cwd();
+let realWorkingDirectory = logicalWorkingDirectory;
+try {
+  realWorkingDirectory = fsSync.realpathSync(logicalWorkingDirectory);
+} catch {
+  // realpath can fail only if cwd was deleted underneath us; fall back to logical
+}
+const workingDirectory = logicalWorkingDirectory;
+const workingDirectoryRoots = Array.from(
+  new Set([path.normalize(logicalWorkingDirectory), path.normalize(realWorkingDirectory)])
+);
+
 let allowedRoots: string[] = [];
 
 function isWithinRoot(targetPath: string, rootPath: string): boolean {
@@ -18,7 +38,10 @@ function isWithinRoot(targetPath: string, rootPath: string): boolean {
 }
 
 function isAllowedPath(targetPath: string): boolean {
-  return isWithinRoot(targetPath, workingDirectory) || allowedRoots.some((root) => isWithinRoot(targetPath, root));
+  return (
+    workingDirectoryRoots.some((root) => isWithinRoot(targetPath, root)) ||
+    allowedRoots.some((root) => isWithinRoot(targetPath, root))
+  );
 }
 
 export async function setAllowedPathRoots(roots: string[]): Promise<void> {

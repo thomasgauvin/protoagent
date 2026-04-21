@@ -45,14 +45,36 @@ export function restoreTerminal(): void {
   // Disable mouse tracking
   disableMouseTracking()
 
+  // Leave the alternate screen buffer. Without this, the TUI's alt-screen
+  // contents remain visible in the scrollback after the app exits, and
+  // subsequent shell output overlaps the old frame.
+  process.stdout.write(`${ESC}[?1049l`)
+
+  // Leave bracketed paste mode (most shells enable it; if the TUI turned it
+  // off, restore it implicitly by NOT leaving it disabled — we only disable
+  // the TUI's own bracketed paste override).
+  process.stdout.write(`${ESC}[?2004l`)
+
+  // Leave "application cursor keys" mode (DECCKM).
+  process.stdout.write(`${ESC}[?1l`)
+
+  // Leave "application keypad" mode (DECKPAM -> DECKPNM).
+  process.stdout.write(`${ESC}>`)
+
   // Show cursor (in case it was hidden)
   process.stdout.write(`${ESC}[?25h`)
 
-  // Reset attributes
+  // Reset character attributes (SGR).
   process.stdout.write(`${ESC}[0m`)
 
-  // Clear any pending input
-  process.stdout.write(`${ESC}[c`)
+  // NOTE: Do NOT send `CSI c` (Device Attributes query). That asks the
+  // terminal to REPLY with its attributes like "CSI ?64;1;2;4;6;17;18;21;22;52c".
+  // By the time we're exiting, stdin is back in line-discipline mode, so
+  // the reply is delivered to the shell as if the user typed it, producing
+  // gibberish like `64;1;2;4;...` at the prompt and "command not found"
+  // errors. Previous versions of this file had `process.stdout.write(ESC + "[c")`
+  // here with a misleading comment ("Clear any pending input") — it does
+  // the opposite of clearing input.
 
   logger.debug('Terminal restored')
 }
@@ -62,23 +84,35 @@ export function restoreTerminal(): void {
  * This ensures the terminal is restored even if the process crashes.
  */
 export function setupTerminalCleanup(): void {
-  // Normal exit
+  // Normal exit — always restore the tty before the process goes away,
+  // so the shell isn't left in alt-screen / raw mode / mouse tracking.
   process.on('exit', () => {
     restoreTerminal()
   })
 
-  // Signal handlers
-  const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']
+  // Safety-net signal handlers ONLY for signals we don't handle elsewhere.
+  //
+  // SIGINT/SIGTERM are owned by `createMultiTabApp.ts`'s `gracefulExit`
+  // flow (which saves tabs, waits with a timeout, then exits). Do NOT
+  // install our own handlers for them here — multiple handlers would
+  // race, and our `process.kill(pid, signal)` re-raise trick would
+  // either double-run graceful exit or be pre-empted by it.
+  //
+  // SIGHUP/SIGQUIT are rarer (terminal closed, Ctrl+\) and there's no
+  // time for graceful save, so just restore the tty and re-raise.
+  const signals: NodeJS.Signals[] = ['SIGHUP', 'SIGQUIT']
   for (const signal of signals) {
     process.on(signal, () => {
       logger.info(`Received ${signal}, cleaning up terminal...`)
       restoreTerminal()
-      // Re-raise the signal to allow default handling
+      // Re-raise with default disposition so the process actually exits.
+      process.removeAllListeners(signal)
       process.kill(process.pid, signal)
     })
   }
 
-  // Uncaught exceptions
+  // Uncaught exceptions — restore the tty so the user's shell is usable
+  // before Node prints the stack trace and exits.
   process.on('uncaughtException', (err) => {
     logger.error('Uncaught exception, cleaning up terminal...')
     restoreTerminal()
@@ -86,7 +120,7 @@ export function setupTerminalCleanup(): void {
     process.exit(1)
   })
 
-  // Unhandled rejections
+  // Unhandled rejections — same as above.
   process.on('unhandledRejection', (reason) => {
     logger.error('Unhandled rejection, cleaning up terminal...')
     restoreTerminal()

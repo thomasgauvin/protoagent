@@ -87,11 +87,24 @@ export async function processStream(
       onEvent({ type: 'thinking_delta', thinking: { content: thinkingContent } });
     }
 
-    // Accumulate tool calls across stream chunks
+    // Accumulate tool calls across stream chunks.
+    //
+    // Providers stream tool calls as a sequence of deltas keyed by `index`.
+    // We merge by `index` (the canonical key), but some providers — notably
+    // Anthropic via the OpenAI-compatible surface on some gateways — have
+    // been observed to emit the SAME tool call at two different indices,
+    // which previously produced two entries with the same `id`. Downstream
+    // that meant the executor would run the tool once, emit one tool_result,
+    // and the conversation ended up with N tool_calls but N/2 tool_results,
+    // corrupting history and confusing the model.
+    //
+    // We dedupe after accumulation by tool_call id. Duplicates with the
+    // same id are guaranteed to be the same logical tool call, so keeping
+    // the first occurrence is safe.
     if (delta?.tool_calls) {
       hasToolCalls = true;
       for (const tc of delta.tool_calls) {
-        const idx = tc.index || 0;
+        const idx = tc.index ?? 0;
         if (!assistantMessage.tool_calls[idx]) {
           assistantMessage.tool_calls[idx] = {
             id: '',
@@ -115,6 +128,30 @@ export async function processStream(
           assistantMessage.tool_calls[idx].extra_content = (tc as any).extra_content;
         }
       }
+    }
+  }
+
+  // Dedupe tool calls by id. See block comment above for rationale.
+  if (assistantMessage.tool_calls.length > 1) {
+    const seen = new Set<string>();
+    const deduped: any[] = [];
+    let removed = 0;
+    for (const tc of assistantMessage.tool_calls) {
+      if (!tc) continue;
+      if (tc.id && seen.has(tc.id)) {
+        removed++;
+        continue;
+      }
+      if (tc.id) seen.add(tc.id);
+      deduped.push(tc);
+    }
+    if (removed > 0) {
+      logger.warn('Deduped duplicate tool_calls returned by provider stream', {
+        removed,
+        kept: deduped.length,
+        names: deduped.map((t) => t?.function?.name),
+      });
+      assistantMessage.tool_calls = deduped;
     }
   }
 

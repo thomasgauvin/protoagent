@@ -49,6 +49,8 @@ function buildClient(config: Config): OpenAI {
     throw new Error(
       envVar
         ? `Missing API key for ${providerName}. Set it in config or export ${envVar}.`
+        : provider?.headers && Object.keys(provider.headers).length > 0
+          ? `Missing auth for ${providerName}. Check the configured headers and any referenced environment variables.`
         : `Missing API key for ${providerName}.`,
     );
   }

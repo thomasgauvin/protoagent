@@ -27,6 +27,26 @@ export type InitConfigWriteStatus = 'created' | 'exists' | 'overwritten'
 
 const CONFIG_DIR_MODE = 0o700
 const CONFIG_FILE_MODE = 0o600
+const AUTH_HEADER_NAME = /^(authorization|proxy-authorization|cookie|x-api-key|api-key|api_key|apikey|cf-access-token|cf-access-jwt-assertion)$/i
+
+function parseHeaderLines(rawHeaders?: string): Record<string, string> {
+  if (!rawHeaders?.trim()) return {}
+  const parsed: Record<string, string> = {}
+  for (const line of rawHeaders.split('\n')) {
+    const separator = line.indexOf(': ')
+    if (separator === -1) continue
+    const key = line.slice(0, separator).trim()
+    const value = line.slice(separator + 2).trim()
+    if (key && value) parsed[key] = value
+  }
+  return parsed
+}
+
+function hasCredentialHeaders(headers?: Record<string, string>): boolean {
+  return Object.entries(headers || {}).some(
+    ([key, value]) => AUTH_HEADER_NAME.test(key.trim()) && value.trim().length > 0,
+  )
+}
 
 function getHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || os.homedir()
@@ -49,12 +69,8 @@ export function resolveApiKey(config: Pick<Config, 'provider' | 'apiKey'>): stri
   if (direct) return direct
   const providerKey = provider?.apiKey?.trim()
   if (providerKey) return providerKey
-  if (process.env.PROTOAGENT_CUSTOM_HEADERS) return 'none'
-  if (!provider?.apiKeyEnvVar) {
-    if (provider?.headers && Object.keys(provider.headers).length > 0) return 'none'
-    return null
-  }
-  if (provider?.headers && Object.keys(provider.headers).length > 0) return 'none'
+  if (hasCredentialHeaders(parseHeaderLines(process.env.PROTOAGENT_CUSTOM_HEADERS))) return 'none'
+  if (hasCredentialHeaders(provider?.headers)) return 'none'
   return null
 }
 

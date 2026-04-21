@@ -53,6 +53,15 @@ export interface RightSidebarCallbacks {
   onUpdate: (id: string, updates: Partial<Pick<TodoItem, 'status' | 'priority'>>) => void
 }
 
+export interface RightSidebarOptions {
+  /**
+   * When true, omit the workflow diagram header and the queue/cron/loop
+   * contextual section entirely. Used by the Manager tab, which does not
+   * run workflows.
+   */
+  hideWorkflow?: boolean
+}
+
 // Contextual info for cron workflow
 interface CronInfo {
   schedule?: string
@@ -77,21 +86,22 @@ export class RightSidebar {
   public readonly root: BoxRenderable
   private todoScrollBox: ScrollBoxRenderable
   private todoHeaderText: TextRenderable
-  private contextualScrollBox: ScrollBoxRenderable
-  private contextualHeaderText: TextRenderable
+  private contextualScrollBox: ScrollBoxRenderable | null = null
+  private contextualHeaderText: TextRenderable | null = null
   private usageText: TextRenderable
 
-  // Workflow section
-  private workflowBox: BoxRenderable
-  private workflowHeaderText: TextRenderable
-  private workflowDiagramText: TextRenderable
-  private workflowTypeText: TextRenderable
+  // Workflow section (null when hideWorkflow is set)
+  private workflowBox: BoxRenderable | null = null
+  private workflowHeaderText: TextRenderable | null = null
+  private workflowDiagramText: TextRenderable | null = null
+  private workflowTypeText: TextRenderable | null = null
 
   private todos: TodoItem[] = []
   private todoRows: BoxRenderable[] = []
   private contextualRows: BoxRenderable[] = []
   private callbacks: RightSidebarCallbacks
   private currentWorkflowType: WorkflowType = 'queue'
+  private readonly hideWorkflow: boolean
 
   // Store current contextual data
   private currentQueue: QueuedMessage[] = []
@@ -99,68 +109,84 @@ export class RightSidebar {
   private currentCronInfo: CronInfo = {}
   private currentLoopInfo: LoopInfo = {}
 
-  constructor(renderer: CliRenderer, callbacks: RightSidebarCallbacks) {
+  constructor(
+    renderer: CliRenderer,
+    callbacks: RightSidebarCallbacks,
+    options: RightSidebarOptions = {},
+  ) {
     this.renderer = renderer
     this.callbacks = callbacks
+    this.hideWorkflow = options.hideWorkflow ?? false
 
+    // Responsive sidebar width. With the left sidebar also consuming 30/38/48
+    // columns (see TabManager.ts), previously the right sidebar sat at a
+    // hard-coded width: 30 with flexGrow: 1 — the flexGrow override made it
+    // balloon to fill remaining space at the cost of the chat column, so new
+    // tabs on typical terminals (~85-100 cols) had only ~15-25 columns of
+    // usable message width. Now it's a fixed width that scales with terminal
+    // size and does NOT grow.
+    const termWidth = process.stdout.columns || 120
+    const sidebarWidth = termWidth >= 250 ? 42 : termWidth >= 150 ? 34 : 28
     this.root = new BoxRenderable(renderer, {
       id: 'todo-sidebar-root',
       flexDirection: 'column',
       flexShrink: 0,
-      flexGrow: 1,
       backgroundColor: COLORS.darkBg,
-      width: 30,
+      width: sidebarWidth,
       border: ['left'],
       borderColor: COLORS.border,
     })
 
     // ── Workflow section (top) ────────────────────────────
-    this.workflowBox = new BoxRenderable(renderer, {
-      id: 'workflow-box',
-      flexDirection: 'column',
-      paddingLeft: 1,
-      paddingRight: 1,
-      paddingTop: 1,
-      paddingBottom: 1,
-      flexShrink: 0,
-      border: ['bottom'],
-      borderColor: COLORS.border,
-    })
+    // Omitted entirely for the Manager tab (hideWorkflow=true).
+    if (!this.hideWorkflow) {
+      this.workflowBox = new BoxRenderable(renderer, {
+        id: 'workflow-box',
+        flexDirection: 'column',
+        paddingLeft: 1,
+        paddingRight: 1,
+        paddingTop: 1,
+        paddingBottom: 1,
+        flexShrink: 0,
+        border: ['bottom'],
+        borderColor: COLORS.border,
+      })
 
-    // Workflow header with type
-    const headerRow = new BoxRenderable(renderer, {
-      id: 'workflow-header-row',
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: 1,
-    })
+      // Workflow header with type
+      const headerRow = new BoxRenderable(renderer, {
+        id: 'workflow-header-row',
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 1,
+      })
 
-    this.workflowHeaderText = new TextRenderable(renderer, {
-      id: 'workflow-header-text',
-      content: t`${bold('Workflow')}`,
-    })
-    headerRow.add(this.workflowHeaderText)
+      this.workflowHeaderText = new TextRenderable(renderer, {
+        id: 'workflow-header-text',
+        content: t`${bold('Workflow')}`,
+      })
+      headerRow.add(this.workflowHeaderText)
 
-    this.workflowTypeText = new TextRenderable(renderer, {
-      id: 'workflow-type-text',
-      content: t`${fg(COLORS.primary)('Queue')}`,
-    })
-    headerRow.add(this.workflowTypeText)
+      this.workflowTypeText = new TextRenderable(renderer, {
+        id: 'workflow-type-text',
+        content: t`${fg(COLORS.primary)('Queue')}`,
+      })
+      headerRow.add(this.workflowTypeText)
 
-    this.workflowBox.add(headerRow)
+      this.workflowBox.add(headerRow)
 
-    // Workflow diagram (compact)
-    this.workflowDiagramText = new TextRenderable(renderer, {
-      id: 'workflow-diagram-text',
-      content: t``, // Will be populated by setWorkflowType
-    })
-    this.workflowBox.add(this.workflowDiagramText)
+      // Workflow diagram (compact)
+      this.workflowDiagramText = new TextRenderable(renderer, {
+        id: 'workflow-diagram-text',
+        content: t``, // Will be populated by setWorkflowType
+      })
+      this.workflowBox.add(this.workflowDiagramText)
 
-    this.root.add(this.workflowBox)
+      this.root.add(this.workflowBox)
 
-    // Initialize with default workflow diagram
-    this._updateWorkflowDiagram('queue')
+      // Initialize with default workflow diagram
+      this._updateWorkflowDiagram('queue')
+    }
 
     // ── TODO section ──────────────────────────────────────
 
@@ -192,37 +218,41 @@ export class RightSidebar {
     }
     this.root.add(this.todoScrollBox)
 
-    // ── Contextual section (bottom - changes based on workflow type) ─────────────────────────
+    // ── Contextual section (bottom - changes based on workflow type) ─────
+    // Also omitted for the Manager tab, since it only makes sense paired
+    // with a workflow.
+    if (!this.hideWorkflow) {
+      // Divider + Contextual header
+      const contextualHeaderBox = new BoxRenderable(renderer, {
+        id: 'contextual-header-box',
+        paddingLeft: 2,
+        paddingRight: 1,
+        paddingTop: 1,
+        paddingBottom: 1,
+        flexShrink: 0,
+        border: ['top'],
+        borderColor: COLORS.border,
+      })
+      this.contextualHeaderText = new TextRenderable(renderer, {
+        id: 'contextual-header-text',
+        content: t`${bold('Queue')} ${fg(COLORS.dim)('(0)')}`,
+      })
+      contextualHeaderBox.add(this.contextualHeaderText)
+      this.root.add(contextualHeaderBox)
 
-    // Divider + Contextual header
-    const contextualHeaderBox = new BoxRenderable(renderer, {
-      id: 'contextual-header-box',
-      paddingLeft: 2,
-      paddingRight: 1,
-      paddingTop: 1,
-      paddingBottom: 1,
-      flexShrink: 0,
-      border: ['top'],
-      borderColor: COLORS.border,
-    })
-    this.contextualHeaderText = new TextRenderable(renderer, {
-      id: 'contextual-header-text',
-      content: t`${bold('Queue')} ${fg(COLORS.dim)('(0)')}`,
-    })
-    contextualHeaderBox.add(this.contextualHeaderText)
-    this.root.add(contextualHeaderBox)
-
-    // Contextual scroll list - fixed max height but scrollable
-    this.contextualScrollBox = new ScrollBoxRenderable(renderer, {
-      id: 'contextual-scroll',
-      flexShrink: 0,
-      maxHeight: 10,
-    })
-    // Enable mouse wheel scrolling on the scroll box
-    this.contextualScrollBox.onMouseDown = () => {
-      this.contextualScrollBox.focus()
+      // Contextual scroll list - fixed max height but scrollable
+      const contextualScroll = new ScrollBoxRenderable(renderer, {
+        id: 'contextual-scroll',
+        flexShrink: 0,
+        maxHeight: 10,
+      })
+      this.contextualScrollBox = contextualScroll
+      // Enable mouse wheel scrolling on the scroll box
+      contextualScroll.onMouseDown = () => {
+        contextualScroll.focus()
+      }
+      this.root.add(contextualScroll)
     }
-    this.root.add(this.contextualScrollBox)
 
     // Usage row
     const usageBox = new BoxRenderable(renderer, {
@@ -250,6 +280,7 @@ export class RightSidebar {
   }
 
   setQueue(queued: QueuedMessage[], interjects: QueuedMessage[]): void {
+    if (this.hideWorkflow) return
     this.currentQueue = queued
     this.currentInterjects = interjects
     if (this.currentWorkflowType === 'queue') {
@@ -258,6 +289,7 @@ export class RightSidebar {
   }
 
   setCronInfo(info: CronInfo): void {
+    if (this.hideWorkflow) return
     this.currentCronInfo = info
     if (this.currentWorkflowType === 'cron') {
       this._redrawContextual()
@@ -265,6 +297,7 @@ export class RightSidebar {
   }
 
   setLoopInfo(info: LoopInfo): void {
+    if (this.hideWorkflow) return
     this.currentLoopInfo = info
     if (this.currentWorkflowType === 'loop') {
       this._redrawContextual()
@@ -285,16 +318,20 @@ export class RightSidebar {
   }
 
   /**
-   * Set the current workflow type and update the diagram and contextual section
+   * Set the current workflow type and update the diagram and contextual section.
+   * No-op when the workflow section is hidden (Manager tab).
    */
   setWorkflowType(type: WorkflowType, isActive: boolean = false): void {
+    if (this.hideWorkflow) return
     this.currentWorkflowType = type
 
     // Update type text
     const typeName = type.charAt(0).toUpperCase() + type.slice(1)
     const color = isActive ? COLORS.green : COLORS.primary
     const displayText = typeName + (isActive ? ' ●' : '')
-    this.workflowTypeText.content = t`${fg(color)(displayText)}`
+    if (this.workflowTypeText) {
+      this.workflowTypeText.content = t`${fg(color)(displayText)}`
+    }
 
     // Update diagram
     this._updateWorkflowDiagram(type)
@@ -309,6 +346,7 @@ export class RightSidebar {
    * Update the workflow diagram display
    */
   private _updateWorkflowDiagram(type: WorkflowType): void {
+    if (!this.workflowDiagramText) return
     const diagram = getCompactDiagram(type)
     this.workflowDiagramText.content = t`${diagram.lines.join('\n')}`
   }
@@ -389,6 +427,7 @@ export class RightSidebar {
   }
 
   private _redrawContextual(): void {
+    if (!this.contextualScrollBox) return
     // Clear existing rows
     for (const row of this.contextualRows) {
       this.contextualScrollBox.remove(row.id)
@@ -411,6 +450,7 @@ export class RightSidebar {
   }
 
   private _drawQueueContextual(): void {
+    if (!this.contextualScrollBox || !this.contextualHeaderText) return
     const queued = this.currentQueue
     const interjects = this.currentInterjects
     const total = queued.length + interjects.length
@@ -483,6 +523,8 @@ export class RightSidebar {
   }
 
   private _drawCronContextual(): void {
+    if (!this.contextualScrollBox || !this.contextualHeaderText) return
+    const scrollBox = this.contextualScrollBox
     const info = this.currentCronInfo
     this.contextualHeaderText.content = t`${bold('Cron')}`
 
@@ -522,12 +564,14 @@ export class RightSidebar {
         paddingRight: 1,
       })
       rowBox.add(rowText)
-      this.contextualScrollBox.add(rowBox)
+      scrollBox.add(rowBox)
       this.contextualRows.push(rowBox)
     })
   }
 
   private _drawLoopContextual(): void {
+    if (!this.contextualScrollBox || !this.contextualHeaderText) return
+    const scrollBox = this.contextualScrollBox
     const info = this.currentLoopInfo
     this.contextualHeaderText.content = t`${bold('Loop')}${info.isActive ? fg(COLORS.green)(' ●') : ''}`
 
@@ -568,7 +612,7 @@ export class RightSidebar {
         paddingRight: 1,
       })
       rowBox.add(rowText)
-      this.contextualScrollBox.add(rowBox)
+      scrollBox.add(rowBox)
       this.contextualRows.push(rowBox)
     })
   }

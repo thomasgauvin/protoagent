@@ -347,6 +347,12 @@ export class TabManager {
         onNewTab: async (newTabInitialMessage?: string) => {
           await this.createTab(undefined, true, newTabInitialMessage)
         },
+        onOpenManager: async () => {
+          // /manager command — create or focus the Manager tab. This
+          // routes through the same path as clicking the ★ Manager
+          // button in the sidebar, so behavior is identical either way.
+          await this.createManagerTab()
+        },
         onSaveAndExit: async () => {
           await this.saveAndExit()
         },
@@ -408,13 +414,50 @@ export class TabManager {
     })
     this.tabContainers.set(tabId, tabContainer)
 
-    // Create the manager tab app
+    // Create the manager tab app. Pass the same set of AppOptions
+    // callbacks we pass to regular TabApps so the Manager tab gets full
+    // slash-command / loading / approval / session-info / etc. wiring —
+    // it IS a TabApp underneath now.
     this.managerTabApp = new ManagerTabApp({
       renderer: this.renderer,
       tabManager: this,
+      tabId,
       container: tabContainer,
+      options: {
+        dangerouslySkipPermissions: this.dangerouslySkipPermissions,
+        // Intentionally do NOT set onTitleUpdate for the Manager — the
+        // title is pinned to "★ Manager".
+        onLoadingChange: (loading: boolean) => this.setTabLoading(tabId, loading),
+        onApprovalChange: (pending: boolean) => this.setTabApproval(tabId, pending),
+        onSessionInfo: (provider: string, model: string, sessionId: string) => {
+          this.tabSessionInfo.set(tabId, { provider, model, sessionId })
+          if (this.activeTabId === tabId) {
+            this.setSessionInfo(provider, model, sessionId)
+          }
+        },
+        onFork: async (forkedSessionId: string, forkedTitle?: string) => {
+          await this.createTab(forkedSessionId, true, undefined, forkedTitle)
+        },
+        onNewTab: async (newTabInitialMessage?: string) => {
+          await this.createTab(undefined, true, newTabInitialMessage)
+        },
+        onOpenManager: async () => {
+          // Already inside the manager — no-op, just refocus.
+          await this.switchTab(tabId)
+        },
+        onSaveAndExit: async () => {
+          await this.saveAndExit()
+        },
+        onPinTab: (_pin: boolean) => {
+          // Manager is always pinned; ignore toggle requests.
+        },
+        onMcpReady: () => {
+          if (this.activeTabId === tabId) {
+            this.updateMcpStatus()
+          }
+        },
+      },
       onClose: () => {
-        // Clean up manager reference when closed
         this.managerTabApp = undefined
         this.managerTabId = undefined
       },
@@ -430,7 +473,7 @@ export class TabManager {
     // Initialize the manager agent
     await this.managerTabApp.initialize()
 
-    logger.info('Manager tab created and initialized')
+    logger.info('Manager tab created and initialized (TabApp parity)')
   }
 
   /**

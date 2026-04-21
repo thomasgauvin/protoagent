@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { parse, printParseErrorCode } from 'jsonc-parser';
@@ -173,6 +174,82 @@ function interpolateString(value: string, sourcePath: string): string {
   });
 }
 
+function valueReferencesEnvVar(value: unknown, envVar: string): boolean {
+  if (typeof value === 'string') {
+    return value.includes(`\${${envVar}}`);
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => valueReferencesEnvVar(entry, envVar));
+  }
+  if (isPlainObject(value)) {
+    return Object.values(value).some((entry) => valueReferencesEnvVar(entry, envVar));
+  }
+  return false;
+}
+
+function getOriginFromBaseUrl(baseURL?: string): string | null {
+  if (!baseURL?.trim()) return null;
+  try {
+    return new URL(baseURL).origin;
+  } catch {
+    return null;
+  }
+}
+
+function fetchCloudflareAccessToken(appOrigin: string): string | null {
+  const cloudflaredBinary = process.env.PROTOAGENT_CLOUDFLARED_BIN?.trim() || 'cloudflared';
+  try {
+    const token = execFileSync(
+      cloudflaredBinary,
+      ['access', 'login', '--no-verbose', `-app=${appOrigin}`],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    ).trim();
+    return token || null;
+  } catch (error) {
+    logger.warn('Failed to auto-resolve CF_ACCESS_TOKEN', {
+      appOrigin,
+      cloudflaredBinary,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+function maybeHydrateCloudflareAccessToken(config: RuntimeConfigFile, sourcePath: string): void {
+  if (process.env.CF_ACCESS_TOKEN?.trim()) {
+    return;
+  }
+
+  const appOrigins = new Set<string>();
+  for (const [providerId, provider] of Object.entries(config.providers || {})) {
+    if (!valueReferencesEnvVar(provider, 'CF_ACCESS_TOKEN')) {
+      continue;
+    }
+    const appOrigin = getOriginFromBaseUrl(provider.baseURL);
+    if (appOrigin) {
+      appOrigins.add(appOrigin);
+      continue;
+    }
+    logger.warn('Cannot auto-resolve CF_ACCESS_TOKEN without a valid provider baseURL', {
+      providerId,
+      sourcePath,
+    });
+  }
+
+  for (const appOrigin of appOrigins) {
+    const token = fetchCloudflareAccessToken(appOrigin);
+    if (!token) {
+      continue;
+    }
+    process.env.CF_ACCESS_TOKEN = token;
+    logger.info('Resolved CF_ACCESS_TOKEN from cloudflared', { appOrigin, sourcePath });
+    return;
+  }
+}
+
 /**
  * Recursively interpolates environment variables in all string values within a config object.
  * Handles nested objects and arrays. Filters out empty header values.
@@ -285,7 +362,9 @@ async function readRuntimeConfigFile(configPath: string): Promise<RuntimeConfigF
       throw new Error(`Invalid runtime config in ${configPath}: ${issues}`);
     }
     
-    return sanitizeDefaultParamsInConfig(interpolateValue(result.data as RuntimeConfigFile, configPath));
+    const validatedConfig = result.data as RuntimeConfigFile;
+    maybeHydrateCloudflareAccessToken(validatedConfig, configPath);
+    return sanitizeDefaultParamsInConfig(interpolateValue(validatedConfig, configPath));
   } catch (error: any) {
     if (error?.code === 'ENOENT') {
       return null;

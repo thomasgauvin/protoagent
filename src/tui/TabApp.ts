@@ -49,6 +49,8 @@ export class TabApp {
   private approvalManager: ApprovalManager
   private tabRuntime: TabRuntime
   private isActive: boolean = false
+  private isLoading: boolean = false
+  private hasApprovalPending: boolean = false
   private rootBox?: BoxRenderable
   private title: string = 'New Agent'
   private messageCount: number = 0
@@ -220,9 +222,11 @@ export class TabApp {
         if (externalOnTitleUpdate) externalOnTitleUpdate(title)
       },
       onLoadingChange: (loading: boolean) => {
+        this.isLoading = loading
         if (externalOnLoadingChange) externalOnLoadingChange(loading)
       },
       onApprovalChange: (pending: boolean) => {
+        this.hasApprovalPending = pending
         if (externalOnApprovalChange) externalOnApprovalChange(pending)
       },
       onMcpReady: () => {
@@ -338,6 +342,20 @@ export class TabApp {
    */
   getSessionId(): string | undefined {
     return this.options.sessionId
+  }
+
+  /**
+   * Whether this tab is currently running a turn.
+   */
+  getIsRunning(): boolean {
+    return this.isLoading
+  }
+
+  /**
+   * Whether this tab is currently waiting on an approval.
+   */
+  getHasApprovalPending(): boolean {
+    return this.hasApprovalPending
   }
 
   /**

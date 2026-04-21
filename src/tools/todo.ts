@@ -40,7 +40,14 @@ function formatTodos(todos: TodoItem[], heading: string): string {
 
   const lines = todos.map((t) => {
     const content = t.content?.trim() || '(no description)';
-    return `${statusIcons[t.status]} [${t.priority}] ${content} (${t.id})`;
+    // Fall back gracefully if the model omits status/priority — rather than
+    // rendering literal "undefined" in the UI. (The write path already
+    // validates the schema and would reject these, but be defensive here
+    // in case older persisted todos are missing fields.)
+    const icon = statusIcons[t.status] ?? '[?]';
+    const priority = t.priority ?? 'medium';
+    const id = t.id ?? '(no-id)';
+    return `${icon} [${priority}] ${content} (${id})`;
   });
   return `${heading}\n${lines.join('\n')}`;
 }
@@ -108,12 +115,32 @@ export function writeTodos(newTodos: TodoItem[], sessionId?: string, abortSignal
   if (abortSignal?.aborted) {
     return 'Error: Operation aborted by user.';
   }
-  // Validate todos - require content for all items
-  const invalidTodos = newTodos.filter((t) => !t.content?.trim());
-  if (invalidTodos.length > 0) {
-    const ids = invalidTodos.map((t) => t.id).join(', ');
-    return `Error: ${invalidTodos.length} todo(s) missing required 'content' field (ids: ${ids}). Each todo must have a non-empty 'content' property describing the task.`;
+
+  // Validate every required field up-front and report ALL problems at once,
+  // so the model can correct them in a single follow-up call instead of
+  // playing ping-pong — "fix content" → "fix status" → "fix priority".
+  const validStatuses: Array<TodoItem['status']> = ['pending', 'in_progress', 'completed', 'cancelled'];
+  const validPriorities: Array<TodoItem['priority']> = ['high', 'medium', 'low'];
+  const problems: string[] = [];
+  for (const t of newTodos || []) {
+    const id = t?.id ?? '(missing id)';
+    if (!t || typeof t !== 'object') {
+      problems.push(`${id}: todo must be an object with { id, content, status, priority }`);
+      continue;
+    }
+    if (!t.id || typeof t.id !== 'string') problems.push(`${id}: missing or non-string 'id'`);
+    if (!t.content || !t.content.trim()) problems.push(`${id}: missing or empty 'content'`);
+    if (!validStatuses.includes(t.status)) {
+      problems.push(`${id}: 'status' must be one of ${validStatuses.join(', ')} (got: ${JSON.stringify(t.status)})`);
+    }
+    if (!validPriorities.includes(t.priority)) {
+      problems.push(`${id}: 'priority' must be one of ${validPriorities.join(', ')} (got: ${JSON.stringify(t.priority)})`);
+    }
   }
+  if (problems.length > 0) {
+    return `Error: ${problems.length} validation problem(s) in todo list:\n- ${problems.join('\n- ')}`;
+  }
+
   const todos = cloneTodos(newTodos);
   todosBySession.set(getSessionKey(sessionId), todos);
   return formatTodos(todos, `TODO List Updated (${todos.length} items):`);

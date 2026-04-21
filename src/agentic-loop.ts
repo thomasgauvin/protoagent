@@ -456,7 +456,13 @@ export async function runAgenticLoop(
 /**
  * Initialize the conversation with the system prompt.
  */
-export async function initializeMessages(): Promise<Message[]> {
-  const systemPrompt = await generateSystemPrompt();
+export async function initializeMessages(
+  toolRegistry?: import('./tools/registry.js').ToolRegistry,
+  extra?: string,
+): Promise<Message[]> {
+  let systemPrompt = await generateSystemPrompt(toolRegistry);
+  if (extra && extra.trim()) {
+    systemPrompt = `${systemPrompt}\n\n---\n${extra.trim()}`;
+  }
   return [{ role: 'system', content: systemPrompt } as Message];
 }

@@ -58,9 +58,10 @@ export class StatusBar {
   private _sessionId: string | null = null
   private _provider: string | null = null
   private _model: string | null = null
-  private _currentView: 'bot' | 'queue' | 'cron' | 'loop' = 'bot'
   private _workflowType: string = 'queue'
   private _workflowActive = false
+  // When true, suppress the workflow indicator entirely (e.g. Manager tab).
+  private _hideWorkflow = false
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer
@@ -94,9 +95,22 @@ export class StatusBar {
     // Spinner handles its own animation
     this._spinner = new Spinner({
       onFrame: () => {
-        if (this._loading) {
+        if (this._destroyed || !this._loading) return
+        // Belt-and-suspenders: the TextBuffer backing statusText can be
+        // destroyed by opentui's recursive destroy before our own `_destroyed`
+        // flag flips, which surfaces as "TextBuffer is destroyed" from the
+        // interval firing once more during shutdown. Swallow that narrow
+        // race so the exit path stays clean.
+        try {
           this._updateStatus()
           this.renderer.requestRender()
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (msg.includes('TextBuffer is destroyed')) {
+            this._spinner.stop()
+            return
+          }
+          throw err
         }
       },
     })
@@ -157,19 +171,20 @@ export class StatusBar {
   }
 
   /**
-   * Set the current view indicator (bot/queue/cron/loop)
-   */
-  setViewIndicator(view: 'bot' | 'queue' | 'cron' | 'loop'): void {
-    this._currentView = view
-    this._updateUsage()
-  }
-
-  /**
-   * Set the current workflow type indicator
+   * Set the current workflow type indicator.
    */
   setWorkflowType(type: string, isActive: boolean): void {
     this._workflowType = type
     this._workflowActive = isActive
+    this._updateUsage()
+  }
+
+  /**
+   * Hide the workflow indicator entirely (used by the Manager tab, which
+   * does not run workflows).
+   */
+  hideWorkflow(): void {
+    this._hideWorkflow = true
     this._updateUsage()
   }
 
@@ -231,15 +246,18 @@ export class StatusBar {
 
     const parts: string[] = []
 
-    // View indicator (bot/queue/cron/loop) - shows current view mode only
-    const viewColors: Record<string, string> = {
-      bot: COLORS.white,
-      queue: COLORS.blue,
-      cron: COLORS.yellow,
-      loop: COLORS.green,
+    // Workflow indicator (queue/cron/loop) — shows which workflow is active.
+    // Hidden for the Manager tab (it doesn't run workflows).
+    if (!this._hideWorkflow) {
+      const workflowColors: Record<string, string> = {
+        queue: COLORS.blue,
+        cron: COLORS.yellow,
+        loop: COLORS.green,
+      }
+      const color = workflowColors[this._workflowType] || COLORS.white
+      const marker = this._workflowActive ? '●' : '○'
+      parts.push(`${fg(color)(`[${marker} ${this._workflowType}]`)}`)
     }
-    const viewColor = viewColors[this._currentView] || COLORS.white
-    parts.push(`${fg(viewColor)(`[${this._currentView}]`)}`)
 
     // MCP status (if any servers configured)
     if (this._mcpStatus.length > 0) {
@@ -257,11 +275,17 @@ export class StatusBar {
     // Cost (always show)
     parts.push(`cost:$${this._totalCost.toFixed(4)}`)
 
-    // Join with double spaces and apply dim color (except view indicator)
+    // Join with double spaces; dim everything except the workflow indicator
+    // (which is already colored). When the indicator is hidden, dim all
+    // parts.
     if (parts.length > 0) {
-      // First part (view indicator) is already colored, rest need dim
-      const coloredParts = parts.slice(1).map(p => fg(COLORS.dim)(p))
-      this.usageText.content = t`${parts[0]}  ${coloredParts.join('  ')}`
+      if (this._hideWorkflow) {
+        const dimmed = parts.map(p => fg(COLORS.dim)(p))
+        this.usageText.content = t`${dimmed.join('  ')}`
+      } else {
+        const coloredParts = parts.slice(1).map(p => fg(COLORS.dim)(p))
+        this.usageText.content = t`${parts[0]}  ${coloredParts.join('  ')}`
+      }
     } else {
       this.usageText.content = t``
     }

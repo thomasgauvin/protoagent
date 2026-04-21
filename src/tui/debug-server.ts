@@ -260,6 +260,7 @@ export async function startDebugServer(renderer: CliRenderer): Promise<void> {
           { key: 'Ctrl+Shift+Tab / Ctrl+PageUp', description: 'Previous tab' },
           { key: 'Ctrl+1 through Ctrl+9', description: 'Switch to tab by number' },
           { key: 'Ctrl+W', description: 'Close current tab' },
+          { key: 'Tab / Shift+Tab', description: 'Cycle workflow (queue → loop → cron)' },
         ],
         input: [
           { key: 'Enter / Return', description: 'Submit message' },

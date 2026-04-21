@@ -9,6 +9,8 @@ import { getActiveRuntimeConfigPath, loadRuntimeConfig, resetRuntimeConfigForTes
 test.afterEach(() => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.PROTOAGENT_API_KEY;
+  delete process.env.CF_ACCESS_TOKEN;
+  delete process.env.PROTOAGENT_CLOUDFLARED_BIN;
   resetRuntimeConfigForTests();
 });
 
@@ -34,6 +36,82 @@ test('resolveApiKey falls back to PROTOAGENT_API_KEY when provider env is absent
   const apiKey = resolveApiKey({ provider: 'openai', apiKey: undefined });
 
   assert.equal(apiKey, 'override-secret');
+});
+
+test('resolveApiKey ignores non-auth provider headers', async () => {
+  const originalHome = process.env.HOME;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'protoagent-header-test-'));
+
+  try {
+    process.env.HOME = cwd;
+    const configPath = path.join(cwd, '.config', 'protoagent', 'protoagent.jsonc');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      providers: {
+        'cf-anthropic': {
+          headers: {
+            'X-Requested-With': 'xmlhttprequest',
+          },
+          models: {
+            'claude-haiku-4-5': {},
+          },
+        },
+      },
+    }, null, 2));
+
+    await loadRuntimeConfig(true);
+
+    assert.equal(resolveApiKey({ provider: 'cf-anthropic', apiKey: undefined }), null);
+  } finally {
+    process.env.HOME = originalHome;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('loadRuntimeConfig auto-resolves CF_ACCESS_TOKEN for Cloudflare Access providers', async () => {
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.PATH;
+  const originalCloudflaredBin = process.env.PROTOAGENT_CLOUDFLARED_BIN;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'protoagent-cf-token-'));
+  const binDir = path.join(cwd, 'bin');
+
+  try {
+    delete process.env.CF_ACCESS_TOKEN;
+    fs.mkdirSync(binDir, { recursive: true });
+    const cloudflaredPath = path.join(binDir, 'cloudflared');
+    fs.writeFileSync(cloudflaredPath, '#!/bin/sh\nprintf test-token\n', { mode: 0o755 });
+
+    process.env.HOME = cwd;
+    process.env.PATH = `${binDir}:${originalPath || ''}`;
+    process.env.PROTOAGENT_CLOUDFLARED_BIN = cloudflaredPath;
+    const configPath = path.join(cwd, '.config', 'protoagent', 'protoagent.jsonc');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      providers: {
+        'cf-anthropic': {
+          baseURL: 'https://opencode.cloudflare.dev/anthropic/',
+          headers: {
+            'cf-access-token': '${CF_ACCESS_TOKEN}',
+            API_KEY: '${CF_ACCESS_TOKEN}',
+          },
+          models: {
+            'claude-haiku-4-5': {},
+          },
+        },
+      },
+    }, null, 2));
+
+    const config = await loadRuntimeConfig(true);
+
+    assert.equal(process.env.CF_ACCESS_TOKEN, 'test-token');
+    assert.equal(config.providers?.['cf-anthropic']?.headers?.['cf-access-token'], 'test-token');
+    assert.equal(config.providers?.['cf-anthropic']?.headers?.API_KEY, 'test-token');
+  } finally {
+    process.env.HOME = originalHome;
+    process.env.PATH = originalPath;
+    process.env.PROTOAGENT_CLOUDFLARED_BIN = originalCloudflaredBin;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test('loadRuntimeConfig tolerates missing config files', async () => {
